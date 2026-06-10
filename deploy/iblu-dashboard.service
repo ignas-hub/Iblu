@@ -1,0 +1,22 @@
+[Unit]
+Description=iblu-keeper Streamlit dashboard (command center)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ignas
+WorkingDirectory=/opt/iblu-keeper
+EnvironmentFile=/opt/iblu-keeper/.env
+ExecStart=/opt/iblu-keeper/.venv/bin/streamlit run dashboard/app.py \
+    --server.address 127.0.0.1 \
+    --server.port 8501 \
+    --server.headless true \
+    --browser.gatherUsageStats false
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

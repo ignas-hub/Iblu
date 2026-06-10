@@ -1,0 +1,40 @@
+[project]
+name = "iblu-keeper"
+version = "0.1.0"
+description = "Self-hosted personal AI assistant system for Ignas — MCP server + Streamlit command center."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Blank Label" }]
+
+dependencies = [
+    "fastmcp>=2.3.0",
+    "uvicorn>=0.30.0",
+    "starlette>=0.37.0",
+    "google-api-python-client>=2.130.0",
+    "google-auth>=2.30.0",
+    "google-auth-oauthlib>=1.2.0",
+    "streamlit>=1.36.0",
+    "requests>=2.32.0",
+    "python-dotenv>=1.0.1",
+    "pydantic>=2.7.0",
+]
+
+[project.optional-dependencies]
+# Phase 2 — Postgres memory layer
+memory = ["psycopg[binary]>=3.2.0", "SQLAlchemy>=2.0.30"]
+dev = ["pytest>=8.2.0"]
+
+[project.scripts]
+iblu-mcp = "iblu_keeper.server:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

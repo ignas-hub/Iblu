@@ -1,0 +1,19 @@
+# iblu-keeper — Caddy reverse proxy (recommended; automatic HTTPS).
+#
+# Place at /etc/caddy/Caddyfile (or include it). Caddy obtains Let's Encrypt
+# certs automatically. If Cloudflare is in front, set the Cloudflare SSL/TLS
+# mode to "Full (strict)" so the edge trusts Caddy's real cert.
+#
+# Replace the hostnames with your real subdomains of iblu.com.
+
+# MCP server — what Claude's custom connector points at.
+mcp.iblu.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8000
+}
+
+# Dashboard / command center.
+app.iblu.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8501
+}

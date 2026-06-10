@@ -1,0 +1,20 @@
+[Unit]
+Description=iblu-keeper MCP server (FastMCP / streamable-HTTP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ignas
+WorkingDirectory=/opt/iblu-keeper
+# Load secrets from an env file that is NOT in git (chmod 600).
+EnvironmentFile=/opt/iblu-keeper/.env
+ExecStart=/opt/iblu-keeper/.venv/bin/python -m iblu_keeper.server
+Restart=on-failure
+RestartSec=3
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

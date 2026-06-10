@@ -1,0 +1,2 @@
+# Phase 2 migrations live here (e.g. Alembic or plain SQL files).
+# Empty in Phase 1 — db/schema.sql holds the forward-looking sketch.
