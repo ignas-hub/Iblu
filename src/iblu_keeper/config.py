@@ -65,7 +65,7 @@ class Settings:
     )
     dashboard_oauth_redirect_uri: str = field(
         default_factory=lambda: os.getenv(
-            "DASHBOARD_OAUTH_REDIRECT_URI", "http://localhost:8501/"
+            "DASHBOARD_OAUTH_REDIRECT_URI", "https://keeper.iblugames.com/"
         )
     )
     dashboard_allowed_email: str = field(

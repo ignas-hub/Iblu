@@ -44,8 +44,8 @@ account and no domain-wide delegation, so the authorization can touch only that
 one account. Auth from Claude to the server: a **bearer token** (`MCP_API_KEY`).
 
 > **Chat is behind a swappable interface** (`src/iblu_keeper/tools/chat.py`).
-> It is *not yet validated* that the Google Chat API + service account can
-> read/send Ignas's personal DMs/spaces. Until then the server runs in
+> It is *not yet validated* that the Google Chat API can read/send Ignas's
+> personal DMs/spaces with single-user OAuth. Until then the server runs in
 > **mock mode**. If the Chat API path fails, implement a new `ChatBackend`
 > and return it from `get_backend()` — no other code changes.
 
@@ -56,7 +56,7 @@ messages, recent email summaries, pending drafts, and a test form.
 ### Dry-run / mock mode
 When `DRY_RUN=true` **or** no Google credentials are present, every tool returns
 deterministic fake data and never calls Google. This lets the whole system be
-developed and demoed before the service-account access test concludes.
+developed and demoed before the Google access test concludes.
 
 ---
 
@@ -133,7 +133,7 @@ Single-user OAuth — no service account, no domain-wide delegation.
    sensitive Gmail/Chat scopes work without app verification.
 3. **OAuth client ID** (type: **Web application**). Add redirect URIs:
    - `http://localhost:8765/` (used by `connect_google.py`)
-   - `http://localhost:8501/` and `https://app.iblu.com/` (dashboard login)
+   - `http://localhost:8501/` and `https://keeper.iblugames.com/` (dashboard login)
 4. Put the client id/secret in `.env`:
    ```
    GOOGLE_OAUTH_CLIENT_ID=...apps.googleusercontent.com
@@ -161,7 +161,8 @@ account are rejected.
 ## Deployment — Hetzner (Ubuntu)
 
 Target box: `ignas@178.104.122.152` (shared with other projects — not dedicated).
-Domain `iblu.com` via Cloudflare; HTTPS via Caddy (recommended) or nginx+certbot;
+Domain `iblugames.com` via Cloudflare (dashboard at `keeper.iblugames.com`, MCP
+at `mcp.iblugames.com`); HTTPS via Caddy (recommended) or nginx+certbot;
 services via systemd.
 
 ### 1. Install system packages
@@ -212,7 +213,7 @@ the reverse proxy terminates TLS and exposes them.
 ```bash
 sudo apt install -y caddy            # see caddyserver.com for the official repo
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
-sudo nano /etc/caddy/Caddyfile       # set real hostnames (mcp.iblu.com / app.iblu.com)
+sudo nano /etc/caddy/Caddyfile       # set real hostnames (mcp.iblugames.com / keeper.iblugames.com)
 sudo systemctl reload caddy
 ```
 
@@ -223,18 +224,18 @@ sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/iblu-keeper
 sudo nano /etc/nginx/sites-available/iblu-keeper     # set hostnames
 sudo ln -s /etc/nginx/sites-available/iblu-keeper /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d mcp.iblu.com -d app.iblu.com
+sudo certbot --nginx -d mcp.iblugames.com -d keeper.iblugames.com
 ```
 
 ### 6. Cloudflare / DNS
-- Add A records for `mcp.iblu.com` and `app.iblu.com` → `178.104.122.152`.
+- Add A records for `mcp.iblugames.com` and `keeper.iblugames.com` → `178.104.122.152`.
 - SSL/TLS mode: **Full (strict)** (the origin has a real Let's Encrypt cert).
 - If proxying (orange cloud) interferes with the cert challenge, set DNS-only
   while issuing certs, then re-enable.
 - Open ports 80/443 on the box (`sudo ufw allow 80,443/tcp` if ufw is on).
 
 ### 7. Connect Claude
-In claude.ai → custom connector, point at `https://mcp.iblu.com/mcp` and supply
+In claude.ai → custom connector, point at `https://mcp.iblugames.com/mcp` and supply
 the bearer token (`MCP_API_KEY`) as the `Authorization: Bearer <token>` header.
 
 ---

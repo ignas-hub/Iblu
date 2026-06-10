@@ -1,7 +1,7 @@
 # iblu-keeper — nginx reverse proxy (alternative to Caddy).
 #
 # Use with certbot for Let's Encrypt:
-#   sudo certbot --nginx -d mcp.iblu.com -d app.iblu.com
+#   sudo certbot --nginx -d mcp.iblugames.com -d keeper.iblugames.com
 # If Cloudflare is in front, set SSL/TLS mode to "Full (strict)".
 #
 # Streamlit and MCP streamable-HTTP both need WebSocket upgrade + long timeouts.
@@ -9,7 +9,7 @@
 # ---- MCP server ----
 server {
     listen 80;
-    server_name mcp.iblu.com;
+    server_name mcp.iblugames.com;
 
     location / {
         proxy_pass http://127.0.0.1:8000;
@@ -28,7 +28,7 @@ server {
 # ---- Dashboard ----
 server {
     listen 80;
-    server_name app.iblu.com;
+    server_name keeper.iblugames.com;
 
     location / {
         proxy_pass http://127.0.0.1:8501;
