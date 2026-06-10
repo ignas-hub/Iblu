@@ -26,8 +26,10 @@ from .config import settings
 SCOPES: tuple[str, ...] = (
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
-    # Google Chat — read spaces/messages and send messages as the user.
+    # Google Chat — read spaces/messages, read memberships (to name DMs by
+    # person), and send messages as the user.
     "https://www.googleapis.com/auth/chat.spaces.readonly",
+    "https://www.googleapis.com/auth/chat.memberships.readonly",
     "https://www.googleapis.com/auth/chat.messages",
     # Gmail — read/draft (modify) and send.
     "https://www.googleapis.com/auth/gmail.modify",
