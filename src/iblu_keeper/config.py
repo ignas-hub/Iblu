@@ -38,17 +38,22 @@ class Settings:
     # be developed before the service-account access test concludes.
     dry_run: bool = field(default_factory=lambda: _bool("DRY_RUN", True))
 
-    # --- Google service account ---
-    google_sa_file: str = field(
-        default_factory=lambda: os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "")
+    # --- Google OAuth (single-user) ---
+    # The assistant accesses ONLY this user's account via an OAuth refresh
+    # token (no service account, no domain-wide delegation). The token is
+    # created once via scripts/connect_google.py and stored at the token file.
+    google_oauth_client_id: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
     )
-    google_sa_b64: str = field(
-        default_factory=lambda: os.getenv("GOOGLE_SERVICE_ACCOUNT_B64", "")
+    google_oauth_client_secret: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
     )
-    google_delegated_user: str = field(
-        default_factory=lambda: os.getenv(
-            "GOOGLE_DELEGATED_USER", "ignas@blanklabel.team"
-        )
+    google_oauth_token_file: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_OAUTH_TOKEN_FILE", "data/token.json")
+    )
+    # Informational only — the OAuth token itself determines the account.
+    google_user_email: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_USER_EMAIL", "ignas@blanklabel.team")
     )
 
     # --- Dashboard ---
@@ -82,8 +87,12 @@ class Settings:
 
     @property
     def has_google_credentials(self) -> bool:
-        """True when a service-account key is configured (file or base64)."""
-        return bool(self.google_sa_b64 or (self.google_sa_file and os.path.exists(self.google_sa_file)))
+        """True when the OAuth client is configured AND a saved token exists."""
+        return bool(
+            self.google_oauth_client_id
+            and self.google_oauth_client_secret
+            and os.path.exists(self.google_oauth_token_file)
+        )
 
     @property
     def use_mock(self) -> bool:

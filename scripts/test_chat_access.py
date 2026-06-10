@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Answer the open question: can the service account read Ignas's Chat?
+"""Answer the open question: can the assistant read your Chat?
 
-This impersonates GOOGLE_DELEGATED_USER and calls the Google Chat API to list
-spaces/DMs. It prints a clear PASS/FAIL so a non-developer can read the result.
+Uses your saved single-user OAuth token (from scripts/connect_google.py) to call
+the Google Chat API and list your spaces/DMs. Prints a clear PASS/FAIL.
 
-Usage:
-    export GOOGLE_SERVICE_ACCOUNT_FILE=/path/to/service-account.json
-    export GOOGLE_DELEGATED_USER=ignas@blanklabel.team
+Usage (after connect_google.py has produced data/token.json):
+    export GOOGLE_OAUTH_CLIENT_ID=...
+    export GOOGLE_OAUTH_CLIENT_SECRET=...
     python scripts/test_chat_access.py
 """
 
@@ -27,25 +27,21 @@ def main() -> int:
 
     print("iblu-keeper — Google Chat access test")
     print("-" * 50)
-    print(f"Impersonating: {settings.google_delegated_user}")
+    print(f"Account: {settings.google_user_email}")
     if not settings.has_google_credentials:
-        print("\nFAIL: No service-account key found.")
-        print("Set GOOGLE_SERVICE_ACCOUNT_FILE (or _B64) and try again.")
+        print("\nFAIL: not connected yet.")
+        print("Run `python scripts/connect_google.py` first to authorize your account.")
         return 1
 
     try:
-        service = build_service(
-            "chat",
-            "v1",
-            scopes=["https://www.googleapis.com/auth/chat.spaces.readonly"],
-        )
+        service = build_service("chat", "v1")
         resp = service.spaces().list(pageSize=50).execute()
         spaces = resp.get("spaces", [])
     except Exception as exc:  # noqa: BLE001
         print(f"\nFAIL: the Chat API call was rejected.\n\n    {exc}\n")
-        print("This likely means service-account + domain-wide delegation cannot")
-        print("read this user's Chat. Keep DRY_RUN=true and we'll use a fallback")
-        print("backend for Chat (Gmail/Calendar are unaffected).")
+        print("This likely means the Chat API can't read this account's chats this")
+        print("way. Keep DRY_RUN=true and we'll use a fallback backend for Chat")
+        print("(Gmail/Calendar are unaffected).")
         return 2
 
     print(f"\nPASS: the Chat API returned {len(spaces)} space(s):\n")
@@ -53,9 +49,8 @@ def main() -> int:
         name = s.get("displayName") or "(direct message)"
         print(f"  - {name}  [{s.get('spaceType', s.get('type', '?'))}]  {s.get('name')}")
     if not spaces:
-        print("  (none — the API worked but this user is in no visible spaces)")
-    print("\nIf your real DMs/spaces appear above, the service-account path works.")
-    print("You can then set DRY_RUN=false to go live with Chat.")
+        print("  (none — the API worked but this account is in no visible spaces)")
+    print("\nIf your real DMs/spaces appear above, Chat works. Set DRY_RUN=false to go live.")
     return 0
 
 

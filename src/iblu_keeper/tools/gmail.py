@@ -22,7 +22,7 @@ def _service():
 def _build_raw(to: str, subject: str, body: str) -> str:
     msg = EmailMessage()
     msg["To"] = to
-    msg["From"] = settings.google_delegated_user
+    msg["From"] = settings.google_user_email
     msg["Subject"] = subject
     msg.set_content(body)
     return base64.urlsafe_b64encode(msg.as_bytes()).decode()
@@ -89,7 +89,7 @@ def get_message(message_id: str) -> dict:
         return {
             "id": message_id,
             "from": "client@example.com",
-            "to": settings.google_delegated_user,
+            "to": settings.google_user_email,
             "subject": "Re: Proposal",
             "date": "2026-06-10T08:30:00Z",
             "body": "Thanks, this looks good. One question about pricing — "

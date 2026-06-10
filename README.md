@@ -38,9 +38,10 @@ Remote MCP server Claude connects to over HTTPS. Tools exposed:
 - **Calendar:** `calendar.create_event`
 - **Context (Phase 2 stubs):** `context.log_conversation`, `context.get_summary`
 
-Auth to Google: a **service account** key (from env, file path or base64),
-impersonating the single user `ignas@blanklabel.team`. Auth from Claude to the
-server: a **bearer token** (`MCP_API_KEY`).
+Auth to Google: **single-user OAuth** — a refresh token for one account
+(`ignas@blanklabel.team`), created once via a browser "Allow". No service
+account and no domain-wide delegation, so the authorization can touch only that
+one account. Auth from Claude to the server: a **bearer token** (`MCP_API_KEY`).
 
 > **Chat is behind a swappable interface** (`src/iblu_keeper/tools/chat.py`).
 > It is *not yet validated* that the Google Chat API + service account can
@@ -65,7 +66,7 @@ developed and demoed before the service-account access test concludes.
 iblu-keeper/
 ├── src/iblu_keeper/
 │   ├── config.py            # env-driven settings (singleton)
-│   ├── google_auth.py       # service-account creds (file or base64), delegated to 1 user
+│   ├── google_auth.py       # single-user OAuth token (load + auto-refresh)
 │   ├── server.py            # FastMCP server + bearer auth + /health
 │   ├── tools/
 │   │   ├── chat.py          # swappable ChatBackend (Mock / GoogleChat)
@@ -74,6 +75,9 @@ iblu-keeper/
 │   │   └── context.py       # Phase 2 stubs (stable signatures)
 │   └── store/drafts.py      # local JSONL draft store (-> Postgres in Phase 2)
 ├── dashboard/app.py         # Streamlit command center
+├── scripts/
+│   ├── connect_google.py    # one-time: authorize your account (saves token.json)
+│   └── test_chat_access.py  # checks whether Chat can read your spaces/DMs
 ├── db/schema.sql            # Phase 2 Postgres sketch (unused now)
 ├── db/migrations/           # Phase 2 migrations
 ├── deploy/                  # systemd units, Caddyfile, nginx example
@@ -121,34 +125,36 @@ click "Continue (dev login)".
 
 ## Going live with Google (when ready)
 
+Single-user OAuth — no service account, no domain-wide delegation.
+
 1. **Google Cloud project** → enable the **Gmail API**, **Google Calendar API**,
    and **Google Chat API**.
-2. **Service account** → create one, generate a JSON key.
-3. **Domain-wide delegation** (scoped to one user): in the Workspace Admin
-   console, authorize the service account's client ID for exactly these scopes:
+2. **OAuth consent screen** → set User Type **Internal** (Workspace) so the
+   sensitive Gmail/Chat scopes work without app verification.
+3. **OAuth client ID** (type: **Web application**). Add redirect URIs:
+   - `http://localhost:8765/` (used by `connect_google.py`)
+   - `http://localhost:8501/` and `https://app.iblu.com/` (dashboard login)
+4. Put the client id/secret in `.env`:
    ```
-   https://www.googleapis.com/auth/chat.spaces.readonly
-   https://www.googleapis.com/auth/chat.messages
-   https://www.googleapis.com/auth/gmail.modify
-   https://www.googleapis.com/auth/gmail.send
-   https://www.googleapis.com/auth/calendar.events
+   GOOGLE_OAUTH_CLIENT_ID=...apps.googleusercontent.com
+   GOOGLE_OAUTH_CLIENT_SECRET=...
    ```
-4. In `.env`, set `GOOGLE_SERVICE_ACCOUNT_FILE` (or `GOOGLE_SERVICE_ACCOUNT_B64`),
-   confirm `GOOGLE_DELEGATED_USER=ignas@blanklabel.team`, and set **`DRY_RUN=false`**.
-5. Restart the server. `/health` should now report `"mode":"live"`.
+5. **Authorize once** (on a machine with a browser, e.g. your Mac):
+   ```bash
+   python scripts/connect_google.py     # opens a browser → click Allow
+   ```
+   This saves `data/token.json` (your refresh token — scoped to only you).
+6. Set **`DRY_RUN=false`** and restart the server. `/health` reports `"mode":"live"`.
 
-> Gmail + Calendar via service account is a known-good pattern. Chat is the open
-> question — test `chat.list_conversations` first. If it can't reach personal
-> DMs/spaces, keep `DRY_RUN=true` (or force the mock Chat backend) and swap in an
-> alternative `ChatBackend` later.
+> Chat is the open question — run `python scripts/test_chat_access.py` to confirm
+> the Chat API can read your spaces/DMs. If it can't, keep `DRY_RUN=true` and swap
+> in an alternative `ChatBackend` (Gmail/Calendar are unaffected).
 
-### Dashboard Google OAuth (lock to one account)
-1. Google Cloud → **OAuth consent screen** (Internal) + **OAuth client ID**
-   (type: Web application).
-2. Authorized redirect URI = your `DASHBOARD_OAUTH_REDIRECT_URI`
-   (e.g. `https://app.iblu.com/`).
-3. Put the client id/secret and `DASHBOARD_ALLOWED_EMAIL=ignas@blanklabel.team`
-   in `.env`. Logins from any other account are rejected.
+### Dashboard login
+The dashboard reuses the same OAuth client for its "Sign in with Google" login.
+Set `DASHBOARD_OAUTH_CLIENT_ID` / `DASHBOARD_OAUTH_CLIENT_SECRET` (same values are
+fine) and `DASHBOARD_ALLOWED_EMAIL=ignas@blanklabel.team` — logins from any other
+account are rejected.
 
 ---
 
@@ -178,13 +184,13 @@ pip install --upgrade pip && pip install -e .
 ### 3. Secrets
 ```bash
 cp .env.example .env
-nano .env          # set MCP_API_KEY, Google creds, OAuth, DRY_RUN
+nano .env          # set MCP_API_KEY, GOOGLE_OAUTH_* , DASHBOARD_OAUTH_* , DRY_RUN
 chmod 600 .env
 
-# Place the service-account key where .env points (default below):
-sudo mkdir -p /etc/iblu-keeper
-sudo cp service-account.json /etc/iblu-keeper/service-account.json
-sudo chmod 600 /etc/iblu-keeper/service-account.json
+# Authorize your account once (see "Going live with Google"). You can run
+# connect_google.py on your Mac and copy data/token.json up, or run it here if
+# the box has a browser. The token file is your private credential:
+chmod 600 data/token.json
 ```
 
 ### 4. systemd services
@@ -234,7 +240,11 @@ the bearer token (`MCP_API_KEY`) as the `Authorization: Bearer <token>` header.
 ---
 
 ## Security notes
-- `.env` and all `*.json` key files are git-ignored. Never commit secrets.
+- `.env`, `data/token.json`, and all `*.json` credential files are git-ignored.
+  Never commit secrets.
+- Google access is **single-user OAuth** — the token can act only as the one
+  account that approved it, and carries no domain-wide power. Revoke anytime at
+  https://myaccount.google.com/permissions (then re-run `connect_google.py`).
 - The MCP server refuses every request without the correct bearer token
   (except `/health` and `/`).
 - The dashboard only admits `DASHBOARD_ALLOWED_EMAIL`.

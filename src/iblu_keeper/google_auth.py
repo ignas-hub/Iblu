@@ -1,88 +1,121 @@
-"""Google service-account credential loading.
+"""Google OAuth (single-user) credential handling.
 
-The service-account key is loaded from an env var — either a file path
-(`GOOGLE_SERVICE_ACCOUNT_FILE`) or a base64 blob (`GOOGLE_SERVICE_ACCOUNT_B64`).
+The assistant accesses ONLY Ignas's account using a standard OAuth refresh
+token — no service account and no domain-wide delegation. This means the
+authorization is genuinely scoped to one account and can touch no one else.
 
-Access is scoped to a single Workspace user via domain-wide delegation
-(impersonation of `GOOGLE_DELEGATED_USER`, default ignas@blanklabel.team).
-Delegation is intentionally NOT used broadly — only this one user.
+The refresh token is created once via `scripts/connect_google.py` (you click
+"Allow" in a browser) and stored as JSON at `GOOGLE_OAUTH_TOKEN_FILE`. From then
+on the server refreshes short-lived access tokens automatically; the saved file
+is updated in place when the token is refreshed.
 
 Credentials are built lazily and cached, so importing this module never fails
-just because credentials are absent (important for dry-run development).
+just because no token exists yet (important for dry-run development).
 """
 
 from __future__ import annotations
 
-import base64
 import json
-from functools import lru_cache
+import os
+import threading
 from typing import Sequence
 
 from .config import settings
 
-# OAuth scopes required by the Phase 1 tools.
+# OAuth scopes required by the Phase 1 tools (+ identity).
 SCOPES: tuple[str, ...] = (
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    # Google Chat — read spaces/messages and send messages as the user.
     "https://www.googleapis.com/auth/chat.spaces.readonly",
     "https://www.googleapis.com/auth/chat.messages",
+    # Gmail — read/draft (modify) and send.
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
+    # Calendar — create/manage events.
     "https://www.googleapis.com/auth/calendar.events",
 )
 
+_lock = threading.Lock()
+_cached_creds = None
+
 
 class CredentialsUnavailable(RuntimeError):
-    """Raised when a Google client is requested but no credentials are configured."""
+    """Raised when a Google client is requested but no OAuth token is available."""
 
 
-def _load_service_account_info() -> dict:
-    """Return the parsed service-account key dict, or raise CredentialsUnavailable."""
-    if settings.google_sa_b64:
-        try:
-            raw = base64.b64decode(settings.google_sa_b64)
-            return json.loads(raw)
-        except Exception as exc:  # noqa: BLE001
+def _client_config() -> dict:
+    """OAuth client config in the shape google-auth-oauthlib expects."""
+    return {
+        "installed": {
+            "client_id": settings.google_oauth_client_id,
+            "client_secret": settings.google_oauth_client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost"],
+        }
+    }
+
+
+def _save_token(creds) -> None:
+    path = settings.google_oauth_token_file
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(creds.to_json())
+    os.chmod(path, 0o600)
+
+
+def _load_credentials():
+    """Load saved OAuth user credentials, refreshing if expired."""
+    from google.auth.transport.requests import Request  # type: ignore
+    from google.oauth2.credentials import Credentials  # type: ignore
+
+    if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
+        raise CredentialsUnavailable(
+            "OAuth client not configured "
+            "(set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET)."
+        )
+
+    path = settings.google_oauth_token_file
+    if not os.path.exists(path):
+        raise CredentialsUnavailable(
+            f"No saved Google token at {path}. "
+            "Run `python scripts/connect_google.py` once to authorize your account."
+        )
+
+    with open(path, "r", encoding="utf-8") as fh:
+        info = json.load(fh)
+    # Ensure client id/secret are present so refresh works even if the saved
+    # token file omitted them.
+    info.setdefault("client_id", settings.google_oauth_client_id)
+    info.setdefault("client_secret", settings.google_oauth_client_secret)
+    info.setdefault("token_uri", "https://oauth2.googleapis.com/token")
+
+    creds = Credentials.from_authorized_user_info(info, list(SCOPES))
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            _save_token(creds)
+        else:
             raise CredentialsUnavailable(
-                f"GOOGLE_SERVICE_ACCOUNT_B64 could not be decoded: {exc}"
-            ) from exc
-
-    if settings.google_sa_file:
-        try:
-            with open(settings.google_sa_file, "r", encoding="utf-8") as fh:
-                return json.load(fh)
-        except FileNotFoundError as exc:
-            raise CredentialsUnavailable(
-                f"Service-account file not found: {settings.google_sa_file}"
-            ) from exc
-
-    raise CredentialsUnavailable(
-        "No Google service-account credentials configured "
-        "(set GOOGLE_SERVICE_ACCOUNT_FILE or GOOGLE_SERVICE_ACCOUNT_B64)."
-    )
+                "Saved Google token is invalid and cannot be refreshed. "
+                "Re-run `python scripts/connect_google.py`."
+            )
+    return creds
 
 
-@lru_cache(maxsize=8)
-def _delegated_credentials(scopes: tuple[str, ...], subject: str):
-    """Build (and cache) delegated service-account credentials."""
-    # Imported lazily so the package imports fine without google libs installed.
-    from google.oauth2 import service_account  # type: ignore
+def get_credentials(scopes: Sequence[str] | None = None):  # noqa: ARG001
+    """Return the cached single-user OAuth credentials (refreshing as needed).
 
-    info = _load_service_account_info()
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=list(scopes)
-    )
-    # Impersonate the single allowed user.
-    return creds.with_subject(subject)
-
-
-def get_credentials(scopes: Sequence[str] | None = None, subject: str | None = None):
-    """Return delegated credentials impersonating the configured user.
-
-    Raises CredentialsUnavailable when nothing is configured — callers in
-    dry-run mode should never reach this.
+    `scopes` is accepted for API symmetry but ignored — the saved token already
+    carries the granted scopes. Raises CredentialsUnavailable when not yet
+    authorized; callers in dry-run mode should never reach this.
     """
-    scope_tuple = tuple(scopes) if scopes else SCOPES
-    user = subject or settings.google_delegated_user
-    return _delegated_credentials(scope_tuple, user)
+    global _cached_creds
+    with _lock:
+        if _cached_creds is None or not getattr(_cached_creds, "valid", False):
+            _cached_creds = _load_credentials()
+        return _cached_creds
 
 
 def build_service(api: str, version: str, scopes: Sequence[str] | None = None):
