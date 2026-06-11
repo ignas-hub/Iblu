@@ -32,6 +32,11 @@ class Settings:
     mcp_host: str = field(default_factory=lambda: os.getenv("MCP_HOST", "127.0.0.1"))
     mcp_port: int = field(default_factory=lambda: int(os.getenv("MCP_PORT", "8000")))
     mcp_api_key: str = field(default_factory=lambda: os.getenv("MCP_API_KEY", ""))
+    # Public HTTPS URL where this MCP server is reachable (used as the OAuth
+    # base_url so Google can redirect back after sign-in).
+    mcp_public_base_url: str = field(
+        default_factory=lambda: os.getenv("MCP_PUBLIC_BASE_URL", "")
+    )
 
     # When DRY_RUN is true (or no Google credentials are present) the tools
     # return mock data and never touch Google APIs. This lets the whole system

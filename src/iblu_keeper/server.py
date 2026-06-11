@@ -4,21 +4,22 @@ Run locally:        python -m iblu_keeper.server
 Or via console:     iblu-mcp
 
 The server speaks streamable-HTTP so Claude (claude.ai custom connector /
-Claude apps) can connect over HTTPS. A bearer token (MCP_API_KEY) guards every
-request except the unauthenticated /health endpoint.
+Claude apps) can connect over HTTPS. Authentication is Google OAuth via
+FastMCP's GoogleProvider — Claude.ai performs Dynamic Client Registration,
+then the human signs into Google. The OAuth consent screen is configured
+"Internal" in Google Cloud, so only blanklabel.team Workspace users can
+complete the flow.
 """
 
 from __future__ import annotations
 
 import logging
-import secrets
 
-from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from fastmcp import FastMCP
+from fastmcp.server.auth.providers.google import GoogleProvider
 
 from .config import settings
 from .tools import calendar as calendar_tools
@@ -29,6 +30,27 @@ from .tools import gmail as gmail_tools
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("iblu_keeper.server")
 
+
+def _build_auth() -> GoogleProvider | None:
+    """Build the Google OAuth provider, or None if credentials/base URL are missing."""
+    if not (
+        settings.google_oauth_client_id
+        and settings.google_oauth_client_secret
+        and settings.mcp_public_base_url
+    ):
+        logger.warning(
+            "Google OAuth client_id/secret or MCP_PUBLIC_BASE_URL missing — "
+            "server will run UNAUTHENTICATED. Set them in .env."
+        )
+        return None
+    return GoogleProvider(
+        client_id=settings.google_oauth_client_id,
+        client_secret=settings.google_oauth_client_secret,
+        base_url=settings.mcp_public_base_url,
+        required_scopes=["openid", "email"],
+    )
+
+
 mcp = FastMCP(
     name="iblu-keeper",
     instructions=(
@@ -37,6 +59,7 @@ mcp = FastMCP(
         "conversations primarily by the person's name. Use draft_* tools when a "
         "human should review before anything is sent."
     ),
+    auth=_build_auth(),
 )
 
 
@@ -143,32 +166,9 @@ async def root(_request: Request) -> PlainTextResponse:
     return PlainTextResponse("iblu-keeper MCP server. See /health.")
 
 
-# --------------------------------------------------------------------------- #
-# Bearer-token auth middleware
-# --------------------------------------------------------------------------- #
-class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """Require `Authorization: Bearer <MCP_API_KEY>` on all but exempt paths."""
-
-    EXEMPT = {"/health", "/"}
-
-    def __init__(self, app, api_key: str) -> None:
-        super().__init__(app)
-        self.api_key = api_key
-
-    async def dispatch(self, request: Request, call_next):
-        if request.url.path in self.EXEMPT or not self.api_key:
-            return await call_next(request)
-        header = request.headers.get("Authorization", "")
-        token = header[7:] if header.startswith("Bearer ") else ""
-        if not (token and secrets.compare_digest(token, self.api_key)):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return await call_next(request)
-
-
 def build_app():
-    """Build the Starlette ASGI app (MCP over streamable-HTTP + auth)."""
-    middleware = [Middleware(BearerAuthMiddleware, api_key=settings.mcp_api_key)]
-    return mcp.http_app(middleware=middleware)
+    """Build the Starlette ASGI app (MCP over streamable-HTTP + OAuth)."""
+    return mcp.http_app()
 
 
 # ASGI entrypoint for `uvicorn iblu_keeper.server:app`
@@ -184,8 +184,6 @@ def main() -> None:
             settings.dry_run,
             settings.has_google_credentials,
         )
-    if not settings.mcp_api_key:
-        logger.warning("MCP_API_KEY is empty — the server is UNAUTHENTICATED. Set it in .env.")
 
     uvicorn.run(
         "iblu_keeper.server:app",
