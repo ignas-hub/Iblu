@@ -257,6 +257,58 @@ class GoogleChatBackend(ChatBackend):
         name = self._name_cache.get(uid, "")
         return name if name else f"users/{uid}"
 
+    def _format_preview(self, text: str, sender_uid: str, self_id: str) -> str:
+        """Format a message as 'Sender: text' (or 'You: text' for own messages)."""
+        text = (text or "")[: self._PREVIEW_MAX]
+        if sender_uid and self_id and sender_uid == self_id:
+            return f"You: {text}"
+        if sender_uid:
+            return f"{self._label(sender_uid)}: {text}"
+        return text
+
+    def _latest_message(self, conversation: str, look_back: int = 1) -> list[dict]:
+        """Fetch up to `look_back` most recent messages (newest first). [] on error."""
+        service = self._service()
+        try:
+            return (
+                service.spaces().messages()
+                .list(parent=conversation, pageSize=look_back, orderBy="createTime desc")
+                .execute().get("messages", [])
+            )
+        except Exception:  # noqa: BLE001
+            return []
+
+    @staticmethod
+    def _sender_uid(msg: dict) -> str:
+        name = msg.get("sender", {}).get("name", "")
+        return name.removeprefix("users/") if name.startswith("users/") else ""
+
+    def _msg_text(self, msg: dict) -> str:
+        text = msg.get("text", "") or ""
+        if not text and msg.get("attachment"):
+            text = "[attachment]"
+        return text
+
+    def _pick_unread_message(
+        self, conversation: str, self_id: str, since: str
+    ) -> dict | None:
+        """Pick the latest message in `conversation` that's genuinely new for the user.
+
+        Walks the 5 most recent messages and returns the latest one that BOTH
+        (a) was sent by someone other than self, AND (b) is newer than `since`
+        (the user's lastReadTime). Returns None if no such message exists —
+        meaning the space's recent activity is entirely the user's own.
+        """
+        for msg in self._latest_message(conversation, look_back=5):
+            uid = self._sender_uid(msg)
+            ct = msg.get("createTime", "")
+            if self_id and uid == self_id:
+                continue
+            if since and ct and ct <= since:
+                continue
+            return msg
+        return None
+
     def list_conversations(
         self, query: str | None = None, limit: int = 20
     ) -> list[dict]:
@@ -289,28 +341,25 @@ class GoogleChatBackend(ChatBackend):
             except Exception:  # noqa: BLE001 - membership listing may be restricted
                 space_member_ids[sid] = []
 
-        # Resolve display names for every unique participant in one batch.
-        self._resolve_names({uid for ids in space_member_ids.values() for uid in ids})
-        self_id = self._ensure_self_id()
-
-        # Fetch the latest message per space for `last_message_preview`.
-        previews: dict[str, str] = {}
+        # Fetch the most recent message per space (just the latest one — the
+        # preview honestly reflects "what's the last thing said here", even if
+        # it's the user's own message; the sender is attributed below).
+        latest_msgs: dict[str, dict] = {}
         for space in spaces:
             sid = space["name"]
-            try:
-                msgs = (
-                    service.spaces()
-                    .messages()
-                    .list(parent=sid, pageSize=1, orderBy="createTime desc")
-                    .execute()
-                    .get("messages", [])
-                )
-                text = (msgs[0].get("text", "") if msgs else "") or ""
-                if not text and msgs and msgs[0].get("attachment"):
-                    text = "[attachment]"
-                previews[sid] = text[: self._PREVIEW_MAX]
-            except Exception:  # noqa: BLE001
-                previews[sid] = ""
+            msgs = self._latest_message(sid, look_back=1)
+            if msgs:
+                latest_msgs[sid] = msgs[0]
+
+        # Resolve names for participants AND the senders of the latest messages,
+        # in one People API batch.
+        all_uids: set[str] = {uid for ids in space_member_ids.values() for uid in ids}
+        for msg in latest_msgs.values():
+            uid = self._sender_uid(msg)
+            if uid:
+                all_uids.add(uid)
+        self._resolve_names(all_uids)
+        self_id = self._ensure_self_id()
 
         out: list[dict] = []
         for space in spaces:
@@ -336,13 +385,18 @@ class GoogleChatBackend(ChatBackend):
                 else:
                     display = sid
 
+            msg = latest_msgs.get(sid, {})
+            preview = self._format_preview(
+                self._msg_text(msg), self._sender_uid(msg), self_id
+            ) if msg else ""
+
             out.append(
                 {
                     "id": sid,
                     "name": display,
                     "type": stype,
                     "participants": participants,
-                    "last_message_preview": previews.get(sid, ""),
+                    "last_message_preview": preview,
                     "last_active_time": space.get("lastActiveTime", ""),
                 }
             )
@@ -410,25 +464,29 @@ class GoogleChatBackend(ChatBackend):
         service = self._service()
         spaces = service.spaces().list(pageSize=100).execute().get("spaces", [])
         spaces.sort(key=lambda s: s.get("lastActiveTime") or "", reverse=True)
+        self_id = self._ensure_self_id()
+        cap = max(1, min(limit, 50))
 
-        # Filter to spaces with new activity since lastReadTime. Walk the
-        # sorted list and stop as soon as we have `limit` unread ones.
-        unread_spaces: list[dict] = []
-        read_times: dict[str, str] = {}
+        # Walk sorted spaces; for each, find the latest message from someone
+        # OTHER than self that's newer than the user's lastReadTime. A space
+        # only counts as unread if such a message exists — i.e. there's
+        # something from someone else for the user to actually read.
+        kept: list[tuple[dict, str, dict]] = []  # (space, last_read, msg)
         for space in spaces:
-            if len(unread_spaces) >= max(1, min(limit, 50)):
+            if len(kept) >= cap:
                 break
             last_active = space.get("lastActiveTime") or ""
             last_read = self._get_last_read_time(space["name"])
-            read_times[space["name"]] = last_read
-            if last_active and (not last_read or last_active > last_read):
-                unread_spaces.append(space)
+            if not last_active or (last_read and last_active <= last_read):
+                continue  # no activity at all since last read
+            msg = self._pick_unread_message(space["name"], self_id, last_read)
+            if msg is None:
+                continue  # only self-sent or already-read activity
+            kept.append((space, last_read, msg))
 
-        # Reuse the same enrichment as list_conversations: members + names +
-        # previews. Done here inline rather than calling list_conversations to
-        # avoid re-fetching/re-sorting everything.
+        # Fetch members for each surviving space.
         space_member_ids: dict[str, list[str]] = {}
-        for space in unread_spaces:
+        for space, _, _ in kept:
             sid = space["name"]
             try:
                 m = (
@@ -444,27 +502,16 @@ class GoogleChatBackend(ChatBackend):
             except Exception:  # noqa: BLE001
                 space_member_ids[sid] = []
 
-        self._resolve_names({uid for ids in space_member_ids.values() for uid in ids})
-        self_id = self._ensure_self_id()
-
-        previews: dict[str, str] = {}
-        for space in unread_spaces:
-            sid = space["name"]
-            try:
-                msgs = (
-                    service.spaces().messages()
-                    .list(parent=sid, pageSize=1, orderBy="createTime desc")
-                    .execute().get("messages", [])
-                )
-                text = (msgs[0].get("text", "") if msgs else "") or ""
-                if not text and msgs and msgs[0].get("attachment"):
-                    text = "[attachment]"
-                previews[sid] = text[: self._PREVIEW_MAX]
-            except Exception:  # noqa: BLE001
-                previews[sid] = ""
+        # Batch-resolve names for participants AND each message's sender.
+        all_uids: set[str] = {uid for ids in space_member_ids.values() for uid in ids}
+        for _, _, msg in kept:
+            uid = self._sender_uid(msg)
+            if uid:
+                all_uids.add(uid)
+        self._resolve_names(all_uids)
 
         out: list[dict] = []
-        for space in unread_spaces:
+        for space, last_read, msg in kept:
             sid = space["name"]
             stype = space.get("spaceType") or space.get("type", "SPACE")
             member_ids = space_member_ids.get(sid, [])
@@ -482,12 +529,16 @@ class GoogleChatBackend(ChatBackend):
                     display = ", ".join(others[:3]) + extra
                 else:
                     display = sid
+            preview = self._format_preview(
+                self._msg_text(msg), self._sender_uid(msg), self_id
+            )
             out.append({
                 "id": sid, "name": display, "type": stype,
                 "participants": participants,
-                "last_message_preview": previews.get(sid, ""),
+                "last_message_preview": preview,
                 "last_active_time": space.get("lastActiveTime", ""),
-                "last_read_time": read_times.get(sid, ""),
+                "last_read_time": last_read,
+                "latest_unread_at": msg.get("createTime", ""),
             })
         return out
 
