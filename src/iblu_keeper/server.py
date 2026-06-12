@@ -67,9 +67,16 @@ mcp = FastMCP(
 # Google Chat
 # --------------------------------------------------------------------------- #
 @mcp.tool(name="chat_list_conversations")
-def chat_list_conversations(query: str | None = None) -> list[dict]:
-    """List recent Chat conversations/spaces. Filter by a person's name via `query`."""
-    return chat_tools.list_conversations(query)
+def chat_list_conversations(
+    query: str | None = None, limit: int = 20
+) -> list[dict]:
+    """List recent Chat conversations/spaces, most recently active first.
+
+    Returns up to `limit` items (default 20, max 100). Filter by a person's
+    name via `query` (case-insensitive substring match on conversation name or
+    participants). Each item includes a `last_message_preview` snippet.
+    """
+    return chat_tools.list_conversations(query, limit)
 
 
 @mcp.tool(name="chat_get_messages")

@@ -36,6 +36,11 @@ SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/gmail.send",
     # Calendar — create/manage events.
     "https://www.googleapis.com/auth/calendar.events",
+    # People API — resolve Chat user IDs (users/<id>) to display names via the
+    # Workspace directory. Chat API never returns displayName under user OAuth,
+    # so we need a separate lookup. Domain coworkers only; external users may
+    # still return empty.
+    "https://www.googleapis.com/auth/directory.readonly",
 )
 
 _lock = threading.Lock()
