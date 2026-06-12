@@ -23,6 +23,12 @@ from datetime import datetime, timezone
 # Make the src/ package importable when run via `streamlit run dashboard/app.py`.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+# Google bundles previously-granted scopes when the same user signs in for a
+# narrower scope set, which makes requests-oauthlib's strict scope-equality
+# check raise. We only need openid+email here; the extra scopes are harmless,
+# so relax the check. Must be set BEFORE requests_oauthlib is imported.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
 import requests  # noqa: E402
 import streamlit as st  # noqa: E402
 
@@ -50,11 +56,18 @@ def _oauth_flow():
             "redirect_uris": [settings.dashboard_oauth_redirect_uri],
         }
     }
-    return Flow.from_client_config(
+    flow = Flow.from_client_config(
         client_config,
         scopes=["openid", "https://www.googleapis.com/auth/userinfo.email"],
         redirect_uri=settings.dashboard_oauth_redirect_uri,
     )
+    # google-auth-oauthlib 1.4+ enables PKCE by default, but we build a fresh
+    # Flow on each request — the verifier from the /authorize Flow is lost by
+    # the time the /token Flow tries to exchange. We have a confidential client
+    # (client_secret), so PKCE is optional; disable it to avoid the mismatch.
+    flow.autogenerate_code_verifier = False
+    flow.code_verifier = None
+    return flow
 
 
 def _userinfo(credentials) -> dict:
