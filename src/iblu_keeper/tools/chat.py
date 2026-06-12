@@ -52,6 +52,19 @@ class ChatBackend(abc.ABC):
     def send_message(self, conversation: str, text: str) -> dict:
         """Send a message. Returns {id, conversation, text, create_time}."""
 
+    @abc.abstractmethod
+    def list_unread(self, limit: int = 10) -> list[dict]:
+        """Conversations that have new messages since the user last read them.
+
+        Each item is the same shape as `list_conversations` (id, name, type,
+        participants, last_message_preview, last_active_time) with an added
+        `last_read_time` field for context.
+        """
+
+    @abc.abstractmethod
+    def mark_read(self, conversation: str) -> dict:
+        """Mark a Chat conversation as read up to now."""
+
 
 # --------------------------------------------------------------------------- #
 # Mock backend (dry-run / no credentials)
@@ -127,6 +140,19 @@ class MockChatBackend(ChatBackend):
             "text": text,
             "create_time": "2026-06-10T12:00:00Z",
             "mock": True,
+        }
+
+    def list_unread(self, limit: int = 10) -> list[dict]:
+        unread = [
+            {**c, "last_read_time": "2026-06-08T00:00:00Z"}
+            for c in self._CONVERSATIONS[:limit]
+        ]
+        return unread
+
+    def mark_read(self, conversation: str) -> dict:
+        return {
+            "conversation": conversation, "status": "read",
+            "last_read_time": "2026-06-10T12:00:00Z", "mock": True,
         }
 
 
@@ -364,6 +390,142 @@ class GoogleChatBackend(ChatBackend):
             )
         return out
 
+    def _get_last_read_time(self, conversation: str) -> str:
+        """Fetch the user's lastReadTime for a space (empty string on error)."""
+        from googleapiclient.errors import HttpError  # type: ignore
+
+        service = self._service()
+        try:
+            state = (
+                service.users()
+                .spaces()
+                .getSpaceReadState(name=f"users/me/{conversation}/spaceReadState")
+                .execute()
+            )
+            return state.get("lastReadTime", "") or ""
+        except HttpError:
+            return ""
+
+    def list_unread(self, limit: int = 10) -> list[dict]:
+        service = self._service()
+        spaces = service.spaces().list(pageSize=100).execute().get("spaces", [])
+        spaces.sort(key=lambda s: s.get("lastActiveTime") or "", reverse=True)
+
+        # Filter to spaces with new activity since lastReadTime. Walk the
+        # sorted list and stop as soon as we have `limit` unread ones.
+        unread_spaces: list[dict] = []
+        read_times: dict[str, str] = {}
+        for space in spaces:
+            if len(unread_spaces) >= max(1, min(limit, 50)):
+                break
+            last_active = space.get("lastActiveTime") or ""
+            last_read = self._get_last_read_time(space["name"])
+            read_times[space["name"]] = last_read
+            if last_active and (not last_read or last_active > last_read):
+                unread_spaces.append(space)
+
+        # Reuse the same enrichment as list_conversations: members + names +
+        # previews. Done here inline rather than calling list_conversations to
+        # avoid re-fetching/re-sorting everything.
+        space_member_ids: dict[str, list[str]] = {}
+        for space in unread_spaces:
+            sid = space["name"]
+            try:
+                m = (
+                    service.spaces().members()
+                    .list(parent=sid, pageSize=50).execute()
+                )
+                ids = []
+                for mem in m.get("memberships", []):
+                    member_name = mem.get("member", {}).get("name", "")
+                    if member_name.startswith("users/"):
+                        ids.append(member_name.removeprefix("users/"))
+                space_member_ids[sid] = ids
+            except Exception:  # noqa: BLE001
+                space_member_ids[sid] = []
+
+        self._resolve_names({uid for ids in space_member_ids.values() for uid in ids})
+        self_id = self._ensure_self_id()
+
+        previews: dict[str, str] = {}
+        for space in unread_spaces:
+            sid = space["name"]
+            try:
+                msgs = (
+                    service.spaces().messages()
+                    .list(parent=sid, pageSize=1, orderBy="createTime desc")
+                    .execute().get("messages", [])
+                )
+                text = (msgs[0].get("text", "") if msgs else "") or ""
+                if not text and msgs and msgs[0].get("attachment"):
+                    text = "[attachment]"
+                previews[sid] = text[: self._PREVIEW_MAX]
+            except Exception:  # noqa: BLE001
+                previews[sid] = ""
+
+        out: list[dict] = []
+        for space in unread_spaces:
+            sid = space["name"]
+            stype = space.get("spaceType") or space.get("type", "SPACE")
+            member_ids = space_member_ids.get(sid, [])
+            participants = [self._label(uid) for uid in member_ids]
+            display = space.get("displayName", "") or ""
+            if not display:
+                others = [
+                    self._label(uid) for uid in member_ids
+                    if not self_id or uid != self_id
+                ]
+                if stype == "DIRECT_MESSAGE" and others:
+                    display = others[0]
+                elif others:
+                    extra = "" if len(others) <= 3 else f" +{len(others)-3} more"
+                    display = ", ".join(others[:3]) + extra
+                else:
+                    display = sid
+            out.append({
+                "id": sid, "name": display, "type": stype,
+                "participants": participants,
+                "last_message_preview": previews.get(sid, ""),
+                "last_active_time": space.get("lastActiveTime", ""),
+                "last_read_time": read_times.get(sid, ""),
+            })
+        return out
+
+    def mark_read(self, conversation: str) -> dict:
+        """Update spaceReadState.lastReadTime to NOW.
+
+        Google clamps lastReadTime to the latest message createTime, so this
+        effectively marks "everything visible right now" as read.
+        """
+        import datetime
+
+        from googleapiclient.errors import HttpError  # type: ignore
+
+        service = self._service()
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        )
+        try:
+            updated = (
+                service.users()
+                .spaces()
+                .updateSpaceReadState(
+                    name=f"users/me/{conversation}/spaceReadState",
+                    updateMask="lastReadTime",
+                    body={"lastReadTime": now},
+                )
+                .execute()
+            )
+            return {
+                "conversation": conversation, "status": "read",
+                "last_read_time": updated.get("lastReadTime", now),
+            }
+        except HttpError as exc:
+            return {
+                "conversation": conversation, "status": "error",
+                "error": str(exc),
+            }
+
     def send_message(self, conversation: str, text: str) -> dict:
         service = self._service()
         msg = (
@@ -414,3 +576,11 @@ def send_message(conversation: str, text: str) -> dict:
 def draft_message(conversation: str, text: str) -> dict:
     """Store a chat draft locally for review in the dashboard (does not send)."""
     return drafts.add_draft("chat", {"conversation": conversation, "text": text})
+
+
+def list_unread(limit: int = 10) -> list[dict]:
+    return get_backend().list_unread(limit)
+
+
+def mark_read(conversation: str) -> dict:
+    return get_backend().mark_read(conversation)

@@ -164,3 +164,111 @@ def send_email(to: str, subject: str, body: str) -> dict:
         .execute()
     )
     return {"id": sent.get("id"), "to": to, "subject": subject, "status": "sent"}
+
+
+# --------------------------------------------------------------------------- #
+# Read / unread + reply tools (added for voice-style workflows)
+# --------------------------------------------------------------------------- #
+def list_unread(limit: int = 10, query: str | None = None) -> list[dict]:
+    """List unread emails, newest first.
+
+    `query` adds an additional filter (Gmail search syntax, e.g. 'from:bob'
+    or 'in:inbox'). The 'is:unread' filter is always applied.
+    """
+    q = "is:unread" + (f" {query}" if query else "")
+    return search(q, limit=limit)
+
+
+def mark_read(message_id: str) -> dict:
+    """Remove the UNREAD label from a message (i.e. mark it as read)."""
+    if settings.use_mock:
+        return {"id": message_id, "status": "read", "mock": True}
+    service = _service()
+    res = (
+        service.users()
+        .messages()
+        .modify(
+            userId="me", id=message_id,
+            body={"removeLabelIds": ["UNREAD"]},
+        )
+        .execute()
+    )
+    return {"id": res.get("id", message_id), "status": "read", "labels": res.get("labelIds", [])}
+
+
+def mark_unread(message_id: str) -> dict:
+    """Add the UNREAD label to a message (i.e. mark it as unread)."""
+    if settings.use_mock:
+        return {"id": message_id, "status": "unread", "mock": True}
+    service = _service()
+    res = (
+        service.users()
+        .messages()
+        .modify(
+            userId="me", id=message_id,
+            body={"addLabelIds": ["UNREAD"]},
+        )
+        .execute()
+    )
+    return {"id": res.get("id", message_id), "status": "unread", "labels": res.get("labelIds", [])}
+
+
+def reply(message_id: str, body: str, send: bool = True) -> dict:
+    """Reply to a Gmail message, properly threaded.
+
+    Looks up the original message's From/Subject/Message-Id/References headers,
+    composes a threaded reply, and either sends it (`send=True`) or saves it
+    as a draft (`send=False`). The recipient is taken from the original
+    message's `Reply-To` if present, else `From`.
+    """
+    if settings.use_mock:
+        return {
+            "id": "MOCK_REPLY", "in_reply_to": message_id,
+            "status": "sent" if send else "draft", "mock": True,
+        }
+
+    service = _service()
+    original = (
+        service.users()
+        .messages()
+        .get(
+            userId="me", id=message_id, format="metadata",
+            metadataHeaders=["From", "Reply-To", "To", "Subject", "Message-ID", "References"],
+        )
+        .execute()
+    )
+    thread_id = original.get("threadId")
+    headers = {h["name"]: h["value"] for h in original.get("payload", {}).get("headers", [])}
+
+    reply_to = headers.get("Reply-To") or headers.get("From") or ""
+    subject = headers.get("Subject", "")
+    if subject and not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+
+    msg = EmailMessage()
+    msg["To"] = reply_to
+    msg["From"] = settings.google_user_email
+    msg["Subject"] = subject
+    original_mid = headers.get("Message-ID") or headers.get("Message-Id")
+    if original_mid:
+        msg["In-Reply-To"] = original_mid
+        # References should chain: existing References + original Message-ID.
+        existing_refs = headers.get("References", "").strip()
+        msg["References"] = (existing_refs + " " + original_mid).strip()
+    msg.set_content(body)
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+
+    body_payload = {"raw": raw, "threadId": thread_id}
+    if send:
+        result = service.users().messages().send(userId="me", body=body_payload).execute()
+        return {
+            "id": result.get("id"), "thread_id": thread_id,
+            "to": reply_to, "subject": subject, "status": "sent",
+        }
+    drafted = (
+        service.users().drafts().create(userId="me", body={"message": body_payload}).execute()
+    )
+    return {
+        "id": drafted.get("id"), "thread_id": thread_id,
+        "to": reply_to, "subject": subject, "status": "draft",
+    }

@@ -97,6 +97,23 @@ def chat_draft_message(conversation: str, text: str) -> dict:
     return chat_tools.draft_message(conversation, text)
 
 
+@mcp.tool(name="chat_list_unread")
+def chat_list_unread(limit: int = 10) -> list[dict]:
+    """List Chat conversations with new (unread) messages, most recent first.
+
+    Returns up to `limit` items with the latest message preview, suitable for
+    reading aloud. Each item includes `last_active_time` and `last_read_time`
+    so the caller can tell what's actually new.
+    """
+    return chat_tools.list_unread(limit)
+
+
+@mcp.tool(name="chat_mark_read")
+def chat_mark_read(conversation: str) -> dict:
+    """Mark a Chat conversation as read up to now (sets lastReadTime=now)."""
+    return chat_tools.mark_read(conversation)
+
+
 # --------------------------------------------------------------------------- #
 # Gmail
 # --------------------------------------------------------------------------- #
@@ -122,6 +139,41 @@ def gmail_draft_email(to: str, subject: str, body: str) -> dict:
 def gmail_send_email(to: str, subject: str, body: str) -> dict:
     """Send an email immediately."""
     return gmail_tools.send_email(to, subject, body)
+
+
+@mcp.tool(name="gmail_list_unread")
+def gmail_list_unread(limit: int = 10, query: str | None = None) -> list[dict]:
+    """List unread emails, newest first.
+
+    Optional `query` is appended to `is:unread` (Gmail search syntax — e.g.
+    'in:inbox', 'from:boss@example.com'). Returns lightweight summaries (id,
+    thread_id, from, subject, snippet, date) suitable for reading aloud.
+    """
+    return gmail_tools.list_unread(limit, query)
+
+
+@mcp.tool(name="gmail_mark_read")
+def gmail_mark_read(message_id: str) -> dict:
+    """Mark a Gmail message as read (removes the UNREAD label)."""
+    return gmail_tools.mark_read(message_id)
+
+
+@mcp.tool(name="gmail_mark_unread")
+def gmail_mark_unread(message_id: str) -> dict:
+    """Mark a Gmail message as unread (adds the UNREAD label)."""
+    return gmail_tools.mark_unread(message_id)
+
+
+@mcp.tool(name="gmail_reply")
+def gmail_reply(message_id: str, body: str, send: bool = True) -> dict:
+    """Reply to a Gmail message, properly threaded.
+
+    Looks up the original message's headers and composes a threaded reply
+    addressed to the original sender (Reply-To if present, else From). If
+    `send=True` (default) the reply is sent; otherwise saved as a draft.
+    Use this when the user wants to "reply to" or "respond to" an email.
+    """
+    return gmail_tools.reply(message_id, body, send)
 
 
 # --------------------------------------------------------------------------- #

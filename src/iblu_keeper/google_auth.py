@@ -27,10 +27,12 @@ SCOPES: tuple[str, ...] = (
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     # Google Chat — read spaces/messages, read memberships (to name DMs by
-    # person), and send messages as the user.
+    # person), send messages as the user, and read/update per-space read state
+    # (which messages the user has already seen).
     "https://www.googleapis.com/auth/chat.spaces.readonly",
     "https://www.googleapis.com/auth/chat.memberships.readonly",
     "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/chat.users.readstate",
     # Gmail — read/draft (modify) and send.
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
