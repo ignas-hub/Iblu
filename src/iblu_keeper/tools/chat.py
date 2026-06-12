@@ -17,6 +17,7 @@ Conversations are searched/identified primarily by the participant's name.
 from __future__ import annotations
 
 import abc
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 
 from ..config import settings
@@ -312,8 +313,7 @@ class GoogleChatBackend(ChatBackend):
     def list_conversations(
         self, query: str | None = None, limit: int = 20
     ) -> list[dict]:
-        service = self._service()
-        spaces = service.spaces().list(pageSize=100).execute().get("spaces", [])
+        spaces = self._service().spaces().list(pageSize=100).execute().get("spaces", [])
 
         # Sort by lastActiveTime descending (None → end). Chat API does not
         # support `orderBy` on spaces.list, so we sort client-side.
@@ -321,35 +321,27 @@ class GoogleChatBackend(ChatBackend):
         cap = max(1, min(limit, 100))
         spaces = spaces[:cap]
 
-        # Fetch members for each space (one call each). Stripped to raw IDs.
+        # Fetch members + latest message for each space in parallel — these
+        # are all independent HTTP calls.
         space_member_ids: dict[str, list[str]] = {}
-        for space in spaces:
-            sid = space["name"]
-            try:
-                m = (
-                    service.spaces()
-                    .members()
-                    .list(parent=sid, pageSize=50)
-                    .execute()
-                )
-                ids = []
-                for mem in m.get("memberships", []):
-                    member_name = mem.get("member", {}).get("name", "")
-                    if member_name.startswith("users/"):
-                        ids.append(member_name.removeprefix("users/"))
-                space_member_ids[sid] = ids
-            except Exception:  # noqa: BLE001 - membership listing may be restricted
-                space_member_ids[sid] = []
-
-        # Fetch the most recent message per space (just the latest one — the
-        # preview honestly reflects "what's the last thing said here", even if
-        # it's the user's own message; the sender is attributed below).
         latest_msgs: dict[str, dict] = {}
-        for space in spaces:
-            sid = space["name"]
-            msgs = self._latest_message(sid, look_back=1)
-            if msgs:
-                latest_msgs[sid] = msgs[0]
+        with ThreadPoolExecutor(max_workers=20) as ex:
+            mem_futs = {ex.submit(self._fetch_members, s["name"]): s for s in spaces}
+            msg_futs = {ex.submit(self._latest_message, s["name"], 1): s for s in spaces}
+            for fut in as_completed(mem_futs):
+                s = mem_futs[fut]
+                try:
+                    space_member_ids[s["name"]] = fut.result()
+                except Exception:  # noqa: BLE001
+                    space_member_ids[s["name"]] = []
+            for fut in as_completed(msg_futs):
+                s = msg_futs[fut]
+                try:
+                    msgs = fut.result()
+                    if msgs:
+                        latest_msgs[s["name"]] = msgs[0]
+                except Exception:  # noqa: BLE001
+                    pass
 
         # Resolve names for participants AND the senders of the latest messages,
         # in one People API batch.
@@ -460,47 +452,75 @@ class GoogleChatBackend(ChatBackend):
         except HttpError:
             return ""
 
-    def list_unread(self, limit: int = 10) -> list[dict]:
+    def _fetch_members(self, conversation: str) -> list[str]:
         service = self._service()
-        spaces = service.spaces().list(pageSize=100).execute().get("spaces", [])
+        try:
+            m = (
+                service.spaces().members()
+                .list(parent=conversation, pageSize=50).execute()
+            )
+            ids = []
+            for mem in m.get("memberships", []):
+                member_name = mem.get("member", {}).get("name", "")
+                if member_name.startswith("users/"):
+                    ids.append(member_name.removeprefix("users/"))
+            return ids
+        except Exception:  # noqa: BLE001
+            return []
+
+    def list_unread(self, limit: int = 10) -> list[dict]:
+        spaces = self._service().spaces().list(pageSize=100).execute().get("spaces", [])
         spaces.sort(key=lambda s: s.get("lastActiveTime") or "", reverse=True)
         self_id = self._ensure_self_id()
         cap = max(1, min(limit, 50))
 
-        # Walk sorted spaces; for each, find the latest message from someone
-        # OTHER than self that's newer than the user's lastReadTime. A space
-        # only counts as unread if such a message exists — i.e. there's
-        # something from someone else for the user to actually read.
-        kept: list[tuple[dict, str, dict]] = []  # (space, last_read, msg)
-        for space in spaces:
-            if len(kept) >= cap:
-                break
-            last_active = space.get("lastActiveTime") or ""
-            last_read = self._get_last_read_time(space["name"])
-            if not last_active or (last_read and last_active <= last_read):
-                continue  # no activity at all since last read
-            msg = self._pick_unread_message(space["name"], self_id, last_read)
-            if msg is None:
-                continue  # only self-sent or already-read activity
-            kept.append((space, last_read, msg))
-
-        # Fetch members for each surviving space.
-        space_member_ids: dict[str, list[str]] = {}
-        for space, _, _ in kept:
+        # For each space, fetch its lastReadTime + (if newer activity exists)
+        # the latest message from someone other than self. Run these in
+        # parallel — they're all independent HTTP calls. Batch + early-exit:
+        # once we have `cap` unread spaces, stop launching more batches.
+        def probe(space: dict):
             sid = space["name"]
-            try:
-                m = (
-                    service.spaces().members()
-                    .list(parent=sid, pageSize=50).execute()
-                )
-                ids = []
-                for mem in m.get("memberships", []):
-                    member_name = mem.get("member", {}).get("name", "")
-                    if member_name.startswith("users/"):
-                        ids.append(member_name.removeprefix("users/"))
-                space_member_ids[sid] = ids
-            except Exception:  # noqa: BLE001
-                space_member_ids[sid] = []
+            last_active = space.get("lastActiveTime") or ""
+            last_read = self._get_last_read_time(sid)
+            if not last_active or (last_read and last_active <= last_read):
+                return (space, last_read, None)
+            msg = self._pick_unread_message(sid, self_id, last_read)
+            return (space, last_read, msg)
+
+        # Only scan the top-N most recently-active spaces — anything older
+        # than that almost certainly has no unread. Generous cap (60) so
+        # we don't miss a buried unread, but not so much we fan out to
+        # everything.
+        scan = spaces[: max(60, cap * 10)]
+        results_by_space: dict[str, tuple[dict, str, dict | None]] = {}
+        with ThreadPoolExecutor(max_workers=30) as ex:
+            futures = {ex.submit(probe, s): s for s in scan}
+            for fut in as_completed(futures):
+                s = futures[fut]
+                try:
+                    results_by_space[s["name"]] = fut.result()
+                except Exception:  # noqa: BLE001
+                    results_by_space[s["name"]] = (s, "", None)
+
+        # Walk in original sorted order to keep most-recent-first.
+        kept: list[tuple[dict, str, dict]] = []
+        for s in scan:
+            r = results_by_space.get(s["name"])
+            if r and r[2] is not None:
+                kept.append(r)  # type: ignore[arg-type]
+                if len(kept) >= cap:
+                    break
+
+        # Fetch members for each surviving space — also in parallel.
+        space_member_ids: dict[str, list[str]] = {}
+        with ThreadPoolExecutor(max_workers=20) as ex:
+            futures = {ex.submit(self._fetch_members, s["name"]): s for s, _, _ in kept}
+            for fut in as_completed(futures):
+                s = futures[fut]
+                try:
+                    space_member_ids[s["name"]] = fut.result()
+                except Exception:  # noqa: BLE001
+                    space_member_ids[s["name"]] = []
 
         # Batch-resolve names for participants AND each message's sender.
         all_uids: set[str] = {uid for ids in space_member_ids.values() for uid in ids}

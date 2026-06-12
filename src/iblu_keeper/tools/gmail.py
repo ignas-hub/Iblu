@@ -213,6 +213,238 @@ def mark_unread(message_id: str) -> dict:
     return {"id": res.get("id", message_id), "status": "unread", "labels": res.get("labelIds", [])}
 
 
+def _walk_parts(payload: dict):
+    """Yield every part in a Gmail payload (depth-first)."""
+    yield payload
+    for part in payload.get("parts", []) or []:
+        yield from _walk_parts(part)
+
+
+def list_attachments(message_id: str) -> list[dict]:
+    """List the attachments of a Gmail message (filename, size, MIME type, id).
+
+    Returns lightweight metadata only — use `read_attachment` to fetch and
+    extract the content of one.
+    """
+    if settings.use_mock:
+        return [{
+            "attachment_id": "MOCK_ATT_1", "filename": "mock-contract.pdf",
+            "mime_type": "application/pdf", "size_bytes": 12345,
+        }]
+    service = _service()
+    full = (
+        service.users().messages()
+        .get(userId="me", id=message_id, format="full").execute()
+    )
+    out: list[dict] = []
+    for part in _walk_parts(full.get("payload", {})):
+        body = part.get("body", {}) or {}
+        att_id = body.get("attachmentId")
+        if not att_id:
+            continue
+        out.append({
+            "attachment_id": att_id,
+            "filename": part.get("filename") or "",
+            "mime_type": part.get("mimeType") or "",
+            "size_bytes": body.get("size", 0),
+        })
+    return out
+
+
+def _extract_pdf_text(data: bytes, max_chars: int) -> str:
+    """Extract plain text from a PDF byte string (up to `max_chars`)."""
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception:  # noqa: BLE001
+        return "(pypdf not installed — install pypdf to read PDF attachments)"
+    import io
+    try:
+        reader = PdfReader(io.BytesIO(data))
+    except Exception as exc:  # noqa: BLE001
+        return f"(PDF parse error: {exc})"
+    out = []
+    total = 0
+    for page in reader.pages:
+        try:
+            txt = page.extract_text() or ""
+        except Exception:  # noqa: BLE001
+            txt = ""
+        if not txt:
+            continue
+        out.append(txt)
+        total += len(txt)
+        if total >= max_chars:
+            break
+    return ("\n\n".join(out))[:max_chars]
+
+
+def _extract_docx_text(data: bytes, max_chars: int) -> str:
+    """Best-effort DOCX text extraction without a heavy dependency."""
+    import io
+    import re
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            with z.open("word/document.xml") as f:
+                xml = f.read().decode("utf-8", errors="replace")
+    except Exception as exc:  # noqa: BLE001
+        return f"(DOCX parse error: {exc})"
+    text = re.sub(r"<[^>]+>", " ", xml)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_chars]
+
+
+def _sniff_mime(data: bytes) -> str:
+    """Best-effort MIME detection from leading bytes."""
+    if data[:4] == b"%PDF":
+        return "application/pdf"
+    if data[:2] == b"PK":  # ZIP container — DOCX/XLSX/PPTX/ODT
+        # Peek for the DOCX-specific path inside the zip
+        if b"word/document.xml" in data[:4096]:
+            return (
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            )
+        return "application/zip"
+    try:
+        data[:512].decode("utf-8")
+        return "text/plain"
+    except UnicodeDecodeError:
+        return "application/octet-stream"
+
+
+def read_attachment(
+    message_id: str, attachment_id: str, max_chars: int = 12000
+) -> dict:
+    """Fetch a Gmail attachment and extract its content as text.
+
+    Supports PDF (via pypdf), DOCX (lightweight XML extract), and any text/*
+    MIME type. Returns {filename, mime_type, size_bytes, text, truncated}.
+    For binary attachments we can't parse, `text` is empty and `note` explains.
+    """
+    if settings.use_mock:
+        return {
+            "filename": "mock.pdf", "mime_type": "application/pdf",
+            "size_bytes": 1234, "text": "Mock PDF content...",
+            "truncated": False, "mock": True,
+        }
+
+    service = _service()
+
+    # Download the attachment bytes first. The attachmentId field is the
+    # primary key for this operation; the metadata-lookup below is for
+    # filename + mime_type display only (Gmail can regenerate attachmentIds
+    # between message.get calls, so we sniff bytes as a fallback).
+    att = (
+        service.users().messages().attachments()
+        .get(userId="me", messageId=message_id, id=attachment_id).execute()
+    )
+    data = base64.urlsafe_b64decode(att.get("data", ""))
+
+    # Try to find the part for filename + mime_type — may miss if Gmail
+    # rotated the attachment IDs between calls.
+    filename = ""
+    mime_type = ""
+    full = (
+        service.users().messages()
+        .get(userId="me", id=message_id, format="full").execute()
+    )
+    target_part = None
+    for part in _walk_parts(full.get("payload", {})):
+        body = part.get("body", {}) or {}
+        if body.get("attachmentId") == attachment_id:
+            target_part = part
+            break
+        # Fallback: match by size (Gmail attachment size doesn't change).
+        if body.get("size") == len(data) and part.get("filename"):
+            target_part = part
+            # Don't break — a direct attachmentId match would override
+    if target_part is not None:
+        filename = target_part.get("filename") or ""
+        mime_type = target_part.get("mimeType") or ""
+    if not mime_type:
+        mime_type = _sniff_mime(data)
+
+    text = ""
+    note = ""
+    if mime_type == "application/pdf" or filename.lower().endswith(".pdf"):
+        text = _extract_pdf_text(data, max_chars)
+    elif mime_type.startswith("text/"):
+        text = data.decode("utf-8", errors="replace")[:max_chars]
+    elif (
+        mime_type
+        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        or filename.lower().endswith(".docx")
+    ):
+        text = _extract_docx_text(data, max_chars)
+    else:
+        note = f"Unsupported MIME type for inline text: {mime_type}"
+
+    return {
+        "filename": filename,
+        "mime_type": mime_type,
+        "size_bytes": len(data),
+        "text": text,
+        "truncated": len(text) >= max_chars,
+        **({"note": note} if note else {}),
+    }
+
+
+_GDOC_URL_RE = None
+
+
+def _gdoc_id(url_or_id: str) -> str:
+    """Extract a Google Docs file ID from a URL, or return as-is if already an ID."""
+    import re
+    global _GDOC_URL_RE
+    if _GDOC_URL_RE is None:
+        _GDOC_URL_RE = re.compile(
+            r"docs\.google\.com/(?:document|spreadsheets|presentation)/d/([a-zA-Z0-9_-]+)"
+        )
+    m = _GDOC_URL_RE.search(url_or_id)
+    if m:
+        return m.group(1)
+    # Already a file ID? Accept any URL-safe-looking string.
+    return url_or_id.strip()
+
+
+def read_gdoc(url_or_id: str, max_chars: int = 20000) -> dict:
+    """Fetch a Google Doc (or Sheet/Slides) as plain text via Drive Export.
+
+    Accepts either a full sharing URL (e.g. https://docs.google.com/document/d/<ID>/edit)
+    or a raw file ID. For Docs we export as text/plain; for Sheets we use CSV;
+    for Slides we fall back to text/plain.
+    """
+    file_id = _gdoc_id(url_or_id)
+    if settings.use_mock:
+        return {
+            "file_id": file_id, "name": "Mock Doc", "text": "Mock document content.",
+            "truncated": False, "mock": True,
+        }
+
+    from ..google_auth import build_service
+
+    drive = build_service("drive", "v3")
+    meta = drive.files().get(fileId=file_id, fields="id,name,mimeType").execute()
+    mime = meta.get("mimeType", "")
+    if mime == "application/vnd.google-apps.spreadsheet":
+        export_mime = "text/csv"
+    else:
+        export_mime = "text/plain"
+    raw = drive.files().export(fileId=file_id, mimeType=export_mime).execute()
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8-sig", errors="replace")  # strip UTF-8 BOM if present
+    else:
+        text = str(raw)
+    return {
+        "file_id": file_id,
+        "name": meta.get("name", ""),
+        "mime_type": mime,
+        "text": text[:max_chars],
+        "truncated": len(text) > max_chars,
+    }
+
+
 def reply(message_id: str, body: str, send: bool = True) -> dict:
     """Reply to a Gmail message, properly threaded.
 

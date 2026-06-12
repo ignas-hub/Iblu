@@ -176,6 +176,35 @@ def gmail_reply(message_id: str, body: str, send: bool = True) -> dict:
     return gmail_tools.reply(message_id, body, send)
 
 
+@mcp.tool(name="gmail_list_attachments")
+def gmail_list_attachments(message_id: str) -> list[dict]:
+    """List the attachments of a Gmail message (id, filename, mime_type, size)."""
+    return gmail_tools.list_attachments(message_id)
+
+
+@mcp.tool(name="gmail_read_attachment")
+def gmail_read_attachment(
+    message_id: str, attachment_id: str, max_chars: int = 12000
+) -> dict:
+    """Download a Gmail attachment and return its text content.
+
+    Supports PDF, DOCX, and plain-text MIME types. Use this when the user
+    asks to "read", "open", "summarize", or "check" an email attachment.
+    """
+    return gmail_tools.read_attachment(message_id, attachment_id, max_chars)
+
+
+@mcp.tool(name="gdoc_read")
+def gdoc_read(url_or_id: str, max_chars: int = 20000) -> dict:
+    """Fetch a Google Doc, Sheet, or Slides file as plain text.
+
+    Accepts either a sharing URL (https://docs.google.com/document/d/<ID>/...)
+    or a raw file ID. Use this when an email contains a Google Docs/Sheets
+    link the user wants to read or summarize.
+    """
+    return gmail_tools.read_gdoc(url_or_id, max_chars)
+
+
 # --------------------------------------------------------------------------- #
 # Calendar
 # --------------------------------------------------------------------------- #

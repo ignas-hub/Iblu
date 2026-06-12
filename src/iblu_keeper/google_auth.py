@@ -43,6 +43,11 @@ SCOPES: tuple[str, ...] = (
     # so we need a separate lookup. Domain coworkers only; external users may
     # still return empty.
     "https://www.googleapis.com/auth/directory.readonly",
+    # Drive — read Google Docs / Sheets / Slides via Drive Export so the
+    # gdoc_read tool can fetch shared links the user gets in email.
+    # Full drive scope (not drive.readonly) because that's what the existing
+    # OAuth grant has; switching to drive.readonly would require re-consent.
+    "https://www.googleapis.com/auth/drive",
 )
 
 _lock = threading.Lock()
