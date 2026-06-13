@@ -16,6 +16,7 @@ just because no token exists yet (important for dry-run development).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from typing import Sequence
@@ -49,6 +50,8 @@ SCOPES: tuple[str, ...] = (
     # OAuth grant has; switching to drive.readonly would require re-consent.
     "https://www.googleapis.com/auth/drive",
 )
+
+logger = logging.getLogger("iblu_keeper.google_auth")
 
 _lock = threading.Lock()
 _cached_creds = None
@@ -99,16 +102,31 @@ def _load_credentials():
 
     with open(path, "r", encoding="utf-8") as fh:
         info = json.load(fh)
-    # Ensure client id/secret are present so refresh works even if the saved
-    # token file omitted them.
-    info.setdefault("client_id", settings.google_oauth_client_id)
-    info.setdefault("client_secret", settings.google_oauth_client_secret)
+    # The .env client id/secret are the source of truth — OVERRIDE whatever is
+    # baked into the token file. This lets a ROTATED client secret be picked up
+    # by updating .env alone (refresh tokens survive secret rotation; they're
+    # tied to the client_id, not the secret), without re-running consent. Using
+    # setdefault here previously caused stale-secret `invalid_client` refresh
+    # failures after a secret rotation.
+    if settings.google_oauth_client_id:
+        info["client_id"] = settings.google_oauth_client_id
+    if settings.google_oauth_client_secret:
+        info["client_secret"] = settings.google_oauth_client_secret
     info.setdefault("token_uri", "https://oauth2.googleapis.com/token")
 
     creds = Credentials.from_authorized_user_info(info, list(SCOPES))
     if not creds.valid:
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Google token refresh FAILED: %s", exc)
+                raise CredentialsUnavailable(
+                    f"Google token refresh failed: {exc}. If the OAuth client "
+                    "secret was rotated, update GOOGLE_OAUTH_CLIENT_SECRET in "
+                    ".env; otherwise re-run `python scripts/connect_google.py`."
+                ) from exc
+            logger.info("Google token refreshed successfully.")
             _save_token(creds)
         else:
             raise CredentialsUnavailable(
@@ -116,6 +134,26 @@ def _load_credentials():
                 "Re-run `python scripts/connect_google.py`."
             )
     return creds
+
+
+def auth_status() -> dict:
+    """Probe whether live Google credentials currently work.
+
+    Returns {"ok": bool, "account": str|None, "error": str|None}. Safe to call
+    from the health endpoint — it triggers a token refresh if needed but does
+    not raise.
+    """
+    if settings.dry_run:
+        return {"ok": False, "account": None, "error": "DRY_RUN is enabled (mock mode)"}
+    if not settings.has_google_credentials:
+        return {"ok": False, "account": None,
+                "error": "No OAuth client configured or token file missing"}
+    try:
+        creds = get_credentials()
+        return {"ok": bool(creds and creds.valid),
+                "account": settings.google_user_email, "error": None}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "account": None, "error": str(exc)}
 
 
 def get_credentials(scopes: Sequence[str] | None = None):  # noqa: ARG001

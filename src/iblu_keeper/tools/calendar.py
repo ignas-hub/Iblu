@@ -6,7 +6,11 @@ deterministic mock confirmation.
 
 from __future__ import annotations
 
+import logging
+
 from ..config import settings
+
+logger = logging.getLogger("iblu_keeper.tools.calendar")
 
 
 def _service():
@@ -27,14 +31,17 @@ def create_event(
     Returns {id, html_link, title, start, end}.
     """
     if settings.use_mock:
+        logger.warning("MOCK create_event '%s' — NOT actually created (DRY_RUN).", title)
         return {
+            "_mock": True,
             "id": "MOCK_EVENT_1",
             "html_link": "https://calendar.google.com/event?eid=MOCK",
             "title": title,
             "start": start,
             "end": end,
             "description": description or "",
-            "mock": True,
+            "status": "not_created_mock",
+            "note": "MOCK MODE — event was NOT created. Set DRY_RUN=false.",
         }
 
     service = _service()
@@ -47,6 +54,7 @@ def create_event(
         body["description"] = description
 
     event = service.events().insert(calendarId="primary", body=body).execute()
+    logger.info("create_event '%s' created (id=%s)", title, event.get("id"))
     return {
         "id": event.get("id"),
         "html_link": event.get("htmlLink"),

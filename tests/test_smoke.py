@@ -15,8 +15,24 @@ from iblu_keeper.tools import context as context_tools  # noqa: E402
 from iblu_keeper.tools import gmail as gmail_tools  # noqa: E402
 
 
-def test_mock_mode_active_without_credentials():
+def test_mock_mode_only_when_dry_run():
+    # Mock mode is driven SOLELY by DRY_RUN (set true at module top), never a
+    # silent fallback when credentials are missing.
     assert settings.use_mock is True
+    assert settings.dry_run is True
+
+
+def test_no_silent_mock_when_misconfigured(monkeypatch):
+    """If DRY_RUN=false but no token, the server must NOT silently mock."""
+    from iblu_keeper.config import Settings
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "x")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "y")
+    monkeypatch.setenv("GOOGLE_OAUTH_TOKEN_FILE", "/nonexistent/iblu/token.json")
+    s = Settings()
+    assert s.use_mock is False          # not mocking
+    assert s.misconfigured_live is True  # flagged as broken, will fail loudly
 
 
 def test_chat_list_and_messages():
@@ -41,7 +57,8 @@ def test_chat_search_by_name():
 
 def test_chat_send_is_mocked():
     out = chat_tools.send_message("spaces/MOCK_AAAA", "hi")
-    assert out.get("mock") is True
+    assert out.get("_mock") is True
+    assert out["status"] == "not_sent_mock"  # no false-positive "sent"
 
 
 def test_chat_draft_persisted():
@@ -58,12 +75,20 @@ def test_gmail_search_and_get():
 
 def test_gmail_send_is_mocked():
     out = gmail_tools.send_email("a@b.com", "subj", "body")
-    assert out["status"] == "sent" and out.get("mock") is True
+    # Mock send must NOT claim it was sent — that was the false-positive bug.
+    assert out.get("_mock") is True and out["status"] == "not_sent_mock"
+
+
+def test_gmail_search_mock_is_flagged():
+    # Mock search results must be clearly tagged so they can't be mistaken for live.
+    for m in gmail_tools.search("anything"):
+        assert m.get("_mock") is True
 
 
 def test_calendar_create_is_mocked():
     out = calendar_tools.create_event("t", "2026-06-11T14:00:00+03:00", "2026-06-11T14:30:00+03:00")
-    assert out.get("mock") is True and out["title"] == "t"
+    assert out.get("_mock") is True and out["title"] == "t"
+    assert out["status"] == "not_created_mock"
 
 
 def test_context_stubs():

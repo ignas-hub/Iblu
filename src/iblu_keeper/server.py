@@ -237,16 +237,31 @@ def context_get_summary(window: str = "1d") -> dict:
 # Health endpoint (unauthenticated) — used by the dashboard status page
 # --------------------------------------------------------------------------- #
 @mcp.custom_route("/health", methods=["GET"])
-async def health(_request: Request) -> JSONResponse:
-    return JSONResponse(
-        {
-            "status": "ok",
-            "service": "iblu-keeper",
-            "mode": "mock" if settings.use_mock else "live",
-            "dry_run": settings.dry_run,
-            "has_google_credentials": settings.has_google_credentials,
-        }
-    )
+async def health(request: Request) -> JSONResponse:
+    """Health + mode. Add ?probe=1 to actively verify live Google credentials.
+
+    Without probe, this is cheap (safe for frequent polling). With probe, it
+    refreshes the token so you can see immediately whether the server is truly
+    able to reach Google as the right account (catches expired/rotated creds).
+    """
+    body = {
+        "status": "ok",
+        "service": "iblu-keeper",
+        "mode": "mock" if settings.use_mock else "live",
+        "dry_run": settings.dry_run,
+        "has_google_credentials": settings.has_google_credentials,
+        "misconfigured_live": settings.misconfigured_live,
+    }
+    if settings.misconfigured_live:
+        body["warning"] = (
+            "DRY_RUN is false but no usable Google token is present — live tool "
+            "calls will FAIL (this is intentional: no silent fake data)."
+        )
+    if request.query_params.get("probe"):
+        from .google_auth import auth_status
+
+        body["auth"] = auth_status()
+    return JSONResponse(body)
 
 
 @mcp.custom_route("/", methods=["GET"])
@@ -268,10 +283,27 @@ def main() -> None:
 
     if settings.use_mock:
         logger.warning(
-            "Running in MOCK mode (dry_run=%s, has_creds=%s). Tools return fake data.",
-            settings.dry_run,
+            "Running in MOCK mode (DRY_RUN=true). Tools return FAKE data — "
+            "set DRY_RUN=false for live Google access."
+        )
+    elif settings.misconfigured_live:
+        logger.error(
+            "DRY_RUN=false but no usable Google token "
+            "(client_id set=%s, token file present=%s). Live tool calls will "
+            "FAIL until a valid token exists. Run scripts/connect_google.py.",
+            bool(settings.google_oauth_client_id),
             settings.has_google_credentials,
         )
+    else:
+        # Proactively verify credentials at startup so problems are visible in
+        # logs immediately, not on the first user tool call.
+        from .google_auth import auth_status
+
+        status = auth_status()
+        if status["ok"]:
+            logger.info("LIVE mode — Google credentials OK (account=%s).", status["account"])
+        else:
+            logger.error("LIVE mode but credentials NOT working: %s", status["error"])
 
     uvicorn.run(
         "iblu_keeper.server:app",

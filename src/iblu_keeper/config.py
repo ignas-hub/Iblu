@@ -101,8 +101,21 @@ class Settings:
 
     @property
     def use_mock(self) -> bool:
-        """Tools should return mock data when dry-run is on OR creds are missing."""
-        return self.dry_run or not self.has_google_credentials
+        """Return mock data ONLY when dry-run is explicitly enabled.
+
+        IMPORTANT: mock mode must be an INTENTIONAL choice (DRY_RUN=true), never
+        a silent fallback. Previously this also returned True when credentials
+        were missing, which caused a misconfigured *production* server to
+        silently serve stale fake data and report writes as succeeding. Now, if
+        DRY_RUN is false but credentials are missing/invalid, the live path runs
+        and fails loudly (CredentialsUnavailable) instead of lying.
+        """
+        return self.dry_run
+
+    @property
+    def misconfigured_live(self) -> bool:
+        """True when we intend to be live (DRY_RUN=false) but have no token."""
+        return not self.dry_run and not self.has_google_credentials
 
 
 @lru_cache(maxsize=1)

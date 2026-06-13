@@ -17,11 +17,14 @@ Conversations are searched/identified primarily by the participant's name.
 from __future__ import annotations
 
 import abc
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 
 from ..config import settings
 from ..store import drafts
+
+logger = logging.getLogger("iblu_keeper.tools.chat")
 
 
 # --------------------------------------------------------------------------- #
@@ -136,11 +139,13 @@ class MockChatBackend(ChatBackend):
 
     def send_message(self, conversation: str, text: str) -> dict:
         return {
+            "_mock": True,
             "id": f"{conversation}/messages/MOCK_SENT",
             "conversation": conversation,
             "text": text,
             "create_time": "2026-06-10T12:00:00Z",
-            "mock": True,
+            "status": "not_sent_mock",
+            "note": "MOCK MODE — message was NOT delivered. Set DRY_RUN=false.",
         }
 
     def list_unread(self, limit: int = 10) -> list[dict]:
@@ -641,7 +646,14 @@ def get_messages(conversation: str, limit: int = 20) -> list[dict]:
 
 
 def send_message(conversation: str, text: str) -> dict:
-    return get_backend().send_message(conversation, text)
+    result = get_backend().send_message(conversation, text)
+    if result.get("_mock"):
+        logger.warning("MOCK chat send to %s — NOT delivered (DRY_RUN).", conversation)
+    elif result.get("status") == "error":
+        logger.error("chat send to %s FAILED: %s", conversation, result.get("error"))
+    else:
+        logger.info("chat send to %s delivered (id=%s)", conversation, result.get("id"))
+    return result
 
 
 def draft_message(conversation: str, text: str) -> dict:

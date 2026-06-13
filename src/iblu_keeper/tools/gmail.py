@@ -7,10 +7,13 @@ In dry-run / no-credentials mode these return deterministic mock data.
 from __future__ import annotations
 
 import base64
+import logging
 from email.message import EmailMessage
 
 from ..config import settings
 from ..store import drafts
+
+logger = logging.getLogger("iblu_keeper.tools.gmail")
 
 
 def _service():
@@ -36,20 +39,13 @@ def search(query: str, limit: int = 20) -> list[dict]:
     if settings.use_mock:
         return [
             {
+                "_mock": True,
                 "id": "MOCK_MSG_1",
                 "thread_id": "MOCK_THREAD_1",
                 "from": "client@example.com",
-                "subject": f"Re: {query or 'Proposal'}",
-                "snippet": "Thanks, this looks good. One question about pricing...",
+                "subject": f"[MOCK] Re: {query or 'Proposal'}",
+                "snippet": "MOCK DATA — server is in DRY_RUN mode, not live Gmail.",
                 "date": "2026-06-10T08:30:00Z",
-            },
-            {
-                "id": "MOCK_MSG_2",
-                "thread_id": "MOCK_THREAD_2",
-                "from": "noreply@calendar.google.com",
-                "subject": "Invitation: Sales sync @ Wed 2pm",
-                "snippet": "You have been invited to the following event...",
-                "date": "2026-06-09T17:05:00Z",
             },
         ]
 
@@ -87,13 +83,13 @@ def get_message(message_id: str) -> dict:
     """Fetch a single message with its plain-text body."""
     if settings.use_mock:
         return {
+            "_mock": True,
             "id": message_id,
             "from": "client@example.com",
             "to": settings.google_user_email,
-            "subject": "Re: Proposal",
+            "subject": "[MOCK] Re: Proposal",
             "date": "2026-06-10T08:30:00Z",
-            "body": "Thanks, this looks good. One question about pricing — "
-            "can we do a 12-month term?",
+            "body": "MOCK DATA — server is in DRY_RUN mode, not live Gmail.",
         }
 
     service = _service()
@@ -146,14 +142,16 @@ def draft_email(to: str, subject: str, body: str) -> dict:
 
 
 def send_email(to: str, subject: str, body: str) -> dict:
-    """Send an email immediately. In mock mode, returns a fake confirmation."""
+    """Send an email immediately. In mock mode, returns a clearly fake result."""
     if settings.use_mock:
+        logger.warning("MOCK send_email to %s — NOT actually sent (DRY_RUN).", to)
         return {
+            "_mock": True,
             "id": "MOCK_SENT_EMAIL",
             "to": to,
             "subject": subject,
-            "status": "sent",
-            "mock": True,
+            "status": "not_sent_mock",
+            "note": "MOCK MODE — email was NOT delivered. Set DRY_RUN=false.",
         }
 
     service = _service()
@@ -163,6 +161,8 @@ def send_email(to: str, subject: str, body: str) -> dict:
         .send(userId="me", body={"raw": _build_raw(to, subject, body)})
         .execute()
     )
+    # The real Gmail message id is proof the send actually reached Google.
+    logger.info("send_email delivered to %s (gmail id=%s)", to, sent.get("id"))
     return {"id": sent.get("id"), "to": to, "subject": subject, "status": "sent"}
 
 
