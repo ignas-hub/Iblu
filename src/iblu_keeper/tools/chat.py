@@ -46,10 +46,14 @@ class ChatBackend(abc.ABC):
         """
 
     @abc.abstractmethod
-    def get_messages(self, conversation: str, limit: int = 20) -> list[dict]:
+    def get_messages(
+        self, conversation: str, limit: int = 20, page_token: str | None = None
+    ) -> dict:
         """Message history for a conversation, oldest→newest.
 
-        Each item: {id, sender, text, create_time}.
+        Returns ``{items, count, next_page_token}``. Each item: ``{id, sender,
+        text, create_time}``. Pass ``page_token`` (from a prior response's
+        ``next_page_token``) to fetch the next page.
         """
 
     @abc.abstractmethod
@@ -114,7 +118,9 @@ class MockChatBackend(ChatBackend):
             ]
         return items[: max(1, limit)]
 
-    def get_messages(self, conversation: str, limit: int = 20) -> list[dict]:
+    def get_messages(
+        self, conversation: str, limit: int = 20, page_token: str | None = None
+    ) -> dict:
         messages = [
             {
                 "id": f"{conversation}/messages/1",
@@ -135,7 +141,8 @@ class MockChatBackend(ChatBackend):
                 "create_time": "2026-06-09T16:40:00Z",
             },
         ]
-        return messages[-limit:]
+        items = messages[-limit:]
+        return {"items": items, "count": len(items), "next_page_token": None}
 
     def send_message(self, conversation: str, text: str) -> dict:
         return {
@@ -408,15 +415,20 @@ class GoogleChatBackend(ChatBackend):
             ]
         return out
 
-    def get_messages(self, conversation: str, limit: int = 20) -> list[dict]:
+    def get_messages(
+        self, conversation: str, limit: int = 20, page_token: str | None = None
+    ) -> dict:
         service = self._service()
-        msgs = (
-            service.spaces()
-            .messages()
-            .list(parent=conversation, pageSize=limit, orderBy="createTime desc")
-            .execute()
-            .get("messages", [])
-        )
+        kwargs: dict = {
+            "parent": conversation,
+            "pageSize": limit,
+            "orderBy": "createTime desc",
+        }
+        if page_token:
+            kwargs["pageToken"] = page_token
+        resp = service.spaces().messages().list(**kwargs).execute()
+        msgs = resp.get("messages", [])
+
         # Collect sender IDs and resolve to names in one batch.
         sender_ids = set()
         for msg in msgs:
@@ -425,13 +437,13 @@ class GoogleChatBackend(ChatBackend):
                 sender_ids.add(sname.removeprefix("users/"))
         self._resolve_names(sender_ids)
 
-        out: list[dict] = []
+        items: list[dict] = []
         # Reverse to oldest → newest (consistent with old contract).
         for msg in reversed(msgs):
             sname = msg.get("sender", {}).get("name", "")
             uid = sname.removeprefix("users/") if sname.startswith("users/") else ""
             sender_display = self._label(uid) if uid else sname
-            out.append(
+            items.append(
                 {
                     "id": msg.get("name", ""),
                     "sender": sender_display,
@@ -439,7 +451,11 @@ class GoogleChatBackend(ChatBackend):
                     "create_time": msg.get("createTime", ""),
                 }
             )
-        return out
+        return {
+            "items": items,
+            "count": len(items),
+            "next_page_token": resp.get("nextPageToken") or None,
+        }
 
     def _get_last_read_time(self, conversation: str) -> str:
         """Fetch the user's lastReadTime for a space (empty string on error)."""
@@ -653,8 +669,10 @@ def list_conversations(query: str | None = None, limit: int = 20) -> list[dict]:
     return get_backend().list_conversations(query, limit)
 
 
-def get_messages(conversation: str, limit: int = 20) -> list[dict]:
-    return get_backend().get_messages(conversation, limit)
+def get_messages(
+    conversation: str, limit: int = 20, page_token: str | None = None
+) -> dict:
+    return get_backend().get_messages(conversation, limit, page_token)
 
 
 def send_message(conversation: str, text: str) -> dict:

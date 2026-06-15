@@ -38,7 +38,10 @@ def test_no_silent_mock_when_misconfigured(monkeypatch):
 def test_chat_list_and_messages():
     convs = chat_tools.list_conversations()
     assert convs and "id" in convs[0]
-    msgs = chat_tools.get_messages(convs[0]["id"], limit=2)
+    # get_messages now returns a paginated envelope {items, count, next_page_token}.
+    page = chat_tools.get_messages(convs[0]["id"], limit=2)
+    assert {"items", "count", "next_page_token"} <= page.keys()
+    msgs = page["items"]
     assert len(msgs) <= 2
     assert all({"sender", "text"} <= m.keys() for m in msgs)
 
@@ -67,9 +70,12 @@ def test_chat_draft_persisted():
 
 
 def test_gmail_search_and_get():
-    results = gmail_tools.search("test")
-    assert results and "subject" in results[0]
-    msg = gmail_tools.get_message(results[0]["id"])
+    # gmail.search now returns {items, count, next_page_token}.
+    page = gmail_tools.search("test")
+    assert {"items", "count", "next_page_token"} <= page.keys()
+    items = page["items"]
+    assert items and "subject" in items[0]
+    msg = gmail_tools.get_message(items[0]["id"])
     assert "body" in msg
 
 
@@ -81,7 +87,9 @@ def test_gmail_send_is_mocked():
 
 def test_gmail_search_mock_is_flagged():
     # Mock search results must be clearly tagged so they can't be mistaken for live.
-    for m in gmail_tools.search("anything"):
+    page = gmail_tools.search("anything")
+    assert page["items"], "mock search should return at least one item"
+    for m in page["items"]:
         assert m.get("_mock") is True
 
 

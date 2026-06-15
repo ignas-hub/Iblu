@@ -27,7 +27,27 @@ from fastmcp.server.auth.providers.google import GoogleProvider
 
 from .config import settings
 from .envelope import now_iso, stamped
-from .google_errors import with_google_errors
+from .formatters import to_markdown_envelope
+from .google_errors import with_google_errors, with_retry
+
+
+def _maybe_markdown(result, kind: str, response_format: str):
+    """If ``response_format == 'markdown'``, render the items as compact text;
+    otherwise return the original shape unchanged.
+
+    Handles both shapes a tool may return:
+    - a list (un-paginated tools like chat_list_conversations)
+    - a dict with ``items`` (paginated tools like gmail_search)
+    """
+    if response_format != "markdown":
+        return result
+    if isinstance(result, list):
+        items = result
+        token = None
+    else:
+        items = result.get("items", [])
+        token = result.get("next_page_token")
+    return to_markdown_envelope(kind, items, token)
 from .tools import calendar as calendar_tools
 from .tools import chat as chat_tools
 from .tools import context as context_tools
@@ -124,38 +144,50 @@ mcp = FastMCP(
 @mcp.tool(name="chat_list_conversations", annotations={"title": "List Chat Conversations", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("chat_list_conversations")
+@with_retry("chat_list_conversations")
 def chat_list_conversations(
     query: Annotated[str | None, Field(default=None, description="Case-insensitive substring filter on space name or participants")] = None,
-    limit: Annotated[int, Field(default=20, ge=1, le=100, description="Max items to return")] = 20
-) -> list[dict]:
+    limit: Annotated[int, Field(default=20, ge=1, le=100, description="Max items to return")] = 20,
+    response_format: Annotated[str, Field(default="json", pattern="^(json|markdown)$", description="json (default) or markdown for voice-friendly output")] = "json",
+):
     """List recent Chat conversations/spaces, most recently active first.
 
     Returns up to `limit` items (default 20, max 100). Filter by a person's
-    name via `query` (case-insensitive substring match on conversation name or
-    participants). Each item includes a `last_message_preview` snippet.
+    name via `query`. Each item includes a `last_message_preview` snippet.
+    Set `response_format='markdown'` for compact, voice-friendly output.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    return chat_tools.list_conversations(query, limit)
+    raw = chat_tools.list_conversations(query, limit)
+    return _maybe_markdown(raw, "chat_list", response_format)
 
 
 @mcp.tool(name="chat_get_messages", annotations={"title": "Get Chat Messages", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("chat_get_messages")
+@with_retry("chat_get_messages")
 def chat_get_messages(
     conversation: Annotated[str, Field(min_length=1, pattern=r"^spaces/.+", description="Space resource name, e.g. spaces/AAAAxxxxx")],
     limit: Annotated[int, Field(default=20, ge=1, le=100)] = 20,
-) -> list[dict]:
+    page_token: Annotated[str | None, Field(default=None, description="Cursor from a previous response's next_page_token; omit for the first page")] = None,
+    response_format: Annotated[str, Field(default="json", pattern="^(json|markdown)$", description="json (default) or markdown for voice-friendly output")] = "json",
+):
     """Get message history for a conversation (use an id from chat_list_conversations).
+
+    Returns ``{items, count, next_page_token}``; pass ``next_page_token`` from
+    the response to ``page_token`` on the next call to fetch older messages.
+    Set ``response_format='markdown'`` for compact, voice-friendly output.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    return chat_tools.get_messages(conversation, limit)
+    raw = chat_tools.get_messages(conversation, limit, page_token)
+    return _maybe_markdown(raw, "chat_messages", response_format)
 
 
 @mcp.tool(name="chat_send_message", annotations={"title": "Send Chat Message", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("chat_send_message")
+@with_retry("chat_send_message")
 def chat_send_message(
     conversation: Annotated[str, Field(min_length=1, pattern=r"^spaces/.+", description="Target space, e.g. spaces/AAAAxxxxx")],
     text: Annotated[str, Field(min_length=1, max_length=4096, description="Message body")],
@@ -167,6 +199,7 @@ def chat_send_message(
 @mcp.tool(name="chat_draft_message", annotations={"title": "Draft Chat Message (local)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("chat_draft_message")
+@with_retry("chat_draft_message")
 def chat_draft_message(
     conversation: Annotated[str, Field(min_length=1, pattern=r"^spaces/.+")],
     text: Annotated[str, Field(min_length=1, max_length=4096)],
@@ -178,9 +211,11 @@ def chat_draft_message(
 @mcp.tool(name="chat_list_unread", annotations={"title": "List Unread Chat Conversations", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("chat_list_unread")
+@with_retry("chat_list_unread")
 def chat_list_unread(
     limit: Annotated[int, Field(default=10, ge=1, le=50, description="Max unread spaces to return")] = 10,
-) -> list[dict]:
+    response_format: Annotated[str, Field(default="json", pattern="^(json|markdown)$", description="json (default) or markdown for voice-friendly output")] = "json",
+):
     """List Chat conversations with new (unread) messages, most recent first.
 
     Returns up to `limit` items with the latest message preview, suitable for
@@ -189,12 +224,14 @@ def chat_list_unread(
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    return chat_tools.list_unread(limit)
+    raw = chat_tools.list_unread(limit)
+    return _maybe_markdown(raw, "chat_list", response_format)
 
 
 @mcp.tool(name="chat_mark_read", annotations={"title": "Mark Chat Conversation as Read", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("chat_mark_read")
+@with_retry("chat_mark_read")
 def chat_mark_read(
     conversation: Annotated[str, Field(min_length=1, pattern=r"^spaces/.+")],
 ) -> dict:
@@ -208,20 +245,29 @@ def chat_mark_read(
 @mcp.tool(name="gmail_search", annotations={"title": "Search Gmail", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("gmail_search")
+@with_retry("gmail_search")
 def gmail_search(
     query: Annotated[str, Field(min_length=1, max_length=500, description="Gmail search syntax, e.g. \"from:bob is:unread\"")],
     limit: Annotated[int, Field(default=20, ge=1, le=100)] = 20,
-) -> list[dict]:
+    page_token: Annotated[str | None, Field(default=None, description="Cursor from a previous response's next_page_token; omit for the first page")] = None,
+    response_format: Annotated[str, Field(default="json", pattern="^(json|markdown)$", description="json (default) or markdown for voice-friendly output")] = "json",
+):
     """Search Gmail using standard Gmail query syntax (e.g. 'from:bob is:unread').
+
+    Returns ``{items, count, next_page_token}``. Pass ``next_page_token`` back
+    in ``page_token`` to fetch the next page of older results. Set
+    ``response_format='markdown'`` for compact, voice-friendly output.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    return gmail_tools.search(query, limit)
+    raw = gmail_tools.search(query, limit, page_token)
+    return _maybe_markdown(raw, "gmail_list", response_format)
 
 
 @mcp.tool(name="gmail_get_message", annotations={"title": "Get Email Message", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("gmail_get_message")
+@with_retry("gmail_get_message")
 def gmail_get_message(
     id: Annotated[str, Field(min_length=1, description="Gmail message id (hex string)")],
 ) -> dict:
@@ -235,6 +281,7 @@ def gmail_get_message(
 @mcp.tool(name="gmail_draft_email", annotations={"title": "Draft Email", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("gmail_draft_email")
+@with_retry("gmail_draft_email")
 def gmail_draft_email(
     to: Annotated[str, Field(min_length=3, max_length=320, pattern=r".+@.+\..+", description="Recipient email")],
     subject: Annotated[str, Field(min_length=1, max_length=998)],
@@ -247,6 +294,7 @@ def gmail_draft_email(
 @mcp.tool(name="gmail_send_email", annotations={"title": "Send Email", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("gmail_send_email")
+@with_retry("gmail_send_email")
 def gmail_send_email(
     to: Annotated[str, Field(min_length=3, max_length=320, pattern=r".+@.+\..+", description="Recipient email")],
     subject: Annotated[str, Field(min_length=1, max_length=998)],
@@ -259,24 +307,31 @@ def gmail_send_email(
 @mcp.tool(name="gmail_list_unread", annotations={"title": "List Unread Emails", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("gmail_list_unread")
+@with_retry("gmail_list_unread")
 def gmail_list_unread(
     limit: Annotated[int, Field(default=10, ge=1, le=100)] = 10,
     query: Annotated[str | None, Field(default=None, max_length=500, description="Extra Gmail search filter appended to is:unread")] = None,
-) -> list[dict]:
+    page_token: Annotated[str | None, Field(default=None, description="Cursor from a previous response's next_page_token; omit for the first page")] = None,
+    response_format: Annotated[str, Field(default="json", pattern="^(json|markdown)$", description="json (default) or markdown for voice-friendly output")] = "json",
+):
     """List unread emails, newest first.
 
     Optional `query` is appended to `is:unread` (Gmail search syntax — e.g.
-    'in:inbox', 'from:boss@example.com'). Returns lightweight summaries (id,
-    thread_id, from, subject, snippet, date) suitable for reading aloud.
+    'in:inbox', 'from:boss@example.com'). Returns ``{items, count,
+    next_page_token}``; pass the token back as ``page_token`` for older
+    unread. Set ``response_format='markdown'`` for compact, voice-friendly
+    output.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    return gmail_tools.list_unread(limit, query)
+    raw = gmail_tools.list_unread(limit, query, page_token)
+    return _maybe_markdown(raw, "gmail_list", response_format)
 
 
 @mcp.tool(name="gmail_mark_read", annotations={"title": "Mark Email as Read", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("gmail_mark_read")
+@with_retry("gmail_mark_read")
 def gmail_mark_read(
     message_id: Annotated[str, Field(min_length=1)],
 ) -> dict:
@@ -287,6 +342,7 @@ def gmail_mark_read(
 @mcp.tool(name="gmail_mark_unread", annotations={"title": "Mark Email as Unread", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("gmail_mark_unread")
+@with_retry("gmail_mark_unread")
 def gmail_mark_unread(
     message_id: Annotated[str, Field(min_length=1)],
 ) -> dict:
@@ -297,6 +353,7 @@ def gmail_mark_unread(
 @mcp.tool(name="gmail_reply", annotations={"title": "Reply to Email", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("gmail_reply")
+@with_retry("gmail_reply")
 def gmail_reply(
     message_id: Annotated[str, Field(min_length=1, description="Gmail message id you are replying to")],
     body: Annotated[str, Field(min_length=1, description="Reply body text")],
@@ -315,6 +372,7 @@ def gmail_reply(
 @mcp.tool(name="gmail_list_attachments", annotations={"title": "List Email Attachments", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("gmail_list_attachments")
+@with_retry("gmail_list_attachments")
 def gmail_list_attachments(
     message_id: Annotated[str, Field(min_length=1)],
 ) -> list[dict]:
@@ -328,6 +386,7 @@ def gmail_list_attachments(
 @mcp.tool(name="gmail_read_attachment", annotations={"title": "Read Email Attachment", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("gmail_read_attachment")
+@with_retry("gmail_read_attachment")
 def gmail_read_attachment(
     message_id: Annotated[str, Field(min_length=1)],
     attachment_id: Annotated[str, Field(min_length=1)],
@@ -346,6 +405,7 @@ def gmail_read_attachment(
 @mcp.tool(name="gdoc_read", annotations={"title": "Read Google Doc / Sheet / Slides", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("gdoc_read")
+@with_retry("gdoc_read")
 def gdoc_read(
     url_or_id: Annotated[str, Field(min_length=1, description="Sharing URL or raw Drive file id")],
     max_chars: Annotated[int, Field(default=20000, ge=100, le=200_000)] = 20000,
@@ -367,6 +427,7 @@ def gdoc_read(
 @mcp.tool(name="calendar_create_event", annotations={"title": "Create Calendar Event", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("calendar_create_event")
+@with_retry("calendar_create_event")
 def calendar_create_event(
     title: Annotated[str, Field(min_length=1, max_length=500, description="Event title")],
     start: Annotated[str, Field(min_length=10, description="RFC 3339 timestamp with offset, e.g. 2026-06-16T14:00:00+03:00")],
@@ -383,6 +444,7 @@ def calendar_create_event(
 @mcp.tool(name="context_log_conversation", annotations={"title": "Log Conversation (Phase 2 stub)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("context_log_conversation")
+@with_retry("context_log_conversation")
 def context_log_conversation(
     conversation: str, role: str, text: str, source: str = "chat"
 ) -> dict:
@@ -393,6 +455,7 @@ def context_log_conversation(
 @mcp.tool(name="context_get_summary", annotations={"title": "Get Activity Summary (Phase 2 stub)", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("context_get_summary")
+@with_retry("context_get_summary")
 def context_get_summary(window: str = "1d") -> dict:
     """[Phase 2 stub] Summarize recent activity over a time window (e.g. '1d').
 
@@ -407,6 +470,7 @@ def context_get_summary(window: str = "1d") -> dict:
 @mcp.tool(name="server_health", annotations={"title": "MCP Server Health Check", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("server_health")
+@with_retry("server_health")
 def server_health() -> dict:
     """Verify the MCP server is live and authenticated to Google as Ignas.
 

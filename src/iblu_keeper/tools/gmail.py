@@ -34,29 +34,40 @@ def _build_raw(to: str, subject: str, body: str) -> str:
 # --------------------------------------------------------------------------- #
 # Tools
 # --------------------------------------------------------------------------- #
-def search(query: str, limit: int = 20) -> list[dict]:
-    """Search Gmail. Returns lightweight message summaries (newest first)."""
+def search(
+    query: str, limit: int = 20, page_token: str | None = None
+) -> dict:
+    """Search Gmail. Returns lightweight message summaries (newest first).
+
+    Pass ``page_token`` to fetch the next page (the value returned in the
+    previous response's ``next_page_token``). Returns
+    ``{items, count, next_page_token}``; ``next_page_token`` is None when
+    there are no more results.
+    """
     if settings.use_mock:
-        return [
-            {
-                "_mock": True,
-                "id": "MOCK_MSG_1",
-                "thread_id": "MOCK_THREAD_1",
-                "from": "client@example.com",
-                "subject": f"[MOCK] Re: {query or 'Proposal'}",
-                "snippet": "MOCK DATA — server is in DRY_RUN mode, not live Gmail.",
-                "date": "2026-06-10T08:30:00Z",
-            },
-        ]
+        return {
+            "items": [
+                {
+                    "_mock": True,
+                    "id": "MOCK_MSG_1",
+                    "thread_id": "MOCK_THREAD_1",
+                    "from": "client@example.com",
+                    "subject": f"[MOCK] Re: {query or 'Proposal'}",
+                    "snippet": "MOCK DATA — server is in DRY_RUN mode, not live Gmail.",
+                    "date": "2026-06-10T08:30:00Z",
+                },
+            ],
+            "count": 1,
+            "next_page_token": None,
+        }
 
     service = _service()
-    resp = (
-        service.users()
-        .messages()
-        .list(userId="me", q=query, maxResults=limit)
-        .execute()
-    )
-    out: list[dict] = []
+    list_kwargs: dict = {"userId": "me", "q": query, "maxResults": limit}
+    if page_token:
+        list_kwargs["pageToken"] = page_token
+    resp = service.users().messages().list(**list_kwargs).execute()
+
+    items: list[dict] = []
     for ref in resp.get("messages", []):
         full = (
             service.users()
@@ -66,7 +77,7 @@ def search(query: str, limit: int = 20) -> list[dict]:
             .execute()
         )
         headers = {h["name"]: h["value"] for h in full.get("payload", {}).get("headers", [])}
-        out.append(
+        items.append(
             {
                 "id": full.get("id"),
                 "thread_id": full.get("threadId"),
@@ -76,7 +87,11 @@ def search(query: str, limit: int = 20) -> list[dict]:
                 "date": headers.get("Date", ""),
             }
         )
-    return out
+    return {
+        "items": items,
+        "count": len(items),
+        "next_page_token": resp.get("nextPageToken") or None,
+    }
 
 
 def get_message(message_id: str) -> dict:
@@ -177,14 +192,12 @@ def send_email(to: str, subject: str, body: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Read / unread + reply tools (added for voice-style workflows)
 # --------------------------------------------------------------------------- #
-def list_unread(limit: int = 10, query: str | None = None) -> list[dict]:
-    """List unread emails, newest first.
-
-    `query` adds an additional filter (Gmail search syntax, e.g. 'from:bob'
-    or 'in:inbox'). The 'is:unread' filter is always applied.
-    """
+def list_unread(
+    limit: int = 10, query: str | None = None, page_token: str | None = None
+) -> dict:
+    """List unread emails, newest first. Returns paginated envelope."""
     q = "is:unread" + (f" {query}" if query else "")
-    return search(q, limit=limit)
+    return search(q, limit=limit, page_token=page_token)
 
 
 def mark_read(message_id: str) -> dict:

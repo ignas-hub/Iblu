@@ -106,6 +106,62 @@ def with_google_errors(operation: str):
     return deco
 
 
+# Status codes that warrant an automatic retry (transient at Google's side or
+# the network). 401/403/404/400 stay as-is — retrying won't help and would
+# just delay the actionable error.
+_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+
+
+def with_retry(operation: str, max_attempts: int = 3, base_delay: float = 0.5):
+    """Decorator: retry a function on transient Google API errors.
+
+    Retries up to ``max_attempts`` times with exponential backoff
+    (``base_delay``, ``base_delay*2``, ``base_delay*4``…). Only retries on
+    HTTP 429 / 500 / 502 / 503 / 504. Other errors propagate immediately.
+    """
+    import time as _time
+    from functools import wraps
+
+    try:
+        from googleapiclient.errors import HttpError  # type: ignore
+    except Exception:  # pragma: no cover
+        HttpError = Exception  # type: ignore[assignment]  # noqa: N806
+
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            last_exc = None
+            for attempt in range(max_attempts):
+                try:
+                    return fn(*args, **kwargs)
+                except HttpError as exc:  # type: ignore[misc]
+                    status = getattr(exc.resp, "status", None)
+                    try:
+                        status = int(status) if status is not None else 0
+                    except Exception:  # noqa: BLE001
+                        status = 0
+                    if status not in _RETRYABLE_STATUSES:
+                        raise
+                    last_exc = exc
+                    if attempt == max_attempts - 1:
+                        # Last attempt — let the error bubble (caller's
+                        # @with_google_errors will translate it).
+                        raise
+                    delay = base_delay * (2 ** attempt)
+                    logger.info(
+                        "Retry %d/%d for %s after HTTP %d (sleeping %.2fs)",
+                        attempt + 1, max_attempts - 1, operation, status, delay,
+                    )
+                    _time.sleep(delay)
+            # Unreachable but keeps type checkers happy.
+            assert last_exc is not None
+            raise last_exc  # pragma: no cover
+
+        return wrapper
+
+    return deco
+
+
 @contextmanager
 def google_api(operation: str) -> Iterator[None]:
     """Wrap a Google API call so HttpErrors become actionable RuntimeErrors.
