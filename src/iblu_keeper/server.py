@@ -55,9 +55,22 @@ mcp = FastMCP(
     name="iblu-keeper",
     instructions=(
         "Personal assistant tools for Ignas: read/send Google Chat, "
-        "read/draft/send Gmail, and create Calendar events. Identify Chat "
-        "conversations primarily by the person's name. Use draft_* tools when a "
-        "human should review before anything is sent."
+        "read/draft/send Gmail, read attachments + Google Docs, and create "
+        "Calendar events. Identify Chat conversations primarily by the "
+        "person's name. Use draft_* tools when a human should review before "
+        "anything is sent. "
+        "\n\n"
+        "HEALTH-CHECK PROTOCOL (important — Ignas is non-developer and should "
+        "not have to diagnose this himself): if Ignas says results look stale, "
+        "mocked, fake, days-old, surprising, or 'wrong' — OR if you notice a "
+        "result that contains `_mock: true` or `status: not_sent_mock` / "
+        "`not_created_mock` — call the `server_health` tool FIRST, before "
+        "anything else. If it returns `mode: mock` or `auth.ok: false`, tell "
+        "Ignas in plain language that the server has lost authentication or "
+        "is in mock mode, name the specific error if any, and STOP — do not "
+        "try other tools to work around it. If `server_health` returns "
+        "`mode: live` and `auth.ok: true`, the server is genuinely live and "
+        "the result you got is real; explain it to Ignas as such."
     ),
     auth=_build_auth(),
 )
@@ -234,7 +247,31 @@ def context_get_summary(window: str = "1d") -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Health endpoint (unauthenticated) — used by the dashboard status page
+# Server health (callable by Claude when responses look stale/mocked)
+# --------------------------------------------------------------------------- #
+@mcp.tool(name="server_health")
+def server_health() -> dict:
+    """Verify the MCP server is live and authenticated to Google as Ignas.
+
+    Returns `mode` ("live" or "mock"), `dry_run`, `misconfigured_live`, and an
+    `auth` block ({ok, account, error}). Call this FIRST whenever a result
+    looks stale, mocked, wrong, or contains `_mock: true` — if `mode` is
+    "mock" or `auth.ok` is false, the server has lost authentication; tell
+    Ignas in plain language and stop. If `mode` is "live" and `auth.ok` is
+    true, the data you just received is genuinely from the live account.
+    """
+    from .google_auth import auth_status
+
+    return {
+        "mode": "mock" if settings.use_mock else "live",
+        "dry_run": settings.dry_run,
+        "misconfigured_live": settings.misconfigured_live,
+        "auth": auth_status(),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Health endpoint (unauthenticated HTTP) — used by the dashboard status page
 # --------------------------------------------------------------------------- #
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
