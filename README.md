@@ -30,13 +30,39 @@ tool stubs with final signatures.
 Two components, one repo:
 
 ### 1. MCP server (Python, FastMCP)
-Remote MCP server Claude connects to over HTTPS. Tools exposed:
+Remote MCP server Claude connects to over HTTPS. **21 tools** organised by
+service, with MCP tool annotations (`readOnlyHint` / `destructiveHint`) so
+Claude.ai picks safe permission defaults automatically:
 
-- **Google Chat:** `chat.list_conversations`, `chat.get_messages`,
-  `chat.send_message`, `chat.draft_message`
-- **Gmail:** `gmail.search`, `gmail.get_message`, `gmail.draft_email`, `gmail.send_email`
-- **Calendar:** `calendar.create_event`
-- **Context (Phase 2 stubs):** `context.log_conversation`, `context.get_summary`
+| Tool | What it does | Permission default |
+|---|---|---|
+| `server_health` | Reports `mode` (live/mock), `auth.ok`, `server_time`. Claude calls this when results look stale. | auto-allow |
+| `chat_list_conversations` | Recent Chat spaces, sender-attributed previews | auto-allow |
+| `chat_list_unread` | Spaces with new messages from others since you last read | auto-allow |
+| `chat_get_messages` | Message history for a space (paginated) | auto-allow |
+| `chat_send_message` | Send a message to a space | **ask** |
+| `chat_draft_message` | Save a local draft (does NOT send) | auto-allow |
+| `chat_mark_read` | Set `lastReadTime = now` for a space | auto-allow |
+| `gmail_search` | Gmail search syntax (paginated) | auto-allow |
+| `gmail_list_unread` | Newest unread mail (paginated) | auto-allow |
+| `gmail_get_message` | One email body + headers | auto-allow |
+| `gmail_list_attachments` | Attachments on a message | auto-allow |
+| `gmail_read_attachment` | Download + extract text from PDF / DOCX / text attachments | auto-allow |
+| `gmail_draft_email` | Save a Gmail draft (does NOT send) | auto-allow |
+| `gmail_send_email` | Send an email immediately | **ask** |
+| `gmail_reply` | Threaded reply (proper In-Reply-To / References) | auto-allow |
+| `gmail_mark_read` / `gmail_mark_unread` | Toggle UNREAD label | auto-allow |
+| `gdoc_read` | Fetch a Google Doc / Sheet / Slides as plain text (URL or ID) | auto-allow |
+| `calendar_create_event` | Create a Calendar event | auto-allow |
+| `context_log_conversation` / `context_get_summary` | Phase 2 stubs (memory layer) | auto-allow |
+
+**Every tool response is stamped** with `fetched_at` (ISO-8601 UTC) and
+`request_id` (UUID), plus a `query` echo of the kwargs used — so the
+caller can verify the data is fresh and the request was understood
+correctly. Read tools that list results also return `next_page_token`
+when more pages exist; pass it back as `page_token` for the next call.
+Read tools accept `response_format="markdown"` for compact,
+voice-friendly output.
 
 Auth to Google: **single-user OAuth** — a refresh token for one account
 (`ignas@blanklabel.team`), created once via a browser "Allow". No service
@@ -59,6 +85,87 @@ deterministic fake data and never calls Google. This lets the whole system be
 developed and demoed before the Google access test concludes.
 
 ---
+
+## Voice usage
+
+Ignas uses Claude in voice / read-aloud mode a lot (driving, walking).
+The server's `instructions` field tells connected Claude clients to:
+
+1. **Never read tool names, parameters, IDs, or JSON aloud.** The model
+   speaks only the natural-language summary — "You have three unread:
+   Tamara asked 25 minutes ago about the invoice…" — never "I called
+   `gmail_list_unread` with `limit=3` and got back an item with id…".
+2. **Use `response_format='markdown'`** on read tools so the response
+   is already in a compact, voice-shaped form (with relative time
+   stamps like *"25m ago"*).
+3. **Call `server_health` first** if the user says the data looks
+   stale or wrong, and report the result in plain English.
+4. **Re-fetch on every "current state" question.** Never quote a prior
+   tool result from earlier in the conversation as if it were current —
+   the inbox / chat / calendar change constantly.
+
+Sample prompts that exercise the voice flow:
+
+> *"Read me my three most recent unread emails."*
+> *"Reply to Tamara saying I'll check tonight."*
+> *"What did Ante just say in our DM?"*
+> *"Open the latest PandaDoc contract and summarize it."*
+> *"Mark the Anthropic receipt as read."*
+> *"Create a 30-minute event tomorrow at 2pm called 'Opera sync'."*
+
+## Worked examples (JSON shape)
+
+### Reading unread mail with pagination
+
+```jsonc
+// gmail_list_unread(limit=3)
+{
+  "fetched_at": "2026-06-15T10:30:00Z",
+  "request_id": "8ded5dae3eef4fb4b7833ca09875bedc",
+  "query": {"limit": 3, "query": null},
+  "count": 3,
+  "next_page_token": "10703968986170101144",
+  "items": [
+    {"id": "19eca0b9", "from": "Tamara Lovric <t@blanklabel.team>",
+     "subject": "Invoice", "snippet": "Hi, please see attached…",
+     "date": "Mon, 15 Jun 2026 10:05:00 +0000"},
+    /* … */
+  ]
+}
+```
+
+To fetch older unread, call again with `page_token=<next_page_token>`.
+
+### Reading attachments
+
+```text
+gmail_list_attachments(message_id="19eca0b9")
+  → [{filename: "invoice.pdf", attachment_id: "AT_xy7", size_bytes: 696786, mime_type: "application/pdf"}]
+
+gmail_read_attachment(message_id="19eca0b9", attachment_id="AT_xy7", max_chars=3000)
+  → {text: "STATEMENT OF WORK NO. 36 …", filename: "invoice.pdf", truncated: false}
+```
+
+### Reading a Google Doc by URL
+
+```text
+gdoc_read(url_or_id="https://docs.google.com/document/d/1gGGvGZN…/edit")
+  → {name: "Opera BLT team catch up — Notes by Gemini", text: "📝 Notes…", truncated: false}
+```
+
+### Voice-friendly markdown output
+
+```text
+gmail_list_unread(limit=3, response_format="markdown")
+  →
+1. **Invoice** — Tamara Lovric <t@blanklabel.team> · 25m ago
+   > Hi, please see attached
+   `id: 19eca0b9`
+2. **Re: Proposal** — Alexan <alexan@sparkleadgo.com> · 1h ago
+   > 15 min call about the bundling package?
+   `id: 19eca0b9`
+…
+```
 
 ## Repository layout
 
