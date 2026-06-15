@@ -228,7 +228,7 @@ def chat_send_message(
     return chat_tools.send_message(conversation, text)
 
 
-@mcp.tool(name="chat_draft_message", annotations={"title": "Draft Chat Message (local)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(name="chat_draft_message", annotations={"title": "Draft Chat Message (local)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("chat_draft_message")
 @with_retry("chat_draft_message")
@@ -260,7 +260,7 @@ def chat_list_unread(
     return _maybe_markdown(raw, "chat_list", response_format)
 
 
-@mcp.tool(name="chat_mark_read", annotations={"title": "Mark Chat Conversation as Read", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(name="chat_mark_read", annotations={"title": "Mark Chat Conversation as Read", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("chat_mark_read")
 @with_retry("chat_mark_read")
@@ -310,7 +310,7 @@ def gmail_get_message(
     return gmail_tools.get_message(id)
 
 
-@mcp.tool(name="gmail_draft_email", annotations={"title": "Draft Email", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(name="gmail_draft_email", annotations={"title": "Draft Email", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("gmail_draft_email")
 @with_retry("gmail_draft_email")
@@ -360,7 +360,7 @@ def gmail_list_unread(
     return _maybe_markdown(raw, "gmail_list", response_format)
 
 
-@mcp.tool(name="gmail_mark_read", annotations={"title": "Mark Email as Read", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(name="gmail_mark_read", annotations={"title": "Mark Email as Read", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("gmail_mark_read")
 @with_retry("gmail_mark_read")
@@ -371,7 +371,7 @@ def gmail_mark_read(
     return gmail_tools.mark_read(message_id)
 
 
-@mcp.tool(name="gmail_mark_unread", annotations={"title": "Mark Email as Unread", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(name="gmail_mark_unread", annotations={"title": "Mark Email as Unread", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("gmail_mark_unread")
 @with_retry("gmail_mark_unread")
@@ -382,7 +382,7 @@ def gmail_mark_unread(
     return gmail_tools.mark_unread(message_id)
 
 
-@mcp.tool(name="gmail_reply", annotations={"title": "Reply to Email", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(name="gmail_reply", annotations={"title": "Reply to Email", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("gmail_reply")
 @with_retry("gmail_reply")
@@ -456,7 +456,7 @@ def gdoc_read(
 # --------------------------------------------------------------------------- #
 # Calendar
 # --------------------------------------------------------------------------- #
-@mcp.tool(name="calendar_create_event", annotations={"title": "Create Calendar Event", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(name="calendar_create_event", annotations={"title": "Create Calendar Event", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("calendar_create_event")
 @with_retry("calendar_create_event")
@@ -473,7 +473,7 @@ def calendar_create_event(
 # --------------------------------------------------------------------------- #
 # Context / memory — Phase 2 stubs (interfaces stable now)
 # --------------------------------------------------------------------------- #
-@mcp.tool(name="context_log_conversation", annotations={"title": "Log Conversation (Phase 2 stub)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(name="context_log_conversation", annotations={"title": "Log Conversation (Phase 2 stub)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("context_log_conversation")
 @with_retry("context_log_conversation")
