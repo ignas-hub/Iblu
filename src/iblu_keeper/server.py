@@ -118,7 +118,7 @@ mcp = FastMCP(
 # --------------------------------------------------------------------------- #
 # Google Chat
 # --------------------------------------------------------------------------- #
-@mcp.tool(name="chat_list_conversations")
+@mcp.tool(name="chat_list_conversations", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def chat_list_conversations(
     query: str | None = None, limit: int = 20
@@ -134,7 +134,7 @@ def chat_list_conversations(
     return chat_tools.list_conversations(query, limit)
 
 
-@mcp.tool(name="chat_get_messages")
+@mcp.tool(name="chat_get_messages", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def chat_get_messages(conversation: str, limit: int = 20) -> list[dict]:
     """Get message history for a conversation (use an id from chat_list_conversations).
@@ -144,21 +144,21 @@ def chat_get_messages(conversation: str, limit: int = 20) -> list[dict]:
     return chat_tools.get_messages(conversation, limit)
 
 
-@mcp.tool(name="chat_send_message")
+@mcp.tool(name="chat_send_message", annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 @stamped
 def chat_send_message(conversation: str, text: str) -> dict:
     """Send a Chat message to a conversation."""
     return chat_tools.send_message(conversation, text)
 
 
-@mcp.tool(name="chat_draft_message")
+@mcp.tool(name="chat_draft_message", annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 def chat_draft_message(conversation: str, text: str) -> dict:
     """Store a Chat draft for human review (does NOT send)."""
     return chat_tools.draft_message(conversation, text)
 
 
-@mcp.tool(name="chat_list_unread")
+@mcp.tool(name="chat_list_unread", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def chat_list_unread(limit: int = 10) -> list[dict]:
     """List Chat conversations with new (unread) messages, most recent first.
@@ -172,7 +172,7 @@ def chat_list_unread(limit: int = 10) -> list[dict]:
     return chat_tools.list_unread(limit)
 
 
-@mcp.tool(name="chat_mark_read")
+@mcp.tool(name="chat_mark_read", annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 def chat_mark_read(conversation: str) -> dict:
     """Mark a Chat conversation as read up to now (sets lastReadTime=now)."""
@@ -182,7 +182,7 @@ def chat_mark_read(conversation: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Gmail
 # --------------------------------------------------------------------------- #
-@mcp.tool(name="gmail_search")
+@mcp.tool(name="gmail_search", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def gmail_search(query: str, limit: int = 20) -> list[dict]:
     """Search Gmail using standard Gmail query syntax (e.g. 'from:bob is:unread').
@@ -192,7 +192,7 @@ def gmail_search(query: str, limit: int = 20) -> list[dict]:
     return gmail_tools.search(query, limit)
 
 
-@mcp.tool(name="gmail_get_message")
+@mcp.tool(name="gmail_get_message", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def gmail_get_message(id: str) -> dict:
     """Fetch a single email (headers + plain-text body) by message id.
@@ -202,21 +202,21 @@ def gmail_get_message(id: str) -> dict:
     return gmail_tools.get_message(id)
 
 
-@mcp.tool(name="gmail_draft_email")
+@mcp.tool(name="gmail_draft_email", annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 def gmail_draft_email(to: str, subject: str, body: str) -> dict:
     """Create a Gmail draft for human review (does NOT send)."""
     return gmail_tools.draft_email(to, subject, body)
 
 
-@mcp.tool(name="gmail_send_email")
+@mcp.tool(name="gmail_send_email", annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 @stamped
 def gmail_send_email(to: str, subject: str, body: str) -> dict:
     """Send an email immediately."""
     return gmail_tools.send_email(to, subject, body)
 
 
-@mcp.tool(name="gmail_list_unread")
+@mcp.tool(name="gmail_list_unread", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def gmail_list_unread(limit: int = 10, query: str | None = None) -> list[dict]:
     """List unread emails, newest first.
@@ -230,21 +230,21 @@ def gmail_list_unread(limit: int = 10, query: str | None = None) -> list[dict]:
     return gmail_tools.list_unread(limit, query)
 
 
-@mcp.tool(name="gmail_mark_read")
+@mcp.tool(name="gmail_mark_read", annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 def gmail_mark_read(message_id: str) -> dict:
     """Mark a Gmail message as read (removes the UNREAD label)."""
     return gmail_tools.mark_read(message_id)
 
 
-@mcp.tool(name="gmail_mark_unread")
+@mcp.tool(name="gmail_mark_unread", annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 def gmail_mark_unread(message_id: str) -> dict:
     """Mark a Gmail message as unread (adds the UNREAD label)."""
     return gmail_tools.mark_unread(message_id)
 
 
-@mcp.tool(name="gmail_reply")
+@mcp.tool(name="gmail_reply", annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 def gmail_reply(message_id: str, body: str, send: bool = True) -> dict:
     """Reply to a Gmail message, properly threaded.
@@ -257,7 +257,7 @@ def gmail_reply(message_id: str, body: str, send: bool = True) -> dict:
     return gmail_tools.reply(message_id, body, send)
 
 
-@mcp.tool(name="gmail_list_attachments")
+@mcp.tool(name="gmail_list_attachments", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def gmail_list_attachments(message_id: str) -> list[dict]:
     """List the attachments of a Gmail message (id, filename, mime_type, size).
@@ -267,7 +267,7 @@ def gmail_list_attachments(message_id: str) -> list[dict]:
     return gmail_tools.list_attachments(message_id)
 
 
-@mcp.tool(name="gmail_read_attachment")
+@mcp.tool(name="gmail_read_attachment", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def gmail_read_attachment(
     message_id: str, attachment_id: str, max_chars: int = 12000
@@ -282,7 +282,7 @@ def gmail_read_attachment(
     return gmail_tools.read_attachment(message_id, attachment_id, max_chars)
 
 
-@mcp.tool(name="gdoc_read")
+@mcp.tool(name="gdoc_read", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def gdoc_read(url_or_id: str, max_chars: int = 20000) -> dict:
     """Fetch a Google Doc, Sheet, or Slides file as plain text.
@@ -299,7 +299,7 @@ def gdoc_read(url_or_id: str, max_chars: int = 20000) -> dict:
 # --------------------------------------------------------------------------- #
 # Calendar
 # --------------------------------------------------------------------------- #
-@mcp.tool(name="calendar_create_event")
+@mcp.tool(name="calendar_create_event", annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 def calendar_create_event(
     title: str, start: str, end: str, description: str | None = None
@@ -311,7 +311,7 @@ def calendar_create_event(
 # --------------------------------------------------------------------------- #
 # Context / memory — Phase 2 stubs (interfaces stable now)
 # --------------------------------------------------------------------------- #
-@mcp.tool(name="context_log_conversation")
+@mcp.tool(name="context_log_conversation", annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
 @stamped
 def context_log_conversation(
     conversation: str, role: str, text: str, source: str = "chat"
@@ -320,7 +320,7 @@ def context_log_conversation(
     return context_tools.log_conversation(conversation, role, text, source)
 
 
-@mcp.tool(name="context_get_summary")
+@mcp.tool(name="context_get_summary", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def context_get_summary(window: str = "1d") -> dict:
     """[Phase 2 stub] Summarize recent activity over a time window (e.g. '1d').
@@ -333,7 +333,7 @@ def context_get_summary(window: str = "1d") -> dict:
 # --------------------------------------------------------------------------- #
 # Server health (callable by Claude when responses look stale/mocked)
 # --------------------------------------------------------------------------- #
-@mcp.tool(name="server_health")
+@mcp.tool(name="server_health", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def server_health() -> dict:
     """Verify the MCP server is live and authenticated to Google as Ignas.
