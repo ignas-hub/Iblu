@@ -10,21 +10,29 @@
 2. **Recent changes:** read the latest commits (`git log --oneline -20`) — that's
    the always-current changelog.
 3. **Architecture & setup:** `README.md` (kept up to date with the code).
-4. **Why decisions were made / past debugging:** `HANDOFF.md`, `DEBUG_FINDINGS.md`.
-5. **Is the live server healthy right now?** `GET https://mcp.iblugames.com/health`
+4. **Goals & roadmap:** `README.md` → "End state" + "Phased plan" table.
+5. **Why decisions were made / past debugging:** `HANDOFF.md`, `DEBUG_FINDINGS.md`.
+6. **Is the live server healthy right now?** `GET https://mcp.iblugames.com/health`
    (add `?probe=1` for a live Google-auth check: `mode`, `auth.ok`, `account`).
 
-If you are a Claude session with the GitHub connector, fetch items 2–4 live at
+If you are a Claude session with the GitHub connector, fetch items 2–5 live at
 the start of a task rather than relying on memory.
 
 ---
 
-## Snapshot — as of 2026-06-15 (commit `67a5dae`)
+## Snapshot — as of 2026-06-15 (commit `d4b8b0c`)
 
 **What IBLU is:** a self-hosted personal assistant for Ignas. A FastMCP server
 exposes Google Chat / Gmail / Calendar / Docs tools that Claude connects to over
 HTTPS; a Streamlit dashboard (`keeper.iblugames.com`) is the review UI. Phase 1
 (stateless; no long-term memory yet).
+
+**Goals / direction** (full detail in README → "End state" + "Phased plan"):
+- **Phase 1 (now):** stateless tools + dashboard, no memory.
+- **Phase 2:** Postgres memory — log conversations, "last day" summaries.
+- **Phase 3:** goals/priorities context (e.g. "spend 30% of time on sales").
+- **End state:** voice-first assistant that remembers context, knows Ignas's
+  goals, and proposes actions/replies for review.
 
 **Auth model:** single-user **OAuth** (one refresh token, account
 `ignas@blanklabel.team`). No service account, no domain-wide delegation. The MCP
