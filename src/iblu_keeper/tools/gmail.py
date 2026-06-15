@@ -162,8 +162,16 @@ def send_email(to: str, subject: str, body: str) -> dict:
         .execute()
     )
     # The real Gmail message id is proof the send actually reached Google.
-    logger.info("send_email delivered to %s (gmail id=%s)", to, sent.get("id"))
-    return {"id": sent.get("id"), "to": to, "subject": subject, "status": "sent"}
+    # If it's missing for any reason, raise — never return a success-shaped
+    # payload Claude could mistake for confirmation.
+    msg_id = sent.get("id")
+    if not msg_id:
+        raise RuntimeError(
+            f"Gmail send returned no message id (response={sent!r}); "
+            "treating as failure rather than reporting a false success."
+        )
+    logger.info("send_email delivered to %s (gmail id=%s)", to, msg_id)
+    return {"id": msg_id, "to": to, "subject": subject, "status": "sent"}
 
 
 # --------------------------------------------------------------------------- #
@@ -493,14 +501,25 @@ def reply(message_id: str, body: str, send: bool = True) -> dict:
     body_payload = {"raw": raw, "threadId": thread_id}
     if send:
         result = service.users().messages().send(userId="me", body=body_payload).execute()
+        msg_id = result.get("id")
+        if not msg_id:
+            raise RuntimeError(
+                f"Gmail reply.send returned no message id (response={result!r}); "
+                "treating as failure rather than reporting a false success."
+            )
         return {
-            "id": result.get("id"), "thread_id": thread_id,
+            "id": msg_id, "thread_id": thread_id,
             "to": reply_to, "subject": subject, "status": "sent",
         }
     drafted = (
         service.users().drafts().create(userId="me", body={"message": body_payload}).execute()
     )
+    draft_id = drafted.get("id")
+    if not draft_id:
+        raise RuntimeError(
+            f"Gmail draft create returned no id (response={drafted!r})."
+        )
     return {
-        "id": drafted.get("id"), "thread_id": thread_id,
+        "id": draft_id, "thread_id": thread_id,
         "to": reply_to, "subject": subject, "status": "draft",
     }

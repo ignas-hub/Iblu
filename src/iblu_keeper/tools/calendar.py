@@ -54,11 +54,18 @@ def create_event(
         body["description"] = description
 
     event = service.events().insert(calendarId="primary", body=body).execute()
-    logger.info("create_event '%s' created (id=%s)", title, event.get("id"))
+    event_id = event.get("id")
+    if not event_id:
+        raise RuntimeError(
+            f"Calendar insert returned no event id (response={event!r}); "
+            "treating as failure rather than reporting a false success."
+        )
+    logger.info("create_event '%s' created (id=%s)", title, event_id)
     return {
-        "id": event.get("id"),
+        "id": event_id,
         "html_link": event.get("htmlLink"),
         "title": event.get("summary", title),
         "start": event.get("start", {}).get("dateTime", start),
         "end": event.get("end", {}).get("dateTime", end),
+        "status": "created",
     }

@@ -610,11 +610,23 @@ class GoogleChatBackend(ChatBackend):
             .create(parent=conversation, body={"text": text})
             .execute()
         )
+        # Real Chat message resource name (spaces/.../messages/...) is proof
+        # the API actually accepted and stored the message. Without it, we do
+        # NOT report success — raise so the caller sees a real error rather
+        # than a fake "sent" status.
+        msg_name = msg.get("name", "")
+        if not msg_name:
+            raise RuntimeError(
+                f"Chat send returned no message name (response={msg!r}); "
+                "treating as failure rather than reporting a false success."
+            )
+        logger.info("chat.send_message delivered to %s (chat name=%s)", conversation, msg_name)
         return {
-            "id": msg.get("name", ""),
+            "id": msg_name,
             "conversation": conversation,
             "text": msg.get("text", text),
             "create_time": msg.get("createTime", ""),
+            "status": "sent",
         }
 
 

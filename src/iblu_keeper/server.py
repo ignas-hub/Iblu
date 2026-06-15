@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
@@ -22,10 +24,30 @@ from fastmcp import FastMCP
 from fastmcp.server.auth.providers.google import GoogleProvider
 
 from .config import settings
+from .envelope import now_iso, stamped
 from .tools import calendar as calendar_tools
 from .tools import chat as chat_tools
 from .tools import context as context_tools
 from .tools import gmail as gmail_tools
+
+
+# Standardised line appended to every read tool's docstring so the model is
+# reminded — every turn, in its prompt — to call fresh and quote fetched_at.
+_FRESHNESS_LINE = (
+    " Returns live data fetched at call time. Always call again for current "
+    "state; never reuse a previous result. Response includes fetched_at and "
+    "request_id — report fetched_at to the user."
+)
+
+
+class _NoStoreMiddleware(BaseHTTPMiddleware):
+    """Force ``Cache-Control: no-store`` on every response so neither browsers
+    nor intermediaries (Cloudflare etc.) can cache tool output."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("iblu_keeper.server")
@@ -97,6 +119,7 @@ mcp = FastMCP(
 # Google Chat
 # --------------------------------------------------------------------------- #
 @mcp.tool(name="chat_list_conversations")
+@stamped
 def chat_list_conversations(
     query: str | None = None, limit: int = 20
 ) -> list[dict]:
@@ -105,40 +128,52 @@ def chat_list_conversations(
     Returns up to `limit` items (default 20, max 100). Filter by a person's
     name via `query` (case-insensitive substring match on conversation name or
     participants). Each item includes a `last_message_preview` snippet.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     return chat_tools.list_conversations(query, limit)
 
 
 @mcp.tool(name="chat_get_messages")
+@stamped
 def chat_get_messages(conversation: str, limit: int = 20) -> list[dict]:
-    """Get message history for a conversation (use an id from chat_list_conversations)."""
+    """Get message history for a conversation (use an id from chat_list_conversations).
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
     return chat_tools.get_messages(conversation, limit)
 
 
 @mcp.tool(name="chat_send_message")
+@stamped
 def chat_send_message(conversation: str, text: str) -> dict:
     """Send a Chat message to a conversation."""
     return chat_tools.send_message(conversation, text)
 
 
 @mcp.tool(name="chat_draft_message")
+@stamped
 def chat_draft_message(conversation: str, text: str) -> dict:
     """Store a Chat draft for human review (does NOT send)."""
     return chat_tools.draft_message(conversation, text)
 
 
 @mcp.tool(name="chat_list_unread")
+@stamped
 def chat_list_unread(limit: int = 10) -> list[dict]:
     """List Chat conversations with new (unread) messages, most recent first.
 
     Returns up to `limit` items with the latest message preview, suitable for
     reading aloud. Each item includes `last_active_time` and `last_read_time`
     so the caller can tell what's actually new.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     return chat_tools.list_unread(limit)
 
 
 @mcp.tool(name="chat_mark_read")
+@stamped
 def chat_mark_read(conversation: str) -> dict:
     """Mark a Chat conversation as read up to now (sets lastReadTime=now)."""
     return chat_tools.mark_read(conversation)
@@ -148,53 +183,69 @@ def chat_mark_read(conversation: str) -> dict:
 # Gmail
 # --------------------------------------------------------------------------- #
 @mcp.tool(name="gmail_search")
+@stamped
 def gmail_search(query: str, limit: int = 20) -> list[dict]:
-    """Search Gmail using standard Gmail query syntax (e.g. 'from:bob is:unread')."""
+    """Search Gmail using standard Gmail query syntax (e.g. 'from:bob is:unread').
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
     return gmail_tools.search(query, limit)
 
 
 @mcp.tool(name="gmail_get_message")
+@stamped
 def gmail_get_message(id: str) -> dict:
-    """Fetch a single email (headers + plain-text body) by message id."""
+    """Fetch a single email (headers + plain-text body) by message id.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
     return gmail_tools.get_message(id)
 
 
 @mcp.tool(name="gmail_draft_email")
+@stamped
 def gmail_draft_email(to: str, subject: str, body: str) -> dict:
     """Create a Gmail draft for human review (does NOT send)."""
     return gmail_tools.draft_email(to, subject, body)
 
 
 @mcp.tool(name="gmail_send_email")
+@stamped
 def gmail_send_email(to: str, subject: str, body: str) -> dict:
     """Send an email immediately."""
     return gmail_tools.send_email(to, subject, body)
 
 
 @mcp.tool(name="gmail_list_unread")
+@stamped
 def gmail_list_unread(limit: int = 10, query: str | None = None) -> list[dict]:
     """List unread emails, newest first.
 
     Optional `query` is appended to `is:unread` (Gmail search syntax — e.g.
     'in:inbox', 'from:boss@example.com'). Returns lightweight summaries (id,
     thread_id, from, subject, snippet, date) suitable for reading aloud.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     return gmail_tools.list_unread(limit, query)
 
 
 @mcp.tool(name="gmail_mark_read")
+@stamped
 def gmail_mark_read(message_id: str) -> dict:
     """Mark a Gmail message as read (removes the UNREAD label)."""
     return gmail_tools.mark_read(message_id)
 
 
 @mcp.tool(name="gmail_mark_unread")
+@stamped
 def gmail_mark_unread(message_id: str) -> dict:
     """Mark a Gmail message as unread (adds the UNREAD label)."""
     return gmail_tools.mark_unread(message_id)
 
 
 @mcp.tool(name="gmail_reply")
+@stamped
 def gmail_reply(message_id: str, body: str, send: bool = True) -> dict:
     """Reply to a Gmail message, properly threaded.
 
@@ -207,12 +258,17 @@ def gmail_reply(message_id: str, body: str, send: bool = True) -> dict:
 
 
 @mcp.tool(name="gmail_list_attachments")
+@stamped
 def gmail_list_attachments(message_id: str) -> list[dict]:
-    """List the attachments of a Gmail message (id, filename, mime_type, size)."""
+    """List the attachments of a Gmail message (id, filename, mime_type, size).
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
     return gmail_tools.list_attachments(message_id)
 
 
 @mcp.tool(name="gmail_read_attachment")
+@stamped
 def gmail_read_attachment(
     message_id: str, attachment_id: str, max_chars: int = 12000
 ) -> dict:
@@ -220,17 +276,22 @@ def gmail_read_attachment(
 
     Supports PDF, DOCX, and plain-text MIME types. Use this when the user
     asks to "read", "open", "summarize", or "check" an email attachment.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     return gmail_tools.read_attachment(message_id, attachment_id, max_chars)
 
 
 @mcp.tool(name="gdoc_read")
+@stamped
 def gdoc_read(url_or_id: str, max_chars: int = 20000) -> dict:
     """Fetch a Google Doc, Sheet, or Slides file as plain text.
 
     Accepts either a sharing URL (https://docs.google.com/document/d/<ID>/...)
     or a raw file ID. Use this when an email contains a Google Docs/Sheets
     link the user wants to read or summarize.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     return gmail_tools.read_gdoc(url_or_id, max_chars)
 
@@ -239,6 +300,7 @@ def gdoc_read(url_or_id: str, max_chars: int = 20000) -> dict:
 # Calendar
 # --------------------------------------------------------------------------- #
 @mcp.tool(name="calendar_create_event")
+@stamped
 def calendar_create_event(
     title: str, start: str, end: str, description: str | None = None
 ) -> dict:
@@ -250,6 +312,7 @@ def calendar_create_event(
 # Context / memory — Phase 2 stubs (interfaces stable now)
 # --------------------------------------------------------------------------- #
 @mcp.tool(name="context_log_conversation")
+@stamped
 def context_log_conversation(
     conversation: str, role: str, text: str, source: str = "chat"
 ) -> dict:
@@ -258,8 +321,12 @@ def context_log_conversation(
 
 
 @mcp.tool(name="context_get_summary")
+@stamped
 def context_get_summary(window: str = "1d") -> dict:
-    """[Phase 2 stub] Summarize recent activity over a time window (e.g. '1d')."""
+    """[Phase 2 stub] Summarize recent activity over a time window (e.g. '1d').
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
     return context_tools.get_summary(window)
 
 
@@ -267,6 +334,7 @@ def context_get_summary(window: str = "1d") -> dict:
 # Server health (callable by Claude when responses look stale/mocked)
 # --------------------------------------------------------------------------- #
 @mcp.tool(name="server_health")
+@stamped
 def server_health() -> dict:
     """Verify the MCP server is live and authenticated to Google as Ignas.
 
@@ -276,6 +344,8 @@ def server_health() -> dict:
     "mock" or `auth.ok` is false, the server has lost authentication; tell
     Ignas in plain language and stop. If `mode` is "live" and `auth.ok` is
     true, the data you just received is genuinely from the live account.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     from .google_auth import auth_status
 
@@ -283,6 +353,7 @@ def server_health() -> dict:
         "mode": "mock" if settings.use_mock else "live",
         "dry_run": settings.dry_run,
         "misconfigured_live": settings.misconfigured_live,
+        "server_time": now_iso(),
         "auth": auth_status(),
     }
 
@@ -305,6 +376,7 @@ async def health(request: Request) -> JSONResponse:
         "dry_run": settings.dry_run,
         "has_google_credentials": settings.has_google_credentials,
         "misconfigured_live": settings.misconfigured_live,
+        "server_time": now_iso(),
     }
     if settings.misconfigured_live:
         body["warning"] = (
@@ -324,8 +396,10 @@ async def root(_request: Request) -> PlainTextResponse:
 
 
 def build_app():
-    """Build the Starlette ASGI app (MCP over streamable-HTTP + OAuth)."""
-    return mcp.http_app()
+    """Build the Starlette ASGI app (MCP over streamable-HTTP + OAuth +
+    Cache-Control: no-store on every response).
+    """
+    return mcp.http_app(middleware=[Middleware(_NoStoreMiddleware)])
 
 
 # ASGI entrypoint for `uvicorn iblu_keeper.server:app`
