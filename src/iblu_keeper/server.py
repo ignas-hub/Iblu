@@ -382,7 +382,7 @@ def gmail_mark_unread(
     return gmail_tools.mark_unread(message_id)
 
 
-@mcp.tool(name="gmail_reply", annotations={"title": "Reply to Email", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@mcp.tool(name="gmail_reply", annotations={"title": "Reply to Email", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("gmail_reply")
 @with_retry("gmail_reply")
@@ -574,7 +574,7 @@ def drive_save_gmail_attachment(
     return drive_tools.drive_save_gmail_attachment(message_id, attachment_id, folder_id_or_url, filename)
 
 
-@mcp.tool(name="drive_upload_from_url", annotations={"title": "Upload URL Content to Drive", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(name="drive_upload_from_url", annotations={"title": "Upload URL Content to Drive", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("drive_upload_from_url")
 @with_retry("drive_upload_from_url")
