@@ -446,12 +446,17 @@ def read_gdoc(url_or_id: str, max_chars: int = 20000) -> dict:
     from ..google_auth import build_service
 
     drive = build_service("drive", "v3")
-    meta = drive.files().get(fileId=file_id, fields="id,name,mimeType").execute()
+    meta = drive.files().get(
+        fileId=file_id, fields="id,name,mimeType", supportsAllDrives=True,
+    ).execute()
     mime = meta.get("mimeType", "")
     if mime == "application/vnd.google-apps.spreadsheet":
         export_mime = "text/csv"
     else:
         export_mime = "text/plain"
+    # files.export doesn't accept supportsAllDrives (it operates on file
+    # content, not metadata), but the prior .get() validates access to
+    # the Shared Drive file — if that succeeded, export will too.
     raw = drive.files().export(fileId=file_id, mimeType=export_mime).execute()
     if isinstance(raw, bytes):
         text = raw.decode("utf-8-sig", errors="replace")  # strip UTF-8 BOM if present

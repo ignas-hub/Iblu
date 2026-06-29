@@ -93,13 +93,16 @@ def gdoc_create(title: str, content: str = "", folder_id: str | None = None) -> 
         # New docs are created in the user's My Drive root; move into the
         # requested folder by adding it as a parent and removing the existing
         # one.
-        meta = drive.files().get(fileId=doc_id, fields="parents").execute()
+        meta = drive.files().get(
+            fileId=doc_id, fields="parents", supportsAllDrives=True,
+        ).execute()
         prev = ",".join(meta.get("parents", []) or [])
         drive.files().update(
             fileId=doc_id,
             addParents=folder_id,
             removeParents=prev,
             fields="id,parents",
+            supportsAllDrives=True,
         ).execute()
 
     logger.info("gdoc_create: id=%s title=%r folder=%s", doc_id, title, folder_id)
@@ -182,6 +185,7 @@ def gdoc_rename(doc_id_or_url: str, new_name: str) -> dict:
     drive = _drive()
     res = drive.files().update(
         fileId=file_id, body={"name": new_name}, fields="id,name,mimeType",
+        supportsAllDrives=True,
     ).execute()
     return {
         "id": res["id"], "name": res["name"],
@@ -201,13 +205,16 @@ def gdoc_move(file_id_or_url: str, folder_id_or_url: str) -> dict:
     file_id = _file_id(file_id_or_url)
     folder_id = _file_id(folder_id_or_url)
     drive = _drive()
-    meta = drive.files().get(fileId=file_id, fields="parents,name,mimeType").execute()
+    meta = drive.files().get(
+        fileId=file_id, fields="parents,name,mimeType", supportsAllDrives=True,
+    ).execute()
     prev = ",".join(meta.get("parents", []) or [])
     res = drive.files().update(
         fileId=file_id,
         addParents=folder_id,
         removeParents=prev,
         fields="id,parents,name,mimeType",
+        supportsAllDrives=True,
     ).execute()
     return {
         "id": res["id"], "name": res.get("name", ""),
@@ -229,7 +236,9 @@ def drive_create_folder(name: str, parent_id: str | None = None) -> dict:
     body: dict = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
     if parent_id:
         body["parents"] = [_file_id(parent_id)]
-    res = drive.files().create(body=body, fields="id,name,mimeType").execute()
+    res = drive.files().create(
+        body=body, fields="id,name,mimeType", supportsAllDrives=True,
+    ).execute()
     return {
         "id": res["id"], "name": res["name"],
         "url": _viewable_url(res["id"], res.get("mimeType", "")),
@@ -265,8 +274,13 @@ def drive_list_folder(
     kwargs: dict = {
         "q": q,
         "pageSize": max(1, min(limit, 100)),
-        "fields": "files(id,name,mimeType,modifiedTime,parents),nextPageToken",
+        "fields": "files(id,name,mimeType,modifiedTime,parents,driveId),nextPageToken",
         "orderBy": "modifiedTime desc",
+        # Include Shared Drives in the result set; without these flags the
+        # API only sees My Drive items.
+        "supportsAllDrives": True,
+        "includeItemsFromAllDrives": True,
+        "corpora": "allDrives",
     }
     if page_token:
         kwargs["pageToken"] = page_token
@@ -305,6 +319,7 @@ def _upload_bytes(
     res = drive.files().create(
         body=body, media_body=media,
         fields="id,name,mimeType,size,webViewLink",
+        supportsAllDrives=True,
     ).execute()
     file_id = res.get("id")
     if not file_id:
