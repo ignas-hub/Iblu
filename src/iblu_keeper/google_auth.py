@@ -49,6 +49,10 @@ SCOPES: tuple[str, ...] = (
     # Full drive scope (not drive.readonly) because that's what the existing
     # OAuth grant has; switching to drive.readonly would require re-consent.
     "https://www.googleapis.com/auth/drive",
+    # Docs — structured editing of existing Google Docs (insertText,
+    # replaceAllText, batchUpdate). Required for append/find-replace; the
+    # broader drive scope alone only supports whole-file overwrite.
+    "https://www.googleapis.com/auth/documents",
 )
 
 logger = logging.getLogger("iblu_keeper.google_auth")

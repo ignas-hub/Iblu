@@ -454,6 +454,147 @@ def gdoc_read(
 
 
 # --------------------------------------------------------------------------- #
+# Google Drive + Docs edits
+# --------------------------------------------------------------------------- #
+@mcp.tool(name="gdoc_create", annotations={"title": "Create Google Doc", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("gdoc_create")
+@with_retry("gdoc_create")
+def gdoc_create(
+    title: Annotated[str, Field(min_length=1, max_length=500, description="Title of the new Doc")],
+    content: Annotated[str, Field(default="", max_length=200_000, description="Optional initial body text")] = "",
+    folder_id: Annotated[str | None, Field(default=None, description="Drive folder ID or sharing URL to create the Doc inside")] = None,
+) -> dict:
+    """Create a new Google Doc, optionally with initial body text and inside a folder."""
+    from .tools import drive as drive_tools
+    return drive_tools.gdoc_create(title, content, folder_id)
+
+
+@mcp.tool(name="gdoc_append", annotations={"title": "Append to Google Doc", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("gdoc_append")
+@with_retry("gdoc_append")
+def gdoc_append(
+    doc_id_or_url: Annotated[str, Field(min_length=1, description="Doc ID or sharing URL")],
+    text: Annotated[str, Field(min_length=1, max_length=200_000, description="Text to append at the end of the doc")],
+) -> dict:
+    """Append text to the end of an existing Google Doc. Preserves prior content."""
+    from .tools import drive as drive_tools
+    return drive_tools.gdoc_append(doc_id_or_url, text)
+
+
+@mcp.tool(name="gdoc_replace_text", annotations={"title": "Find-and-Replace in Google Doc", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("gdoc_replace_text")
+@with_retry("gdoc_replace_text")
+def gdoc_replace_text(
+    doc_id_or_url: Annotated[str, Field(min_length=1, description="Doc ID or sharing URL")],
+    find: Annotated[str, Field(min_length=1, description="Text to search for")],
+    replace_with: Annotated[str, Field(description="Text to replace with (can be empty to delete the matches)")],
+    match_case: Annotated[bool, Field(default=False, description="Case-sensitive matching")] = False,
+) -> dict:
+    """Find-and-replace text in a Google Doc. Replaces ALL occurrences."""
+    from .tools import drive as drive_tools
+    return drive_tools.gdoc_replace_text(doc_id_or_url, find, replace_with, match_case)
+
+
+@mcp.tool(name="gdoc_rename", annotations={"title": "Rename Drive File", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("gdoc_rename")
+@with_retry("gdoc_rename")
+def gdoc_rename(
+    doc_id_or_url: Annotated[str, Field(min_length=1, description="File ID or sharing URL")],
+    new_name: Annotated[str, Field(min_length=1, max_length=500, description="New file name")],
+) -> dict:
+    """Rename a Drive file (works for Docs, Sheets, Slides, any file)."""
+    from .tools import drive as drive_tools
+    return drive_tools.gdoc_rename(doc_id_or_url, new_name)
+
+
+@mcp.tool(name="gdoc_move", annotations={"title": "Move Drive File to Folder", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("gdoc_move")
+@with_retry("gdoc_move")
+def gdoc_move(
+    file_id_or_url: Annotated[str, Field(min_length=1, description="File ID or sharing URL")],
+    folder_id_or_url: Annotated[str, Field(min_length=1, description="Destination folder ID or URL")],
+) -> dict:
+    """Move a Drive file into a folder (replaces existing parents)."""
+    from .tools import drive as drive_tools
+    return drive_tools.gdoc_move(file_id_or_url, folder_id_or_url)
+
+
+@mcp.tool(name="drive_create_folder", annotations={"title": "Create Drive Folder", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("drive_create_folder")
+@with_retry("drive_create_folder")
+def drive_create_folder(
+    name: Annotated[str, Field(min_length=1, max_length=500, description="Folder name")],
+    parent_id: Annotated[str | None, Field(default=None, description="Optional parent folder ID or URL (creates in My Drive root if omitted)")] = None,
+) -> dict:
+    """Create a new folder in Google Drive."""
+    from .tools import drive as drive_tools
+    return drive_tools.drive_create_folder(name, parent_id)
+
+
+@mcp.tool(name="drive_list_folder", annotations={"title": "List Drive Folder Contents", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("drive_list_folder")
+@with_retry("drive_list_folder")
+def drive_list_folder(
+    folder_id_or_url: Annotated[str | None, Field(default=None, description="Folder ID/URL to list. Omit to search by name across all your Drive.")] = None,
+    query: Annotated[str | None, Field(default=None, max_length=200, description="Filter by name (substring match). Useful for finding a folder by name when you don't have its id.")] = None,
+    limit: Annotated[int, Field(default=20, ge=1, le=100)] = 20,
+    page_token: Annotated[str | None, Field(default=None, description="Cursor from a previous response's next_page_token; omit for the first page")] = None,
+) -> dict:
+    """List files/folders in a Drive folder, or search by name across Drive.
+
+    Returns ``{items, count, next_page_token}``; each item includes id, name,
+    mime_type, is_folder, modified_time, url. Sorted by most-recently modified
+    first.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
+    from .tools import drive as drive_tools
+    return drive_tools.drive_list_folder(folder_id_or_url, query, limit, page_token)
+
+
+@mcp.tool(name="drive_save_gmail_attachment", annotations={"title": "Save Email Attachment to Drive", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("drive_save_gmail_attachment")
+@with_retry("drive_save_gmail_attachment")
+def drive_save_gmail_attachment(
+    message_id: Annotated[str, Field(min_length=1, description="Gmail message id holding the attachment")],
+    attachment_id: Annotated[str, Field(min_length=1, description="Attachment id from gmail_list_attachments")],
+    folder_id_or_url: Annotated[str | None, Field(default=None, description="Destination Drive folder (My Drive root if omitted)")] = None,
+    filename: Annotated[str | None, Field(default=None, max_length=500, description="Override filename (defaults to original attachment name)")] = None,
+) -> dict:
+    """Save a Gmail attachment directly to Drive without a client round-trip."""
+    from .tools import drive as drive_tools
+    return drive_tools.drive_save_gmail_attachment(message_id, attachment_id, folder_id_or_url, filename)
+
+
+@mcp.tool(name="drive_upload_from_url", annotations={"title": "Upload URL Content to Drive", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
+@stamped
+@with_google_errors("drive_upload_from_url")
+@with_retry("drive_upload_from_url")
+def drive_upload_from_url(
+    url: Annotated[str, Field(min_length=8, max_length=2048, pattern=r"^https?://", description="HTTP(S) URL to download")],
+    filename: Annotated[str, Field(min_length=1, max_length=500)],
+    folder_id_or_url: Annotated[str | None, Field(default=None, description="Destination Drive folder (My Drive root if omitted)")] = None,
+    mime_type: Annotated[str | None, Field(default=None, max_length=200, description="MIME type override. Auto-detected from response Content-Type when omitted.")] = None,
+) -> dict:
+    """Download a URL and save its body to Drive as a new file.
+
+    The server fetches the URL — Claude only needs to provide the link. Use
+    for "save this PDF / image / file from the web to my Drive" workflows.
+    Marked openWorldHint=true because this tool reaches an arbitrary URL.
+    """
+    from .tools import drive as drive_tools
+    return drive_tools.drive_upload_from_url(url, filename, folder_id_or_url, mime_type)
+
+
+# --------------------------------------------------------------------------- #
 # Calendar
 # --------------------------------------------------------------------------- #
 @mcp.tool(name="calendar_create_event", annotations={"title": "Create Calendar Event", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
