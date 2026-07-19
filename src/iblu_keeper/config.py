@@ -87,6 +87,19 @@ class Settings:
         )
     )
 
+    # --- Infrastructure status collector (read-only Drive fetch) ---
+    # A folder in Drive that holds the collector's ``latest.md`` and
+    # ``latest.json`` outputs; the ``get_infra_status`` tool downloads them
+    # and derives a compact status summary.
+    infra_folder_id: str = field(
+        default_factory=lambda: os.getenv("INFRA_FOLDER_ID", "")
+    )
+    # IANA name (e.g. "Europe/Zagreb", "UTC"). Reported in the tool's
+    # ``collected_at`` field so callers know which timezone the collector runs in.
+    infra_hub_timezone: str = field(
+        default_factory=lambda: os.getenv("INFRA_HUB_TIMEZONE", "UTC")
+    )
+
     # --- Phase 2 (unused in Phase 1) ---
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
 

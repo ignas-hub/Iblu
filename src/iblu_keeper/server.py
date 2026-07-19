@@ -105,6 +105,21 @@ mcp = FastMCP(
         "person's name. Use draft_* tools when a human should review before "
         "anything is sent. "
         "\n\n"
+        "AVAILABILITY PROTOCOL — CRITICAL, read this first. If you can read "
+        "these instructions, the IBLU connector IS connected and its tools "
+        "ARE callable in this exact conversation. Ignas may call it 'IBLU', "
+        "'Iblu', 'iblu', or voice-transcribed variants like 'Ibloo', "
+        "'I blue', 'e-blue', 'ee-blue'. If he asks whether you can connect "
+        "to / see / access IBLU, or claims you're missing it, do NOT answer "
+        "from reasoning or prior context — call `server_health` immediately "
+        "and let the result answer: on success say IBLU is connected and "
+        "working, then carry on with his actual request. NEVER tell him you "
+        "don't have IBLU tools, that IBLU 'isn't wired up to you', or that "
+        "the connector still needs to be built — that is always wrong in "
+        "any conversation where these instructions are visible. If a tool "
+        "call genuinely fails, report that specific error instead of "
+        "denying the tools exist."
+        "\n\n"
         "FRESHNESS PROTOCOL — read this carefully, it is the most common "
         "source of complaints. Ignas's inbox, chat, and calendar change "
         "constantly (every few minutes). When he asks any question about "
@@ -635,6 +650,34 @@ def context_get_summary(window: str = "1d") -> dict:
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     return context_tools.get_summary(window)
+
+
+# --------------------------------------------------------------------------- #
+# Infrastructure status (reads collector output from Drive)
+# --------------------------------------------------------------------------- #
+@mcp.tool(name="get_infra_status", annotations={"title": "Get Infrastructure Status", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+def get_infra_status() -> dict:
+    """Fetch the latest infrastructure health from the Drive collector folder.
+
+    Returns a compact summary (``status``, ``summary``, ``generated``) plus
+    the raw ``latest.md`` (human-readable) and ``latest.json`` (structured)
+    files so callers can either speak the summary or drill into the data.
+
+    ``status`` is derived from host ``ts`` freshness:
+    - ``healthy`` — every host reported a fresh timestamp
+    - ``degraded`` — at least one host is stale (>24h)
+    - ``error`` — no hosts, all stale, or the JSON couldn't be parsed
+
+    Results are cached in-process for 5 minutes. On any failure (folder not
+    configured, missing files, Drive API error, JSON parse error) the tool
+    returns ``{"error": "..."}`` — no exceptions bubble up to Claude.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
+    from .tools import infra as infra_tools
+
+    return infra_tools.get_infra_status()
 
 
 # --------------------------------------------------------------------------- #
