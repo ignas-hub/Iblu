@@ -76,12 +76,17 @@ def _todays_events(tz: ZoneInfo, day) -> list[schedule.Event]:
     return events
 
 
+# 'failed' is retryable: a webhook outage or an undeployed tap route must not
+# cost the whole day's ping (plan §7.4 — retry next tick, same row).
+RETRYABLE_STATUSES = ("pending", "failed")
+
+
 def _already_handled(conn: psycopg.Connection, kind: str, day) -> bool:
     row = conn.execute(
         "SELECT status FROM pings WHERE kind = %s AND local_date = %s",
         (kind, day),
     ).fetchone()
-    return row is not None and row["status"] != "pending"
+    return row is not None and row["status"] not in RETRYABLE_STATUSES
 
 
 def _midday_sent_at(conn: psycopg.Connection, day) -> datetime | None:
@@ -177,7 +182,8 @@ def run_one(kind: str, *, dry: bool = False, force: bool = False) -> str:
             ON CONFLICT (kind, local_date) WHERE kind IN ('midday','evening')
             DO UPDATE SET questions = EXCLUDED.questions,
                           composer = EXCLUDED.composer,
-                          covers_to = EXCLUDED.covers_to
+                          covers_to = EXCLUDED.covers_to,
+                          status = 'pending' 
             RETURNING id
             """,
             (

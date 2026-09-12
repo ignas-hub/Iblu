@@ -31,6 +31,28 @@ class DeliveryError(RuntimeError):
     """The webhook refused the card. The ping row is marked failed and retried."""
 
 
+def preflight_tap_route() -> None:
+    """Refuse to send a card whose buttons would 404.
+
+    The tick job and the MCP server are separate processes: the timer can be
+    live while the server is still running a build without the `/q` route, and
+    the failure is invisible until Ignas taps a button on his phone and gets
+    nothing. A deliberately invalid token should come back 410 (route present,
+    token rejected); 404 means the route is not deployed.
+    """
+    base = settings.mcp_public_base_url.rstrip("/")
+    try:
+        response = requests.get(f"{base}/q/preflight", timeout=10)
+    except requests.RequestException as exc:
+        raise DeliveryError(f"tap endpoint unreachable at {base}/q/: {exc}") from exc
+
+    if response.status_code == 404:
+        raise DeliveryError(
+            f"{base}/q/ returns 404 — the server has not picked up the tap route. "
+            "Restart iblu-mcp before pings can be answered."
+        )
+
+
 def build_card(
     ping_id: int,
     kind: str,
@@ -79,6 +101,8 @@ def send(
         raise DeliveryError("PING_SIGNING_SECRET is not set — tap links would be unsignable")
     if not settings.mcp_public_base_url:
         raise DeliveryError("MCP_PUBLIC_BASE_URL is not set — tap links would be relative")
+
+    preflight_tap_route()
 
     body = build_card(
         ping_id, kind, questions, self_id,
