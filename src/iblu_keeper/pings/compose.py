@@ -29,17 +29,18 @@ MAX_OPTIONS = 4
 MAX_TEXT = 160
 MAX_LABEL = 40
 
-QIDS = ("sink", "displaced", "split")
+QIDS = ("sink", "displaced", "split", "work_type")
 VERDICTS = (
     "planned_mine", "unplanned_mine", "someone_else", "one_off",
     "did_it", "other", "right", "more", "way_off",
+    "classify",   # answer to the work_type question: the tapped option IS the answer
 )
 
 
 class Payload(BaseModel):
     """The structured meaning behind an option — this is what gets analysed."""
 
-    kind: Literal["sink", "displaced", "split"]
+    kind: Literal["sink", "displaced", "split", "work_type"]
     verdict: Literal[VERDICTS]  # type: ignore[valid-type]
     venture: str | None = None
     work_type: str | None = None
@@ -54,6 +55,16 @@ class Option(BaseModel):
     label: str
     payload: Payload
 
+    @field_validator("payload")
+    @classmethod
+    def _classification_is_present(cls, v: "Payload") -> "Payload":
+        # The whole point of the work_type question is that the answer is a
+        # fact Ignas tapped, not a guess. An option that records nothing is
+        # worse than no question at all.
+        if v.kind == "work_type" and v.verdict == "classify" and not v.work_type:
+            raise ValueError("a work_type option must carry a work_type code")
+        return v
+
     @field_validator("label")
     @classmethod
     def _short(cls, v: str) -> str:
@@ -66,9 +77,20 @@ class Option(BaseModel):
 # regresses should fail validation and fall through to the fallback templates.
 JARGON = ("sink", "attention sink")
 
+# An unnamed reference is unauditable: "a gmail thread" cannot be resolved back
+# to one of forty threads six weeks later. The composer has the subject lines,
+# so a vague reference is laziness, not missing data — reject it and let the
+# fallback (which always names the container) answer instead.
+VAGUE = (
+    "a gmail thread", "an email thread", "a chat thread", "an email exchange",
+    "some emails", "some messages", "a few messages", "a few emails",
+    "email thread", "a thread", "various threads", "other threads",
+    "some work", "several messages",
+)
+
 
 class Question(BaseModel):
-    qid: Literal["sink", "displaced", "split"]
+    qid: Literal["sink", "displaced", "split", "work_type"]
     text: str
     options: list[Option] = Field(min_length=2, max_length=MAX_OPTIONS)
 
@@ -81,6 +103,11 @@ class Question(BaseModel):
             if word in lowered:
                 raise ValueError(
                     f"question text leaks the internal key {word!r}: {text!r}"
+                )
+        for phrase in VAGUE:
+            if phrase in lowered:
+                raise ValueError(
+                    f"question text is vague ({phrase!r}) — name the thread: {text!r}"
                 )
         return text
 
@@ -215,6 +242,30 @@ def compose_fallback(
         })
         break
 
+    # work_type — what KIND of work the busiest thread was. Asked outright,
+    # because nothing else in the system can recover it: venture is inferable
+    # from the counterpart's domain, work_type never is.
+    if clusters:
+        container, rows = clusters[0]
+        name = _cluster_name(rows)
+        ids = [r["id"] for r in rows][:50]
+        questions.append({
+            "qid": "work_type",
+            "text": f"{name} — what kind of work was that?",
+            "options": [
+                {"key": key, "label": label,
+                 "payload": {"kind": "work_type", "verdict": "classify",
+                             "work_type": code, "venture": rows[0].get("venture"),
+                             "container": container, "signal_ids": ids}}
+                for key, code, label in (
+                    ("A", "sales", "Sales / BD / pitch"),
+                    ("B", "client", "Client comms & management"),
+                    ("C", "delivery", "Doing the work"),
+                    ("D", "build", "Software / automation"),
+                )
+            ],
+        })
+
     # split — how the window divided across ventures.
     split = _venture_split(signals)
     if len(split) >= 1:
@@ -285,13 +336,17 @@ your morning. Was that yours to do?"
     good: "Morning looks like BLT 70% / Deadlift 30%. Right?"
 - Every question must be answerable by the options you give it. If the options \
 are about whether the work was his, the question has to ask that.
+- NAME things. Never write "a gmail thread", "some messages" or "a few emails" \
+— use the actual subject line or person, e.g. "the Temu contract thread with \
+Giedre". An unnamed reference cannot be resolved six weeks later, so a vague \
+question is worse than no question.
 - Questions <=160 chars, option labels <=40 chars. No preamble, no pleasantries.
 - Ask only what the signals support. Never invent a meeting or a person.
 - Output STRICT JSON matching the schema. No markdown, no commentary."""
 
-SCHEMA_HINT = """{"questions":[{"qid":"sink|displaced|split","text":"...", \
-"options":[{"key":"A","label":"...","payload":{"kind":"sink|displaced|split", \
-"verdict":"planned_mine|unplanned_mine|someone_else|one_off|did_it|other|right|more|way_off", \
+SCHEMA_HINT = """{"questions":[{"qid":"sink|displaced|split|work_type","text":"...", \
+"options":[{"key":"A","label":"...","payload":{"kind":"sink|displaced|split|work_type", \
+"verdict":"planned_mine|unplanned_mine|someone_else|one_off|did_it|other|right|more|way_off|classify", \
 "venture":null,"work_type":null,"project":null,"signal_ids":[],"container":null,"event_id":null}}]}]}"""
 
 
@@ -327,13 +382,23 @@ Write at most 3 questions, each with the qid given in brackets:
 - [displaced] ONLY if a self-block (no attendees) in the window has no signals
   during it: name the block and ask what took its place. Options: the top two
   clusters / Nothing — I did it / Other → reply.
+- [work_type] Name the thread or project that dominated the window and ask what
+  KIND of work it was. Offer the 4 most plausible work_type codes from the list
+  above as options; put the CODE in payload.work_type and a human label in the
+  option label ("Sales / BD / pitch", not "sales"). verdict is "classify".
+  This one matters most: venture can be inferred from an email domain later,
+  work_type can never be recovered if it is not captured now.
 - [split] State the venture split you infer as a claim, and ask if it is right.
   Options: Right / More <v1> / More <v2> / Way off → reply.
+
+Prefer [sink] + [work_type] about the SAME named thread, then [displaced] or
+[split] if the window supports one. Always set payload.venture and
+payload.project where the signals make them clear.
 
 Set payload.signal_ids to the ids you are referring to where you can.
 Signal ids, in order: {[s['id'] for s in signals][:80]}
 
-Return only JSON of this shape:
+Ask at most 3. Return only JSON of this shape:
 {SCHEMA_HINT}"""
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=60.0)

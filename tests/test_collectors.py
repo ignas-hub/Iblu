@@ -190,3 +190,55 @@ def test_fallback_questions_are_plain_english():
             assert word not in question.text.lower(), question.text
         # every question must actually be a question
         assert question.text.rstrip().endswith("?")
+
+
+def test_vague_thread_references_are_rejected():
+    """"a gmail thread" cannot be resolved back to one of forty, six weeks on."""
+    import pydantic
+    from iblu_keeper.pings.compose import Question
+
+    option = {"key": "A", "label": "Planned & mine",
+              "payload": {"kind": "sink", "verdict": "planned_mine"}}
+
+    named = Question(
+        qid="sink",
+        text="Temu contract thread with Giedre — 4 msgs. Was that yours to do?",
+        options=[option, option],
+    )
+    assert "Giedre" in named.text
+
+    for vague in ("Mostly Ante Cetinic work + a gmail thread — right?",
+                  "You spent the morning on some messages. Yours?"):
+        with pytest.raises(pydantic.ValidationError):
+            Question(qid="sink", text=vague, options=[option, option])
+
+
+def test_a_work_type_option_must_carry_the_code_it_claims_to_record():
+    """A classification question whose options record nothing is worse than none."""
+    import pydantic
+    from iblu_keeper.pings.compose import Option
+
+    Option(key="A", label="Sales / BD / pitch",
+           payload={"kind": "work_type", "verdict": "classify", "work_type": "sales"})
+
+    with pytest.raises(pydantic.ValidationError):
+        Option(key="A", label="Sales / BD / pitch",
+               payload={"kind": "work_type", "verdict": "classify"})
+
+
+def test_fallback_always_asks_what_kind_of_work_it_was():
+    """work_type is the one thing no collector can ever recover after the fact."""
+    from datetime import datetime, timezone
+    from iblu_keeper.pings.compose import compose_fallback
+
+    now = datetime.now(timezone.utc)
+    signals = [{
+        "id": 1, "source": "chat", "occurred_at": now, "counterpart": "Ante Cetinic",
+        "container": "spaces/X", "subject": "Ante Cetinic", "snippet": "hi",
+        "initiator": "other", "venture": "blt",
+    }]
+    questions = compose_fallback(signals, [], now, now)
+    work_type_questions = [q for q in questions.questions if q.qid == "work_type"]
+    assert work_type_questions, "the fallback must still capture work_type"
+    codes = {o.payload.work_type for o in work_type_questions[0].options}
+    assert None not in codes and len(codes) >= 3

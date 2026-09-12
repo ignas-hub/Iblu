@@ -30,6 +30,46 @@ class UnknownPing(Exception):
     """Valid signature, but the ping or question no longer exists."""
 
 
+def _backfill_from_signals(conn, payload: dict) -> tuple[str | None, str | None, str]:
+    """Fill in venture / project from the signals the question was about.
+
+    The composer often names a thread without classifying its venture. Rather
+    than storing NULL — which makes the row useless for "where did sales time
+    go?" — take the majority venture from the signals the option refers to.
+
+    Returns `(venture, project, source)` where source is 'tapped' when the
+    option itself carried the value and 'inferred' when it came from the
+    signals. That distinction is recorded in meta: an inferred venture must
+    never be mistaken later for something Ignas confirmed.
+    """
+    venture, project = payload.get("venture"), payload.get("project")
+    if venture:
+        return venture, project, "tapped"
+
+    ids = payload.get("signal_ids") or []
+    container = payload.get("container")
+    if ids:
+        rows = conn.execute(
+            "SELECT venture, count(*) AS n FROM signals "
+            "WHERE id = ANY(%s) AND venture IS NOT NULL "
+            "GROUP BY venture ORDER BY n DESC LIMIT 1",
+            (ids,),
+        ).fetchone()
+    elif container:
+        rows = conn.execute(
+            "SELECT venture, count(*) AS n FROM signals "
+            "WHERE container = %s AND venture IS NOT NULL "
+            "GROUP BY venture ORDER BY n DESC LIMIT 1",
+            (container,),
+        ).fetchone()
+    else:
+        rows = None
+
+    if rows is None:
+        return None, project, "unknown"
+    return rows["venture"], project, "inferred"
+
+
 def _find_option(questions, qid: str, key: str) -> tuple[dict, dict]:
     """Look the tapped option up in the snapshot stored on the ping row.
 
@@ -66,6 +106,7 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
     question, option = _find_option(ping["questions"], qid, key)
     payload = option.get("payload") or {}
     source_ref = f"ping:{ping_id}:{qid}"
+    venture, project, venture_source = _backfill_from_signals(conn, payload)
 
     # Show the date on both ends when the window crosses midnight, so a stored
     # line like "11:48–11:48" can never be mistaken for a zero-length window.
@@ -86,9 +127,9 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
         (
             content,
             ["ping", ping["kind"]],
-            payload.get("venture"),
+            venture,
             payload.get("work_type"),
-            payload.get("project"),
+            project,
             source_ref,
             ping["covers_to"],
             Jsonb({
@@ -97,6 +138,7 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
                 "choice_key": key,
                 "payload": payload,
                 "answered_via": "tap",
+                "venture_source": venture_source,
                 "covers_from": ping["covers_from"].isoformat(),
                 "covers_to": ping["covers_to"].isoformat(),
             }),
