@@ -35,10 +35,22 @@ def main() -> int:
 
     flow = InstalledAppFlow.from_client_config(_client_config(), scopes=list(SCOPES))
 
-    print("\nA browser window will open. Sign in as the account you want the")
-    print("assistant to use, then click 'Allow'.\n")
-    # Opens the browser and runs a tiny local server to catch the response.
-    creds = flow.run_local_server(port=8765, prompt="consent", access_type="offline")
+    # Headless-friendly: don't try to launch a browser here. Print the auth
+    # URL and wait for Google to redirect to http://localhost:8765/. From a
+    # Mac SSH session started with:
+    #     ssh -L 8765:localhost:8765 ignas@178.104.122.152
+    # opening that URL in the Mac browser sends the callback through the
+    # tunnel to this script.
+    print(
+        "\nOpen the URL below in a browser (from your Mac in an SSH tunnel).\n"
+        "Sign in as the account you want the assistant to use, click 'Allow'.\n"
+    )
+    creds = flow.run_local_server(
+        port=8765,
+        prompt="consent",
+        access_type="offline",
+        open_browser=False,
+    )
 
     _save_token(creds)
     print(f"\nPASS: saved your token to {settings.google_oauth_token_file}")

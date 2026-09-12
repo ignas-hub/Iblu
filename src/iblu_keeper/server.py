@@ -739,6 +739,7 @@ def server_health() -> dict:
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
+    from . import readstate_worker
     from .google_auth import auth_status
 
     return {
@@ -747,6 +748,7 @@ def server_health() -> dict:
         "misconfigured_live": settings.misconfigured_live,
         "server_time": now_iso(),
         "auth": auth_status(),
+        "readstate_worker": readstate_worker.snapshot(),
     }
 
 
@@ -779,6 +781,10 @@ async def health(request: Request) -> JSONResponse:
         from .google_auth import auth_status
 
         body["auth"] = auth_status()
+
+    from . import readstate_worker
+
+    body["readstate_worker"] = readstate_worker.snapshot()
     return JSONResponse(body)
 
 
@@ -796,6 +802,14 @@ def build_app():
 
 # ASGI entrypoint for `uvicorn iblu_keeper.server:app`
 app = build_app()
+
+# Kick off the Chat read-state Pub/Sub worker (idempotent, silent no-op in
+# DRY_RUN / when GCP_PROJECT_ID is not set). Registers the Workspace Events
+# subscription if none is live, then streams events into the in-memory cache
+# consulted by chat.list_unread.
+from . import readstate_worker  # noqa: E402
+
+readstate_worker.start_worker()
 
 
 def main() -> None:

@@ -458,7 +458,18 @@ class GoogleChatBackend(ChatBackend):
         }
 
     def _get_last_read_time(self, conversation: str) -> str:
-        """Fetch the user's lastReadTime for a space (empty string on error)."""
+        """Return the user's lastReadTime for a space (empty string on error).
+
+        Consults the readstate_worker cache first — populated in real time
+        by Pub/Sub push events from Google Workspace Events. On cache miss,
+        falls back to a Chat API call and back-populates the cache.
+        """
+        from .. import readstate_worker
+
+        cached = readstate_worker.get_last_read_time(conversation)
+        if cached:
+            return cached
+
         from googleapiclient.errors import HttpError  # type: ignore
 
         service = self._service()
@@ -469,7 +480,10 @@ class GoogleChatBackend(ChatBackend):
                 .getSpaceReadState(name=f"users/me/{conversation}/spaceReadState")
                 .execute()
             )
-            return state.get("lastReadTime", "") or ""
+            lrt = state.get("lastReadTime", "") or ""
+            if lrt:
+                readstate_worker.seed_from_scan({conversation: lrt})
+            return lrt
         except HttpError:
             return ""
 
@@ -608,9 +622,17 @@ class GoogleChatBackend(ChatBackend):
                 )
                 .execute()
             )
+            lrt = updated.get("lastReadTime", now)
+            # Push the fresh value into the cache immediately — Workspace
+            # Events will also fire this back to us, but a same-request
+            # follow-up call (e.g. chat_list_unread) should see the update
+            # without waiting for the round-trip.
+            from .. import readstate_worker
+
+            readstate_worker.seed_from_scan({conversation: lrt})
             return {
                 "conversation": conversation, "status": "read",
-                "last_read_time": updated.get("lastReadTime", now),
+                "last_read_time": lrt,
             }
         except HttpError as exc:
             return {

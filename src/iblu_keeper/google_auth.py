@@ -53,6 +53,10 @@ SCOPES: tuple[str, ...] = (
     # replaceAllText, batchUpdate). Required for append/find-replace; the
     # broader drive scope alone only supports whole-file overwrite.
     "https://www.googleapis.com/auth/documents",
+    # Pub/Sub — pull messages from the iblu-chat-events subscription that the
+    # Workspace Events API publishes spaceReadState.updated events to. Also
+    # used to (re)create Workspace Events subscriptions per space.
+    "https://www.googleapis.com/auth/pubsub",
 )
 
 logger = logging.getLogger("iblu_keeper.google_auth")
