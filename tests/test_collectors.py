@@ -148,3 +148,45 @@ def test_inference_never_claims_certainty():
 
     source = inspect.getsource(collectors.insert_signal)
     assert '"venture_confidence": "inferred"' in source
+
+
+# --- ping question wording -------------------------------------------------
+
+
+def test_internal_keys_never_reach_the_person_answering():
+    """'sink' is the qid, not a word a human should read on their phone."""
+    import pydantic
+    from iblu_keeper.pings.compose import Question
+
+    option = {"key": "A", "label": "Planned & mine",
+              "payload": {"kind": "sink", "verdict": "planned_mine"}}
+
+    plain = Question(
+        qid="sink",
+        text="Ante Cetinic contract thread — 3 msgs, 09:07-09:22. Was that yours to do?",
+        options=[option, option],
+    )
+    assert "sink" not in plain.text.lower()
+
+    for jargon in ("Ante Cetinic thread — biggest sink?",
+                   "Your biggest attention sink this morning?"):
+        with pytest.raises(pydantic.ValidationError):
+            Question(qid="sink", text=jargon, options=[option, option])
+
+
+def test_fallback_questions_are_plain_english():
+    from datetime import datetime, timezone
+    from iblu_keeper.pings.compose import JARGON, compose_fallback
+
+    now = datetime.now(timezone.utc)
+    signals = [{
+        "id": 1, "source": "chat", "occurred_at": now, "counterpart": "Ante Cetinic",
+        "container": "spaces/X", "subject": "Ante Cetinic", "snippet": "hi",
+        "initiator": "other", "venture": "blt",
+    }]
+    questions = compose_fallback(signals, [], now, now)
+    for question in questions.questions:
+        for word in JARGON:
+            assert word not in question.text.lower(), question.text
+        # every question must actually be a question
+        assert question.text.rstrip().endswith("?")

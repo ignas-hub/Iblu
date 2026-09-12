@@ -60,6 +60,13 @@ class Option(BaseModel):
         return v.strip()[:MAX_LABEL]
 
 
+# Internal schema words that must never reach the person answering. "sink" is
+# the qid for the attention question; asked as "biggest sink?" it is meaningless
+# to a human at a glance. A prompt rule alone is not enough — a model that
+# regresses should fail validation and fall through to the fallback templates.
+JARGON = ("sink", "attention sink")
+
+
 class Question(BaseModel):
     qid: Literal["sink", "displaced", "split"]
     text: str
@@ -68,7 +75,14 @@ class Question(BaseModel):
     @field_validator("text")
     @classmethod
     def _short(cls, v: str) -> str:
-        return v.strip()[:MAX_TEXT]
+        text = v.strip()[:MAX_TEXT]
+        lowered = text.lower()
+        for word in JARGON:
+            if word in lowered:
+                raise ValueError(
+                    f"question text leaks the internal key {word!r}: {text!r}"
+                )
+        return text
 
 
 class QuestionSet(BaseModel):
@@ -149,7 +163,10 @@ def compose_fallback(
         ids = [r["id"] for r in rows][:50]
         questions.append({
             "qid": "sink",
-            "text": f"{name} — {len(rows)} messages since {rows[0]['occurred_at']:%H:%M}. What was that?",
+            "text": (
+                f"{name} — {len(rows)} msgs since {rows[0]['occurred_at']:%H:%M}. "
+                "Was that yours to do?"
+            ),
             "options": [
                 {"key": "A", "label": "Planned & mine",
                  "payload": {"kind": "sink", "verdict": "planned_mine",
@@ -258,6 +275,16 @@ went.
 Rules:
 - Name the SPECIFIC thread, person or event. "Womanizer permissions thread with \
 Bella — 7 messages since 09:10" is useful; "your messages" is worthless.
+- Write plain English a tired person understands at a glance. The qid values \
+("sink", "displaced", "split") are INTERNAL KEYS — never put them, or words \
+like "attention sink", in the text he reads. Ask the thing itself:
+    good: "Ante Cetinic contract thread — 3 msgs, 09:07-09:22. Took the most of \
+your morning. Was that yours to do?"
+    bad:  "Ante Cetinic contract thread — 3 msgs. Biggest sink?"
+    good: "You blocked 14:00-16:00 for Machina but nothing shows. What took it?"
+    good: "Morning looks like BLT 70% / Deadlift 30%. Right?"
+- Every question must be answerable by the options you give it. If the options \
+are about whether the work was his, the question has to ask that.
 - Questions <=160 chars, option labels <=40 chars. No preamble, no pleasantries.
 - Ask only what the signals support. Never invent a meeting or a person.
 - Output STRICT JSON matching the schema. No markdown, no commentary."""
@@ -293,13 +320,15 @@ Calendar today:
 Signals in the window ({len(signals)}):
 {signal_lines(signals) or '(none)'}
 
-Write at most 3 questions:
-- "sink": the biggest attention sink, NAMED. Options: Planned & mine / \
-Unplanned, still mine / Should be someone else's / One-off, ignore.
-- "displaced": ONLY if a self-block (no attendees) in the window has no signals \
-during it. Options: the top two clusters / Nothing — I did it / Other → reply.
-- "split": the venture split you infer. Options: Right / More <v1> / More <v2> \
-/ Way off → reply.
+Write at most 3 questions, each with the qid given in brackets:
+- [sink] Name the thread or person that took the most of his attention in this
+  window, then ask whether that was his work to do. Options: Planned & mine /
+  Unplanned, still mine / Should be someone else's / One-off, ignore.
+- [displaced] ONLY if a self-block (no attendees) in the window has no signals
+  during it: name the block and ask what took its place. Options: the top two
+  clusters / Nothing — I did it / Other → reply.
+- [split] State the venture split you infer as a claim, and ask if it is right.
+  Options: Right / More <v1> / More <v2> / Way off → reply.
 
 Set payload.signal_ids to the ids you are referring to where you can.
 Signal ids, in order: {[s['id'] for s in signals][:80]}
