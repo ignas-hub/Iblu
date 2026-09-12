@@ -16,7 +16,7 @@ Workspace plus this custom code.
 | Phase | Scope | Status |
 |------|-------|--------|
 | **1** | Stateless MCP server + Streamlit dashboard. No memory. | done |
-| **2** | Postgres memory layer + signal collectors + weekday quiz pings. | **in progress** |
+| **2** | Postgres memory layer + signal collectors + weekday quiz pings. | **live** |
 | 3 | Goals & priorities context (e.g. "spend 30% of time on sales"). | schema sketched |
 
 Phase 2 is being built to the plan in
@@ -396,6 +396,34 @@ python -m iblu_keeper.db migrate    # apply pending migrations
 In mock mode (`DRY_RUN=true`) every context tool returns `{"status": "mock"}`
 and never opens a database connection — a mock row must never reach the
 database (see `DEBUG_FINDINGS.md`).
+
+## Recording (Phase 2)
+
+IBLU records what Ignas actually did, then asks him twice a day to label it.
+
+**Collectors** write observations to `signals`: mail he sent, Chat messages he
+sent, and calendar changes. `python -m iblu_keeper.jobs.tick` runs them, driven
+by `iblu-tick.timer` every 10 minutes, 07:00–19:50 Mon–Fri.
+
+**Pings** are two tappable cards a day in the Google Chat space `iblu`. Each
+asks at most three questions — the biggest attention sink (named), what
+displaced a self-booked block, and the venture split — composed by an LLM over
+the window's signals, with deterministic fallbacks if the API is down. Tapping
+an option opens `/q/<signed-token>`, records the answer as a `work_log` entry
+and shows a one-line confirmation. Replying in the thread works too.
+
+```bash
+python -m iblu_keeper.jobs.tick --dry                 # collect + compose, write nothing
+python -m iblu_keeper.jobs.tick --force-ping test     # send a test card now (asks first)
+```
+
+Three invariants worth keeping:
+
+- **`in:sent` is not "I wrote it".** Google Group traffic is filed under Sent
+  for group members; the collector compares the parsed `From` address.
+- **Silence is not presence.** An empty stretch is unknown, not idle — the
+  calendar collector seeds its baseline silently on first run.
+- **The Secretary space is never collected.** Answering a ping is not work.
 
 ## Out of scope (for now)
 - Voice (handled by Claude apps, not this project)

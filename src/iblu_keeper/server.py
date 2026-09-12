@@ -20,7 +20,7 @@ from pydantic import Field
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.google import GoogleProvider
@@ -875,6 +875,75 @@ async def health(request: Request) -> JSONResponse:
 
     body["readstate_worker"] = readstate_worker.snapshot()
     return JSONResponse(body)
+
+
+# --------------------------------------------------------------------------- #
+# Ping tap endpoint — unauthenticated by design, like /health.
+#
+# The link lives in a Chat card on Ignas's phone; the signed token IS the
+# authorisation (see pings/tokens.py). Answering must cost exactly one tap, so
+# there is no login and no confirmation step.
+# --------------------------------------------------------------------------- #
+_TAP_PAGE = """<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>
+ :root{{color-scheme:light dark}}
+ body{{margin:0;min-height:100vh;display:flex;align-items:center;
+      justify-content:center;font:600 22px/1.4 system-ui,-apple-system,sans-serif;
+      text-align:center;padding:24px;background:#fbfbf9;color:#141413}}
+ @media (prefers-color-scheme:dark){{body{{background:#1a1a18;color:#f5f4ee}}}}
+ .m{{max-width:22ch}} .s{{font-size:15px;font-weight:400;opacity:.65;margin-top:10px}}
+</style>
+<div class="m">{message}<div class="s">{sub}</div></div>"""
+
+
+def _tap_response(message: str, sub: str = "", status: int = 200, title: str = "Saved"):
+    return HTMLResponse(
+        _TAP_PAGE.format(title=title, message=message, sub=sub), status_code=status
+    )
+
+
+@mcp.custom_route("/q/{token}", methods=["GET"])
+async def ping_tap(request: Request) -> HTMLResponse:
+    """Record one tapped answer and show a one-line confirmation."""
+    from . import db
+    from .pings import answers
+    from .pings.tokens import InvalidToken
+
+    token = request.path_params.get("token", "")
+    try:
+        with db.get_conn() as conn:
+            result = answers.record_tap(conn, token)
+    except InvalidToken as exc:
+        # Expired or forged — never say which, and never offer a retry link.
+        logger.info("tap rejected: %s", exc)
+        return _tap_response(
+            "Link expired",
+            "Reply in the Chat thread instead.",
+            status=410,
+            title="Expired",
+        )
+    except answers.UnknownPing as exc:
+        logger.warning("tap for a missing ping: %s", exc)
+        return _tap_response(
+            "That check is gone",
+            "Nothing was recorded.",
+            status=410,
+            title="Gone",
+        )
+    except Exception:
+        # A 500 here means a lost answer and a broken-looking phone page.
+        logger.exception("tap failed unexpectedly")
+        return _tap_response(
+            "Couldn't save that",
+            "Try again, or reply in the thread.",
+            status=503,
+            title="Error",
+        )
+
+    sub = "Updated your earlier answer." if result["superseded"] else ""
+    return _tap_response(f"✓ Saved — {result['key']} · {result['label']}", sub)
 
 
 @mcp.custom_route("/", methods=["GET"])

@@ -89,25 +89,25 @@ def run(dry: bool = False, force_ping: str | None = None, assume_yes: bool = Fal
     for name in failed:
         logger.error("tick: collector %s failed: %s", name, results[name])
 
-    # --- sessions 3: replies + ping decision land here ---------------------
-    ping_note = "off"
-    if force_ping:
-        ping_note = f"{force_ping}:not-implemented-yet"
-        logger.warning(
-            "tick: --force-ping %s requested, but ping delivery is not built "
-            "yet (session 3). Nothing was sent.",
-            force_ping,
-        )
-    elif settings.ping_enabled:
-        ping_note = "enabled:not-implemented-yet"
-        logger.warning(
-            "tick: PING_ENABLED=true but ping delivery is not built yet "
-            "(session 3). Nothing was sent."
-        )
+    # --- free-text replies in the Secretary thread -------------------------
+    replies = 0
+    try:
+        from ..pings.answers import read_thread_replies
+
+        with db.get_conn() as conn:
+            replies = read_thread_replies(conn, dry=dry)
+    except Exception as exc:  # noqa: BLE001 - reading replies is not critical
+        logger.warning("tick: could not read Secretary replies: %s", exc)
+
+    # --- ping decision -----------------------------------------------------
+    from ..pings.runner import run_pings
+
+    ping_note = run_pings(dry=dry, force_kind=force_ping)
 
     logger.info(
-        "tick: %s replies=+0 ping=%s%s",
+        "tick: %s replies=+%d ping=%s%s",
         _summary(results),
+        replies,
         ping_note,
         " [dry]" if dry else "",
     )

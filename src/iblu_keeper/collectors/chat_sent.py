@@ -84,6 +84,11 @@ def collect(conn: psycopg.Connection, *, dry: bool = False) -> int:
         spaces = spaces_page.get("spaces", []) or []
 
         for space in spaces:
+            # Never record the Secretary space. Answering a ping is not work,
+            # and left in, the recorder would eventually report talking to
+            # itself as Ignas's biggest attention sink.
+            if settings.secretary_space and space["name"] == settings.secretary_space:
+                continue
             seen_spaces += 1
             # Cheap skip: nothing has happened here since we last looked.
             last_active = _parse_ts(space.get("lastActiveTime"))

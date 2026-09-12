@@ -20,7 +20,7 @@ the start of a task rather than relying on memory.
 
 ---
 
-## Snapshot — as of 2026-09-12 (Phase 2 sessions 1–2)
+## Snapshot — as of 2026-09-12 (Phase 2 recording v1 live)
 
 **What IBLU is:** a self-hosted personal assistant for Ignas. A FastMCP server
 exposes Google Chat / Gmail / Calendar / Docs / Drive tools that Claude connects
@@ -62,6 +62,9 @@ return `{"status": "mock"}` and never touch the database.
 `DATABASE_URL`, `ANTHROPIC_API_KEY`, `IBLU_LLM_MODEL`, `IBLU_TIMEZONE`,
 `PING_SIGNING_SECRET`, `PING_ENABLED`, `PING_DAYS`, `PING_MIDDAY`,
 `PING_EVENING`, `SECRETARY_SPACE`, `SECRETARY_WEBHOOK_URL`.
+Values containing shell metacharacters **must be quoted** in `.env` — the
+webhook URL contains `&`, and unquoted it is silently truncated when the
+file is sourced by a shell.
 
 **Recent themes (see git log for detail):** real-time Chat unread via Workspace
 Events + Pub/Sub, Drive/Docs edit tools, freshness/anti-replay envelope
@@ -83,12 +86,32 @@ Two collector rules worth remembering, both learned the hard way:
 - **Silence is not presence.** The calendar collector seeds its baseline
   silently on first run, so pre-existing events are never reported as new.
 
-**Known open items:** session 3 not built — the ping composer, webhook delivery,
-the `/q/<token>` tap endpoint and the Secretary reply reader. `PING_ENABLED` is
-false and `SECRETARY_*` are empty until the Secretary Chat space exists.
-External DM partners who are not in Google Contacts cannot be named by the
-People API, so their `counterpart` stays `users/<id>` (1 space today).
-Phase 3 (goals/priorities) not started.
+**Pings (session 3 done):** two tappable quiz pings per weekday, delivered by
+incoming webhook into the Google Chat space `iblu` (`SECRETARY_SPACE`). Midday
+12:30–14:00 covers 06:00→now; evening 17:00–18:30 covers the midday send→now.
+Within the window the tick waits for a moment that is not during a meeting, not
+within 5 min after one and not within 10 min before the next; at the window's
+end it sends regardless. Questions are composed by `claude-sonnet-5` over the
+window's signals, with deterministic fallback templates if the API is
+unavailable — `pings.composer` records which ran. Tapping an option hits
+`GET /q/<signed-token>` and writes a `work_log` entry; re-tapping the same
+question supersedes the previous answer. Free-text replies in the ping's Chat
+thread are read on the next tick.
+
+**Two rules the ping layer must keep:**
+- **The Secretary space is never collected.** Answering a ping is not work;
+  left in, the recorder would report talking to itself as the biggest
+  attention sink.
+- **`/q` never returns a 500.** The link is unauthenticated by design (the
+  signed token is the authority), so every failure — forged, expired, missing
+  ping — renders a plain page, and every token failure mode is
+  indistinguishable from the outside.
+
+**Known open items:** external DM partners who are not in Google Contacts
+cannot be named by the People API, so their `counterpart` stays `users/<id>`
+(1 space today). Phase 3 (goals/priorities) not started. Week-2 backlog is in
+the plan §12 — `blocks`, the Secretary calendar, the mobile web app, the
+analyst pass, multi-account, weekly/monthly quiz.
 
 ---
 
