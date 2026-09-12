@@ -103,8 +103,9 @@ def free_now(now: datetime, events: list[Event]) -> tuple[bool, str]:
 @dataclass(frozen=True)
 class Decision:
     send: bool
-    reason: str
-    forced: bool = False  # sent at the window edge rather than at a free moment
+    reason: str                # human sentence, for the log
+    code: str = "ok"           # short token, for the one-line tick summary
+    forced: bool = False       # sent at the window edge, not at a free moment
 
 
 def decide(
@@ -116,17 +117,17 @@ def decide(
 ) -> Decision:
     """Whether to send this kind of ping, at this tick."""
     if already_handled:
-        return Decision(False, "already sent or answered today")
+        return Decision(False, "already sent or answered today", "done")
     if now < window_start:
-        return Decision(False, f"before the window (opens {window_start:%H:%M})")
+        return Decision(False, f"before the window (opens {window_start:%H:%M})", "early")
     if now >= window_end:
         # Last chance: the window is closing, so interrupt regardless.
-        return Decision(True, "window closing — sending regardless", forced=True)
+        return Decision(True, "window closing — sending regardless", "edge", forced=True)
 
     ok, why_not = free_now(now, relevant_events(events, window_end))
     if ok:
-        return Decision(True, "free moment inside the window")
-    return Decision(False, why_not)
+        return Decision(True, "free moment inside the window", "free")
+    return Decision(False, why_not, "busy")
 
 
 def coverage(

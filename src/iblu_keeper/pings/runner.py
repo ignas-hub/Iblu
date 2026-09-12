@@ -137,10 +137,10 @@ def run_one(kind: str, *, dry: bool = False, force: bool = False) -> str:
             decision = schedule.decide(now, window_start, window_end, events, handled)
             if not decision.send:
                 logger.info("pings: %s not sent — %s", kind, decision.reason)
-                return f"{kind}:{decision.reason.split(':')[0].replace(' ', '-')}"
+                return f"{kind}:{decision.code}"
         else:
             events = []
-            decision = schedule.Decision(True, "forced", forced=True)
+            decision = schedule.Decision(True, "forced", "forced", forced=True)
 
         covers_from, covers_to = schedule.coverage(
             "midday" if kind == "midday" else "evening",
@@ -236,5 +236,5 @@ def run_pings(*, dry: bool = False, force_kind: str | None = None) -> str:
     notes = [run_one(kind, dry=dry) for kind in ("midday", "evening")]
     # Collapse the common "nothing to do yet" cases into one quiet word so the
     # journal line stays readable across ~78 ticks a day.
-    interesting = [n for n in notes if not n.endswith(("before-the-window", "already"))]
+    interesting = [n for n in notes if not n.endswith((":early", ":done"))]
     return ",".join(interesting) or "waiting"
