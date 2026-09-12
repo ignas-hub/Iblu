@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the iblu-keeper database backup nightly
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 Europe/Zagreb
+# Do catch up here: a missed backup is worth taking late.
+Persistent=true
+RandomizedDelaySec=300
+Unit=iblu-backup.service
+
+[Install]
+WantedBy=timers.target

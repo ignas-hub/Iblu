@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the iblu-keeper tick every 10 minutes on weekday working hours
+
+[Timer]
+# 07:00–19:50, Monday to Friday, Zagreb local time (so it follows DST).
+OnCalendar=Mon..Fri *-*-* 07..19:00/10:00 Europe/Zagreb
+# Do NOT catch up after downtime: a tick is only meaningful when it runs at
+# its own moment. Firing six stale ticks after a reboot would just re-scan.
+Persistent=false
+AccuracySec=1min
+Unit=iblu-tick.service
+
+[Install]
+WantedBy=timers.target

@@ -20,7 +20,7 @@ the start of a task rather than relying on memory.
 
 ---
 
-## Snapshot — as of 2026-09-12 (Phase 2 session 1)
+## Snapshot — as of 2026-09-12 (Phase 2 sessions 1–2)
 
 **What IBLU is:** a self-hosted personal assistant for Ignas. A FastMCP server
 exposes Google Chat / Gmail / Calendar / Docs / Drive tools that Claude connects
@@ -68,11 +68,27 @@ Events + Pub/Sub, Drive/Docs edit tools, freshness/anti-replay envelope
 (`fetched_at` + `request_id`), mock-mode safety (no silent fake data — see
 DEBUG_FINDINGS.md).
 
-**Known open items:** Phase 2 sessions 2–3 not built yet — collectors
-(`gmail_sent`, `chat_sent`, `calendar_changes`), the tick job + systemd timer,
-the ping composer/delivery/`/q` tap endpoint, and the nightly backup timer.
-`PING_ENABLED=false` and `SECRETARY_*` are empty until the Secretary Chat space
-exists. Phase 3 (goals/priorities) not started.
+**Recording (sessions 1–2 done):** three collectors write to `signals` —
+`gmail_sent`, `chat_sent`, `calendar_changes`, each with its own watermark in
+`collector_state`. `python -m iblu_keeper.jobs.tick` runs them; it refuses to
+run in mock mode. `deploy/iblu-tick.timer` fires it every 10 min, 07:00–19:50
+Mon–Fri (Europe/Zagreb); `deploy/iblu-backup.timer` dumps the database nightly
+at 03:15 and keeps 14 days in `/home/ignas/backups/iblu`.
+
+Two collector rules worth remembering, both learned the hard way:
+- **`in:sent` is not "I wrote it".** Google Group traffic (`contracts@`,
+  `finance@`) is filed under Sent for group members, so the collector compares
+  the parsed `From` address against the account. Six of the first seven
+  "sent" messages were other people's.
+- **Silence is not presence.** The calendar collector seeds its baseline
+  silently on first run, so pre-existing events are never reported as new.
+
+**Known open items:** session 3 not built — the ping composer, webhook delivery,
+the `/q/<token>` tap endpoint and the Secretary reply reader. `PING_ENABLED` is
+false and `SECRETARY_*` are empty until the Secretary Chat space exists.
+External DM partners who are not in Google Contacts cannot be named by the
+People API, so their `counterpart` stays `users/<id>` (1 space today).
+Phase 3 (goals/priorities) not started.
 
 ---
 

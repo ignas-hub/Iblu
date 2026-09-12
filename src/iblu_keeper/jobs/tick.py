@@ -1,0 +1,158 @@
+"""The tick job — the heartbeat of the recorder (plan §6).
+
+    python -m iblu_keeper.jobs.tick [--dry] [--force-ping KIND] [--yes]
+
+Run by `iblu-tick.timer` every 10 minutes, 07:00–19:50 Mon–Fri. Each run:
+
+  1. refuse to do anything in mock mode;
+  2. run the collectors (a failing one is recorded, not fatal);
+  3. read Secretary thread replies  [session 3];
+  4. decide whether to send a ping  [session 3];
+  5. exit 0 with one summary line.
+
+All state lives in the database, so a missed or repeated run is harmless.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+
+from .. import db
+from ..config import settings
+
+logger = logging.getLogger("iblu_keeper.jobs.tick")
+
+PING_KINDS = ("midday", "evening", "test")
+
+
+def _configure_logging() -> None:
+    # Under systemd, stdout goes to the journal; keep it one line per fact.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stdout,
+    )
+
+
+def _guard() -> str | None:
+    """Return a refusal reason, or None when it is safe to run.
+
+    Mock mode is the important one: DRY_RUN=true means every Google call
+    returns invented data, and invented data must never be written to a real
+    database (plan rule 7 / DEBUG_FINDINGS.md).
+    """
+    if settings.use_mock:
+        return (
+            "refusing to run in mock mode (DRY_RUN=true) — collectors would "
+            "write fabricated rows into the database"
+        )
+    if not db.is_configured():
+        return "refusing to run without DATABASE_URL — nowhere to record"
+    if settings.misconfigured_live:
+        return (
+            "refusing to run: DRY_RUN=false but no usable Google token — "
+            "every collector would fail"
+        )
+    return None
+
+
+def _summary(results: dict) -> str:
+    short = {
+        "gmail_sent": "gmail",
+        "chat_sent": "chat",
+        "calendar_changes": "cal",
+    }
+    parts = []
+    for name, value in results.items():
+        label = short.get(name, name)
+        parts.append(
+            f"{label}={value:+d}" if isinstance(value, int) else f"{label}=ERROR"
+        )
+    return " ".join(parts)
+
+
+def run(dry: bool = False, force_ping: str | None = None, assume_yes: bool = False) -> int:
+    """One tick. Returns the process exit code."""
+    refusal = _guard()
+    if refusal:
+        logger.error("tick: %s", refusal)
+        return 1
+
+    from ..collectors import run_all
+
+    with db.get_conn() as conn:
+        results = run_all(conn, dry=dry)
+
+    failed = [name for name, value in results.items() if not isinstance(value, int)]
+    for name in failed:
+        logger.error("tick: collector %s failed: %s", name, results[name])
+
+    # --- sessions 3: replies + ping decision land here ---------------------
+    ping_note = "off"
+    if force_ping:
+        ping_note = f"{force_ping}:not-implemented-yet"
+        logger.warning(
+            "tick: --force-ping %s requested, but ping delivery is not built "
+            "yet (session 3). Nothing was sent.",
+            force_ping,
+        )
+    elif settings.ping_enabled:
+        ping_note = "enabled:not-implemented-yet"
+        logger.warning(
+            "tick: PING_ENABLED=true but ping delivery is not built yet "
+            "(session 3). Nothing was sent."
+        )
+
+    logger.info(
+        "tick: %s replies=+0 ping=%s%s",
+        _summary(results),
+        ping_note,
+        " [dry]" if dry else "",
+    )
+    # A collector outage is reported loudly but does not fail the timer: the
+    # next tick retries, and a non-zero exit would just spam systemd.
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m iblu_keeper.jobs.tick",
+        description="Collect signals, read replies, maybe send a ping.",
+    )
+    parser.add_argument(
+        "--dry",
+        action="store_true",
+        help="read only: run collectors, print what would be written, write nothing",
+    )
+    parser.add_argument(
+        "--force-ping",
+        choices=PING_KINDS,
+        metavar="KIND",
+        help="compose and send a ping now, ignoring window and gap rules",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the confirmation prompt for --force-ping",
+    )
+    args = parser.parse_args(argv)
+
+    _configure_logging()
+
+    if args.force_ping and not args.yes:
+        # Never send anything to a real person without an explicit yes.
+        answer = input(f"send a {args.force_ping} ping to Secretary now? [y/N] ")
+        if answer.strip().lower() not in {"y", "yes"}:
+            print("cancelled")
+            return 0
+
+    try:
+        return run(dry=args.dry, force_ping=args.force_ping, assume_yes=args.yes)
+    finally:
+        db.close_pool()
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

@@ -1,0 +1,19 @@
+[Unit]
+Description=iblu-keeper tick (collect signals, read replies, maybe ping)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ignas
+WorkingDirectory=/home/ignas/iblu
+EnvironmentFile=/home/ignas/iblu/.env
+ExecStart=/home/ignas/iblu/.venv/bin/python -m iblu_keeper.jobs.tick
+# A collector outage must not mark the unit failed — the next tick retries.
+SuccessExitStatus=0
+TimeoutStartSec=600
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=iblu-keeper nightly database backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ignas
+WorkingDirectory=/home/ignas/iblu
+ExecStart=/home/ignas/iblu/deploy/iblu-backup.sh
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
