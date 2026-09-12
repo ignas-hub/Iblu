@@ -609,6 +609,26 @@ def drive_upload_from_url(
     return drive_tools.drive_upload_from_url(url, filename, folder_id_or_url, mime_type)
 
 
+@mcp.tool(name="drive_create_file", annotations={"title": "Create File in Drive", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("drive_create_file")
+@with_retry("drive_create_file")
+def drive_create_file(
+    filename: Annotated[str, Field(min_length=1, max_length=500, description="File name including extension (e.g. 'notes.md', 'report.json')")],
+    content: Annotated[str, Field(description="Text content to write. UTF-8 encoded before upload. For binary data use drive_upload_from_url or drive_save_gmail_attachment.")],
+    folder_id_or_url: Annotated[str | None, Field(default=None, description="Destination Drive folder ID or URL (My Drive root if omitted). Works for Shared Drives.")] = None,
+    mime_type: Annotated[str, Field(default="text/plain", max_length=200, description="MIME type Drive should treat the file as. Common: 'text/plain', 'text/markdown', 'text/csv', 'application/json'.")] = "text/plain",
+) -> dict:
+    """Create a new file in Drive with the given text content.
+
+    Use when the user asks to "save these notes", "drop this JSON in my
+    Reports folder", "make a markdown file with today's summary", etc.
+    Returns the new file's id, name, mime_type, size, and viewable URL.
+    """
+    from .tools import drive as drive_tools
+    return drive_tools.drive_create_file(filename, content, folder_id_or_url, mime_type)
+
+
 # --------------------------------------------------------------------------- #
 # Calendar
 # --------------------------------------------------------------------------- #
@@ -624,6 +644,26 @@ def calendar_create_event(
 ) -> dict:
     """Create a calendar event. start/end are RFC 3339 timestamps with offset."""
     return calendar_tools.create_event(title, start, end, description)
+
+
+@mcp.tool(name="calendar_add_label", annotations={"title": "Label Calendar Event", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("calendar_add_label")
+@with_retry("calendar_add_label")
+def calendar_add_label(
+    event_id: Annotated[str, Field(min_length=1, description="Calendar event id (from calendar_create_event or a Calendar URL)")],
+    label_id: Annotated[str, Field(max_length=200, description="Event label id defined on the calendar. Pass empty string to clear the label.")],
+    calendar_id: Annotated[str, Field(default="primary", max_length=200, description="Calendar id (default 'primary')")] = "primary",
+) -> dict:
+    """Attach (or clear) a custom event label on an existing Calendar event.
+
+    Uses the July 2026 event-labels feature. The label must already exist
+    on the calendar; define labels in the Google Calendar UI first, then
+    use their ids here. Passing an empty ``label_id`` removes the current
+    label from the event. Idempotent — calling twice with the same label
+    is a no-op.
+    """
+    return calendar_tools.add_label(event_id, label_id, calendar_id)
 
 
 # --------------------------------------------------------------------------- #

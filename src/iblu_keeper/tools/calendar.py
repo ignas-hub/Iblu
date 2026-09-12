@@ -69,3 +69,46 @@ def create_event(
         "end": event.get("end", {}).get("dateTime", end),
         "status": "created",
     }
+
+
+def add_label(event_id: str, label_id: str, calendar_id: str = "primary") -> dict:
+    """Attach a custom event label to an existing Calendar event.
+
+    Requires the label to be defined at the calendar level first (via
+    Calendar UI or Calendars API — the latter would need a wider OAuth
+    scope than we currently request). Passing ``label_id=""`` removes the
+    current label from the event.
+
+    Uses ``eventLabelVersion=1``; with this flag Calendar processes the
+    ``eventLabelId`` field on the event body and ignores the legacy
+    ``colorId``.
+    """
+    if settings.use_mock:
+        logger.warning("MOCK add_label event=%s label=%s (DRY_RUN)", event_id, label_id)
+        return {
+            "_mock": True,
+            "id": event_id,
+            "event_label_id": label_id,
+            "status": "not_labeled_mock",
+            "note": "MOCK MODE — event was NOT labeled. Set DRY_RUN=false.",
+        }
+
+    service = _service()
+    updated = service.events().patch(
+        calendarId=calendar_id,
+        eventId=event_id,
+        body={"eventLabelId": label_id},
+        eventLabelVersion=1,
+    ).execute()
+    logger.info(
+        "add_label event=%s label=%r  → %r",
+        event_id, label_id, updated.get("eventLabelId"),
+    )
+    return {
+        "id": updated.get("id", event_id),
+        "calendar_id": calendar_id,
+        "event_label_id": updated.get("eventLabelId", ""),
+        "title": updated.get("summary", ""),
+        "html_link": updated.get("htmlLink"),
+        "status": "labeled" if label_id else "label_cleared",
+    }

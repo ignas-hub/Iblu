@@ -398,3 +398,26 @@ def drive_upload_from_url(
             r.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
         )
     return _upload_bytes(data, filename, mime_type, folder_id_or_url)
+
+
+def drive_create_file(
+    filename: str,
+    content: str,
+    folder_id_or_url: str | None = None,
+    mime_type: str = "text/plain",
+) -> dict:
+    """Create a new file in Drive with the given text content.
+
+    Use for "save these notes as a .md file", "drop this JSON into my
+    Reports folder", etc. Content is UTF-8-encoded before upload; for
+    binary data use ``drive_save_gmail_attachment`` or
+    ``drive_upload_from_url`` instead. Set ``mime_type`` to control how
+    Drive treats the file (e.g. ``text/markdown``, ``application/json``,
+    ``text/csv``).
+    """
+    if settings.use_mock:
+        return _mock({"id": "MOCK_FILE", "name": filename, "status": "not_uploaded_mock"})
+
+    return _upload_bytes(
+        content.encode("utf-8"), filename, mime_type, folder_id_or_url,
+    )
