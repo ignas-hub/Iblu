@@ -858,10 +858,18 @@ async def health(request: Request) -> JSONResponse:
             "DRY_RUN is false but no usable Google token is present — live tool "
             "calls will FAIL (this is intentional: no silent fake data)."
         )
+    from . import db
+
+    # Cheap by default: report only whether a database is configured. The
+    # actual connection check runs a query (and can block on a dead server),
+    # so it belongs behind ?probe=1 alongside the Google credential check.
     if request.query_params.get("probe"):
         from .google_auth import auth_status
 
         body["auth"] = auth_status()
+        body["database"] = db.healthcheck()
+    else:
+        body["database"] = {"configured": db.is_configured()}
 
     from . import readstate_worker
 
