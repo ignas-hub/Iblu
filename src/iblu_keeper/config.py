@@ -100,8 +100,63 @@ class Settings:
         default_factory=lambda: os.getenv("INFRA_HUB_TIMEZONE", "UTC")
     )
 
-    # --- Phase 2 (unused in Phase 1) ---
+    # --- Phase 2: recording v1 (docs/plans/2026-09-14-recording-v1.md) ---
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
+
+    # Local time zone for every scheduling decision. Storage stays UTC.
+    iblu_timezone: str = field(
+        default_factory=lambda: os.getenv("IBLU_TIMEZONE", "Europe/Zagreb")
+    )
+
+    # Ping composer (Anthropic Messages API).
+    anthropic_api_key: str = field(
+        default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "")
+    )
+    iblu_llm_model: str = field(
+        default_factory=lambda: os.getenv("IBLU_LLM_MODEL", "claude-sonnet-5")
+    )
+
+    # Secretary Chat space: webhook posts the card, space id reads the replies.
+    secretary_webhook_url: str = field(
+        default_factory=lambda: os.getenv("SECRETARY_WEBHOOK_URL", "")
+    )
+    secretary_space: str = field(
+        default_factory=lambda: os.getenv("SECRETARY_SPACE", "")
+    )
+
+    # Tap-link signing. Without it the /q endpoint refuses every token.
+    ping_signing_secret: str = field(
+        default_factory=lambda: os.getenv("PING_SIGNING_SECRET", "")
+    )
+
+    # Ping scheduling. Default OFF so a half-configured box never pings.
+    ping_enabled: bool = field(default_factory=lambda: _bool("PING_ENABLED", False))
+    ping_days: str = field(
+        default_factory=lambda: os.getenv("PING_DAYS", "MON,TUE,WED,THU,FRI")
+    )
+    ping_midday: str = field(
+        default_factory=lambda: os.getenv("PING_MIDDAY", "12:30-14:00")
+    )
+    ping_evening: str = field(
+        default_factory=lambda: os.getenv("PING_EVENING", "17:00-18:30")
+    )
+
+    @property
+    def ping_day_set(self) -> frozenset[str]:
+        """PING_DAYS parsed into upper-case three-letter day codes."""
+        return frozenset(
+            d.strip().upper()[:3] for d in self.ping_days.split(",") if d.strip()
+        )
+
+    @property
+    def can_ping(self) -> bool:
+        """True only when every piece needed to send and record a ping exists."""
+        return bool(
+            self.ping_enabled
+            and self.secretary_webhook_url
+            and self.ping_signing_secret
+            and self.mcp_public_base_url
+        )
 
     @property
     def has_google_credentials(self) -> bool:

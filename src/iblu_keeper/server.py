@@ -669,23 +669,103 @@ def calendar_add_label(
 # --------------------------------------------------------------------------- #
 # Context / memory — Phase 2 stubs (interfaces stable now)
 # --------------------------------------------------------------------------- #
-@mcp.tool(name="context_log_conversation", annotations={"title": "Log Conversation (Phase 2 stub)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@mcp.tool(name="context_log", annotations={"title": "Log Memory Entry", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_retry("context_log")
+def context_log(
+    type: str,
+    content: str,
+    importance: int = 3,
+    tags: list[str] | None = None,
+    venture: str | None = None,
+    work_type: str | None = None,
+    project: str | None = None,
+    source: str = "claude",
+    source_ref: str | None = None,
+    occurred_at: str | None = None,
+    supersedes: str | None = None,
+) -> dict:
+    """Store one durable memory entry — a fact, decision, preference or work_log line.
+
+    Use this for things worth remembering after the conversation ends. ``type``
+    is one of work_log / fact / preference / decision / correction /
+    conversation_note. ``venture`` and ``work_type`` must be codes from the
+    taxonomy (blt, choco, deadlift, jakusi, family, personal / sales, client,
+    delivery, people, finance, build, admin, life) — an invalid code returns an
+    error listing the valid ones. ``occurred_at`` is ISO-8601 and says when the
+    thing happened (omit for timeless facts).
+
+    Corrections supersede rather than delete: pass ``supersedes=<entry id>`` to
+    mark an earlier entry as replaced by this one. Returns ``{id, created_at}``.
+    """
+    return context_tools.log_entry(
+        type=type,
+        content=content,
+        importance=importance,
+        tags=tags,
+        venture=venture,
+        work_type=work_type,
+        project=project,
+        source=source,
+        source_ref=source_ref,
+        occurred_at=occurred_at,
+        supersedes=supersedes,
+    )
+
+
+@mcp.tool(name="context_search", annotations={"title": "Search Memory", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_retry("context_search")
+def context_search(
+    query: str | None = None,
+    type: str | None = None,
+    tags: list[str] | None = None,
+    venture: str | None = None,
+    since: str | None = None,
+    limit: int = 20,
+) -> dict:
+    """Search stored memory entries by text and/or filters.
+
+    ``query`` is full-text over the entry content; ``type``, ``tags``,
+    ``venture`` and ``since`` (ISO-8601) narrow it further. Superseded entries
+    are never returned. Newest first.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
+    return context_tools.search_entries(
+        query=query,
+        type=type,
+        tags=tags,
+        venture=venture,
+        since=since,
+        limit=limit,
+    )
+
+
+@mcp.tool(name="context_log_conversation", annotations={"title": "Log Conversation (deprecated)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("context_log_conversation")
 @with_retry("context_log_conversation")
 def context_log_conversation(
     conversation: str, role: str, text: str, source: str = "chat"
 ) -> dict:
-    """[Phase 2 stub] Record a conversation turn for long-term memory."""
+    """DEPRECATED — use ``context_log`` instead.
+
+    Records a conversation turn as a ``conversation_note`` memory entry.
+    Kept for backwards compatibility; ``context_log`` is more expressive.
+    """
     return context_tools.log_conversation(conversation, role, text, source)
 
 
-@mcp.tool(name="context_get_summary", annotations={"title": "Get Activity Summary (Phase 2 stub)", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@mcp.tool(name="context_get_summary", annotations={"title": "Get Activity Summary", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("context_get_summary")
 @with_retry("context_get_summary")
 def context_get_summary(window: str = "1d") -> dict:
-    """[Phase 2 stub] Summarize recent activity over a time window (e.g. '1d').
+    """Summarize what the recorder saw over a time window (e.g. '1d', '12h', '2w').
+
+    Returns signal counts by source and venture, the ping history for the
+    window, and the work_log entries recorded in it.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
@@ -739,7 +819,7 @@ def server_health() -> dict:
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    from . import readstate_worker
+    from . import db, readstate_worker
     from .google_auth import auth_status
 
     return {
@@ -749,6 +829,7 @@ def server_health() -> dict:
         "server_time": now_iso(),
         "auth": auth_status(),
         "readstate_worker": readstate_worker.snapshot(),
+        "database": db.healthcheck(),
     }
 
 

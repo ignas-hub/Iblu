@@ -15,13 +15,13 @@ Workspace plus this custom code.
 
 | Phase | Scope | Status |
 |------|-------|--------|
-| **1** | Stateless MCP server + Streamlit dashboard. No memory. | **this repo** |
-| 2 | Postgres memory layer (log conversations, "last day" summaries). | stubs in place |
+| **1** | Stateless MCP server + Streamlit dashboard. No memory. | done |
+| **2** | Postgres memory layer + signal collectors + weekday quiz pings. | **in progress** |
 | 3 | Goals & priorities context (e.g. "spend 30% of time on sales"). | schema sketched |
 
-Phase 1 is built so Phases 2–3 plug in without rewrites: modular structure,
-swappable Chat backend, DB schema sketch (`db/schema.sql`), and `context.*`
-tool stubs with final signatures.
+Phase 2 is being built to the plan in
+[`docs/plans/2026-09-14-recording-v1.md`](docs/plans/2026-09-14-recording-v1.md)
+— read that first for the data model, decisions and acceptance criteria.
 
 ---
 
@@ -30,7 +30,7 @@ tool stubs with final signatures.
 Two components, one repo:
 
 ### 1. MCP server (Python, FastMCP)
-Remote MCP server Claude connects to over HTTPS. **21 tools** organised by
+Remote MCP server Claude connects to over HTTPS. **35 tools** organised by
 service, with MCP tool annotations (`readOnlyHint` / `destructiveHint`) so
 Claude.ai picks safe permission defaults automatically:
 
@@ -54,7 +54,21 @@ Claude.ai picks safe permission defaults automatically:
 | `gmail_mark_read` / `gmail_mark_unread` | Toggle UNREAD label | auto-allow |
 | `gdoc_read` | Fetch a Google Doc / Sheet / Slides as plain text (URL or ID) | auto-allow |
 | `calendar_create_event` | Create a Calendar event | auto-allow |
-| `context_log_conversation` / `context_get_summary` | Phase 2 stubs (memory layer) | auto-allow |
+| `calendar_add_label` | Attach a custom label to a Calendar event | auto-allow |
+| `gdoc_create` | Create a new Google Doc | auto-allow |
+| `gdoc_append` | Append text to an existing Doc | auto-allow |
+| `gdoc_replace_text` | Find-and-replace inside a Doc | auto-allow |
+| `gdoc_rename` / `gdoc_move` | Rename a Doc / move it between folders | auto-allow |
+| `drive_list_folder` | List a Drive folder (Shared Drives supported) | auto-allow |
+| `drive_create_folder` | Create a Drive folder | auto-allow |
+| `drive_create_file` | Create a text-content file in Drive | auto-allow |
+| `drive_upload_from_url` | Fetch a URL and save it to Drive | auto-allow |
+| `drive_save_gmail_attachment` | Save an email attachment straight to Drive | auto-allow |
+| `get_infra_status` | Latest infrastructure health from the Drive collector | auto-allow |
+| `context_log` | Store a durable memory entry (fact / decision / preference / work_log) | auto-allow |
+| `context_search` | Full-text + filtered search over stored entries | auto-allow |
+| `context_get_summary` | What the recorder saw in a window: signal counts, pings, work_log | auto-allow |
+| `context_log_conversation` | Deprecated — use `context_log` | auto-allow |
 
 **Every tool response is stamped** with `fetched_at` (ISO-8601 UTC) and
 `request_id` (UUID), plus a `query` echo of the kwargs used — so the
@@ -67,7 +81,8 @@ voice-friendly output.
 Auth to Google: **single-user OAuth** — a refresh token for one account
 (`ignas@blanklabel.team`), created once via a browser "Allow". No service
 account and no domain-wide delegation, so the authorization can touch only that
-one account. Auth from Claude to the server: a **bearer token** (`MCP_API_KEY`).
+one account. Auth from Claude to the server: **Google OAuth via FastMCP's
+Google provider** (Claude.ai requires dynamic client registration).
 
 > **Chat is behind a swappable interface** (`src/iblu_keeper/tools/chat.py`).
 > It is *not yet validated* that the Google Chat API can read/send Ignas's
@@ -358,7 +373,30 @@ the bearer token (`MCP_API_KEY`) as the `Authorization: Bearer <token>` header.
 - The dashboard only admits `DASHBOARD_ALLOWED_EMAIL`.
 - Services bind to localhost; only the reverse proxy is internet-facing.
 
+## Memory (Phase 2)
+
+Durable memory lives in PostgreSQL 16, running as a dedicated Docker
+container (`iblu-db`, volume `iblu-pgdata`, bound to `127.0.0.1:5432`).
+Two stores, deliberately separate:
+
+- **`signals`** — raw observations written by the collectors (my sent mail,
+  my Chat messages, calendar changes). Evidence, never read straight into a
+  summary.
+- **`context_entries`** — durable facts, decisions, preferences and quiz
+  answers. This is the memory surface `context_log` / `context_search` expose.
+
+Corrections supersede rather than delete: a correcting entry sets
+`superseded_by` on the row it replaces, and searches skip superseded rows.
+
+```bash
+python -m iblu_keeper.db status     # applied / pending migrations
+python -m iblu_keeper.db migrate    # apply pending migrations
+```
+
+In mock mode (`DRY_RUN=true`) every context tool returns `{"status": "mock"}`
+and never opens a database connection — a mock row must never reach the
+database (see `DEBUG_FINDINGS.md`).
+
 ## Out of scope (for now)
-- Memory/Postgres implementation (stub only)
 - Voice (handled by Claude apps, not this project)
 - Any company (BT / n8n) integration — iblu-keeper is personal infrastructure

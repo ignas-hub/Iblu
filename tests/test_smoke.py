@@ -99,9 +99,13 @@ def test_calendar_create_is_mocked():
     assert out["status"] == "not_created_mock"
 
 
-def test_context_stubs():
-    assert context_tools.log_conversation("c", "user", "hi")["status"] == "stub"
-    assert context_tools.get_summary("1d")["status"] == "stub"
+def test_context_tools_are_inert_in_mock_mode():
+    # Phase 2: these are real Postgres-backed tools now, but in mock mode they
+    # must still write nothing and say so (plan §9).
+    assert context_tools.log_conversation("c", "user", "hi")["status"] == "mock"
+    assert context_tools.get_summary("1d")["status"] == "mock"
+    assert context_tools.log_entry(type="fact", content="x")["status"] == "mock"
+    assert context_tools.search_entries(query="x")["status"] == "mock"
 
 
 def test_server_imports_and_registers_tools():

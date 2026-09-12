@@ -20,16 +20,19 @@ the start of a task rather than relying on memory.
 
 ---
 
-## Snapshot — as of 2026-06-15 (commit `d4b8b0c`)
+## Snapshot — as of 2026-09-12 (Phase 2 session 1)
 
 **What IBLU is:** a self-hosted personal assistant for Ignas. A FastMCP server
-exposes Google Chat / Gmail / Calendar / Docs tools that Claude connects to over
-HTTPS; a Streamlit dashboard (`keeper.iblugames.com`) is the review UI. Phase 1
-(stateless; no long-term memory yet).
+exposes Google Chat / Gmail / Calendar / Docs / Drive tools that Claude connects
+to over HTTPS; a Streamlit dashboard (`keeper.iblugames.com`) is the review UI.
+**Phase 2 ("recording v1") is being built** — build plan in
+`docs/plans/2026-09-14-recording-v1.md`; target: recording live Monday
+2026-09-14 07:00 Europe/Zagreb.
 
 **Goals / direction** (full detail in README → "End state" + "Phased plan"):
-- **Phase 1 (now):** stateless tools + dashboard, no memory.
-- **Phase 2:** Postgres memory — log conversations, "last day" summaries.
+- **Phase 1 (done):** stateless tools + dashboard, no memory.
+- **Phase 2 (in progress):** Postgres memory — durable entries, signal
+  collectors, two tappable quiz pings per weekday.
 - **Phase 3:** goals/priorities context (e.g. "spend 30% of time on sales").
 - **End state:** voice-first assistant that remembers context, knows Ignas's
   goals, and proposes actions/replies for review.
@@ -43,23 +46,33 @@ connector itself authenticates Claude.ai via FastMCP's Google provider (DCR).
 (`iblu-mcp`, `iblu-dashboard`). The repo is the source; the box updates on
 `git pull && pip install -e . && systemctl restart`.
 
-**Tools currently exposed (21):**
-`chat_list_conversations`, `chat_get_messages`, `chat_send_message`,
-`chat_draft_message`, `chat_list_unread`, `chat_mark_read`,
-`gmail_search`, `gmail_get_message`, `gmail_draft_email`, `gmail_send_email`,
-`gmail_list_unread`, `gmail_mark_read`, `gmail_mark_unread`, `gmail_reply`,
-`gmail_list_attachments`, `gmail_read_attachment`, `gdoc_read`,
-`calendar_create_event`, `context_log_conversation` (stub),
-`context_get_summary` (stub), `server_health`.
+**Storage (new in Phase 2):** PostgreSQL 16 in a dedicated Docker container
+`iblu-db` (`--restart unless-stopped`, volume `iblu-pgdata`, bound to
+`127.0.0.1:5432` only, database `iblu_keeper`). Schema lives in
+`db/migrations/`, applied with `python -m iblu_keeper.db migrate` and tracked in
+`schema_migrations`. Before this, IBLU persisted nothing but `data/token.json`
+and `data/drafts.jsonl`.
 
-**Recent themes (see git log for detail):** freshness/anti-replay envelope
-(`fetched_at` + `request_id`, `Cache-Control: no-store`), pagination, read/unread
-+ reply tools, People-API name resolution for Chat DMs, voice-mode protocol,
-mock-mode safety (no silent fake data — see DEBUG_FINDINGS.md).
+**Tools currently exposed (35).** Phase 2 added `context_log` and
+`context_search`; `context_get_summary` and `context_log_conversation` are no
+longer stubs and now read/write Postgres. In mock mode (`DRY_RUN=true`) all four
+return `{"status": "mock"}` and never touch the database.
 
-**Known open items:** Phase 2 (Postgres memory) and Phase 3 (goals/priorities)
-not built (stubs present). Live-server config must have `DRY_RUN=false` + a valid
-token, else live tools fail loudly by design.
+**Env keys added this session** (names only; values in `.env`, never committed):
+`DATABASE_URL`, `ANTHROPIC_API_KEY`, `IBLU_LLM_MODEL`, `IBLU_TIMEZONE`,
+`PING_SIGNING_SECRET`, `PING_ENABLED`, `PING_DAYS`, `PING_MIDDAY`,
+`PING_EVENING`, `SECRETARY_SPACE`, `SECRETARY_WEBHOOK_URL`.
+
+**Recent themes (see git log for detail):** real-time Chat unread via Workspace
+Events + Pub/Sub, Drive/Docs edit tools, freshness/anti-replay envelope
+(`fetched_at` + `request_id`), mock-mode safety (no silent fake data — see
+DEBUG_FINDINGS.md).
+
+**Known open items:** Phase 2 sessions 2–3 not built yet — collectors
+(`gmail_sent`, `chat_sent`, `calendar_changes`), the tick job + systemd timer,
+the ping composer/delivery/`/q` tap endpoint, and the nightly backup timer.
+`PING_ENABLED=false` and `SECRETARY_*` are empty until the Secretary Chat space
+exists. Phase 3 (goals/priorities) not started.
 
 ---
 
