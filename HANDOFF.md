@@ -318,3 +318,26 @@ does not erase history; it makes the collector forget it ever saw the event, so
 the event gets reported again. To remove a test event: delete it in Google,
 let one tick run so the collector records the cancellation, then delete the
 `signals` rows only — and leave the baseline alone.
+
+### 14. "Not written by me" has two different causes — do not conflate them
+
+A mailbox sends under aliases, and a Google Group alias appears in that same
+send-as list. Both produce a From address that is not the primary one, and they
+need opposite treatment:
+
+- **Alias send — keep.** The Choco mailbox invoices as `ap@chocoagency.com`;
+  BLT sends as `finance@blanklabel.team`. Ignas wrote these. Checking only the
+  primary address discarded all of them.
+- **Group delivery — drop.** Mail delivered through a Google Group to a member
+  is filed in that member's Sent with the group in From. Someone else wrote it.
+
+The discriminator is Google's own rewrite of the From display name:
+`'Original Author' via GroupName`. Only a Group does that.
+
+Do NOT key this on `list-unsubscribe` / `precedence: list`, even though group
+mail carries them: forwarding a newsletter preserves the original's list
+headers, so that rule discards genuine forwards. One was found in the Choco
+mailbox the moment aliases were switched on.
+
+Measured over 90 days: BLT keeps 14 and drops 26, Choco keeps 14 and drops 26,
+Deadlift keeps all 40 (single address, no groups).

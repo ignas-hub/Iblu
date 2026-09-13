@@ -63,18 +63,59 @@ def _occurred_at(message: dict) -> datetime:
     )
 
 
-def _is_mine(headers: dict[str, str], me: str) -> bool:
+def _send_as_addresses(svc, me: str) -> set[str]:
+    """Every address this mailbox can legitimately send as.
+
+    A mailbox often sends under an alias: the Choco account sends invoices as
+    `ap@chocoagency.com`, and those are still Ignas's work. Without this, every
+    aliased message is discarded as "not written by me".
+    """
+    addresses = {me.lower()}
+    try:
+        for entry in svc.users().settings().sendAs().list(userId="me").execute().get("sendAs", []):
+            address = (entry.get("sendAsEmail") or "").lower()
+            if address:
+                addresses.add(address)
+    except Exception as exc:  # noqa: BLE001 - fall back to the primary address
+        logger.warning("%s: could not read send-as aliases: %s", NAME, exc)
+    return addresses
+
+
+def _is_group_delivery(headers: dict[str, str]) -> bool:
+    """True when this is Google Group traffic, not something the user sent.
+
+    Group aliases appear in the mailbox's own send-as list, so the alias check
+    alone would re-admit them. The reliable signal is Google's own rewrite of
+    the From display name: mail delivered through a Group to a member arrives
+    as `'Original Author' via GroupName`, and only a Group does that.
+
+    Deliberately NOT keyed on list-unsubscribe / precedence headers, although
+    group mail carries them: forwarding a newsletter preserves the original's
+    list headers, so that rule discarded genuine forwards — one was found in
+    the Choco mailbox the moment aliases were switched on.
+    """
+    return " via " in (headers.get("from") or "").lower()
+
+
+def _is_mine(headers: dict[str, str], me: str, aliases: set[str] | None = None) -> bool:
     """True only when *I* am the author.
 
-    Must compare the parsed address, not a substring: Google Group traffic
-    arrives as `"'Someone' via Contracts" <contracts@blanklabel.team>` and is
-    filed under `in:sent` for group members even though someone else wrote it.
-    Recording those as mine would attribute other people's work to Ignas.
+    Compares the parsed address against every address this mailbox may send as,
+    then excludes Google Group deliveries — which carry a group alias in From
+    and are filed under `in:sent` for members even though someone else wrote
+    them. Six of the first seven messages collected were other people's.
     """
-    return _address_of(headers.get("from")) == me.lower()
+    address = _address_of(headers.get("from"))
+    if not address:
+        return False
+    if address not in (aliases or {me.lower()}):
+        return False
+    return not _is_group_delivery(headers)
 
 
-def _thread_context(svc, thread_id: str, me: str, my_ts: datetime) -> tuple[str | None, str, int]:
+def _thread_context(
+    svc, thread_id: str, me: str, my_ts: datetime, aliases: set[str] | None = None
+) -> tuple[str | None, str, int]:
     """Return `(ask_snippet, initiator, thread_len)` for the thread I replied in.
 
     `ask_snippet` is the newest message before mine that is not from me — the
@@ -94,7 +135,7 @@ def _thread_context(svc, thread_id: str, me: str, my_ts: datetime) -> tuple[str 
         return None, "me", 0
 
     first_headers = _headers(messages[0])
-    initiator = "me" if _is_mine(first_headers, me) else "other"
+    initiator = "me" if _is_mine(first_headers, me, aliases) else "other"
 
     ask = None
     for msg in messages:
@@ -102,7 +143,7 @@ def _thread_context(svc, thread_id: str, me: str, my_ts: datetime) -> tuple[str 
         if ts >= my_ts:
             continue
         headers = _headers(msg)
-        if _is_mine(headers, me):
+        if _is_mine(headers, me, my_addresses):
             continue
         ask = snippets.snippet(_extract_body(msg.get("payload", {})))
     return ask, initiator, len(messages)
@@ -126,6 +167,7 @@ def collect(
     # the watermark as normal.
     since = default_since(get_watermark(conn, state_key), fallback_hours=FIRST_RUN_HOURS)
     svc = _service(None if alias == settings.primary_alias else alias)
+    my_addresses = _send_as_addresses(svc, me)
 
     # Gmail's `after:` takes whole seconds since the epoch.
     query = f"in:sent after:{int(since.timestamp())}"
@@ -163,7 +205,7 @@ def collect(
         newest = max(newest, occurred)
 
         # `in:sent` is not the same as "I wrote it" — see _is_mine.
-        if not _is_mine(headers, me):
+        if not _is_mine(headers, me, my_addresses):
             skipped_not_mine += 1
             logger.debug(
                 "%s: skipping %s, From=%r is not me",
@@ -179,7 +221,7 @@ def collect(
 
         if thread_id not in thread_cache:
             try:
-                thread_cache[thread_id] = _thread_context(svc, thread_id, me, occurred)
+                thread_cache[thread_id] = _thread_context(svc, thread_id, me, occurred, my_addresses)
             except Exception as exc:  # a thread read failing must not lose the signal
                 logger.warning("%s: thread %s unreadable: %s", NAME, thread_id, exc)
                 thread_cache[thread_id] = (None, "me", 1)

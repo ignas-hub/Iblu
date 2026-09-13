@@ -34,6 +34,54 @@ def test_only_mail_i_actually_wrote_counts(from_header, expected):
     assert gmail_sent._is_mine({"from": from_header}, ME) is expected
 
 
+ALIASES = {
+    "ignacio@chocoagency.com",
+    "ap@chocoagency.com",
+    "contracts@blanklabel.team",
+}
+
+
+@pytest.mark.parametrize(
+    "from_header,expected,why",
+    [
+        # A mailbox often sends under an alias — the Choco account invoices as
+        # ap@ — and those are still Ignas's work.
+        ("Accounts Payable <ap@chocoagency.com>", True, "verified alias send"),
+        ("Ignacio Choco <ignacio@chocoagency.com>", True, "primary address"),
+        # But a group alias is ALSO in the send-as list, so the alias check
+        # alone would re-admit group traffic. Google's `via` rewrite is what
+        # separates them.
+        ("\"'Diana Saavedra' via ap\" <ap@chocoagency.com>", False, "group delivery"),
+        ("\"'PandaDoc' via Contracts\" <contracts@blanklabel.team>", False, "group delivery"),
+        ("Someone <outsider@example.com>", False, "not one of my addresses"),
+    ],
+)
+def test_alias_sends_count_but_group_deliveries_do_not(from_header, expected, why):
+    got = gmail_sent._is_mine({"from": from_header}, "ignacio@chocoagency.com", ALIASES)
+    assert got is expected, why
+
+
+def test_a_forwarded_newsletter_is_still_mine():
+    """Forwarding preserves the original's list headers.
+
+    Keying group detection on list-unsubscribe/precedence discarded genuine
+    forwards — found in the Choco mailbox the moment aliases were switched on.
+    """
+    headers = {
+        "from": "Accounts Payable <ap@chocoagency.com>",
+        "subject": "Fwd: desfrutandoavida — Expected invoice",
+        "list-unsubscribe": "<https://example.com/unsub>",
+        "precedence": "list",
+    }
+    assert gmail_sent._is_mine(headers, "ignacio@chocoagency.com", ALIASES) is True
+
+
+def test_group_detection_is_only_about_the_via_rewrite():
+    assert gmail_sent._is_group_delivery({"from": "\"'X' via Team\" <t@x.com>"}) is True
+    assert gmail_sent._is_group_delivery({"from": "Real Person <t@x.com>"}) is False
+    assert gmail_sent._is_group_delivery({}) is False
+
+
 def test_address_parsing():
     assert gmail_sent._address_of("Ignas Gee <ignas@blanklabel.team>") == ME
     assert gmail_sent._address_of(None) == ""

@@ -122,8 +122,12 @@ Cloud project + Internal OAuth client — IBLU's consent screen is Internal to
 blanklabel.team, so the other accounts cannot authorise it. `build_service(...,
 account=...)` selects the identity, credentials are cached per alias (never
 globally, so one account can never hand back another's token), and `gmail_sent`
-runs once per account with its own watermark. `chat_sent` and
-`calendar_changes` still run against the primary only — the Chat backend
+runs once per account with its own watermark. All three Workspaces are live: `blt` (ignas@blanklabel.team),
+`deadlift` (admin@deadlift.io) and `choco` (**ignacio@chocoagency.com** — note
+that admin@chocoagency.com also exists and is NOT the tracked account).
+`gmail_sent` counts every address the mailbox may send as, minus Google Group
+deliveries. `chat_sent` and `calendar_changes` still run against the primary
+only — the Chat backend
 resolves one self-id per process and a second calendar would need its own
 `calendar_seen` namespace.
 
