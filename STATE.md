@@ -87,6 +87,14 @@ signals in threads Ignas did not start, and the ping answer rate against its
 confident finding; `response_format='markdown'` gives the speakable form.
 Deterministic SQL, no LLM — scripts fetch, the LLM judges.
 
+**Weekly review (stage 2):** `python -m iblu_keeper.jobs.weekly [--dry]`
+posts the attention review into the Secretary space as plain text (nothing to
+tap — it is meant to be read), and records it as a `decision` entry so the
+conclusion is durable. `deploy/iblu-weekly.timer` fires Sundays 18:00
+Europe/Zagreb, `Persistent=true` so a missed week still arrives. Below 10
+signals it says the week was too quiet to conclude from rather than dressing
+noise as insight.
+
 **Recent themes (see git log for detail):** real-time Chat unread via Workspace
 Events + Pub/Sub, Drive/Docs edit tools, freshness/anti-replay envelope
 (`fetched_at` + `request_id`), mock-mode safety (no silent fake data — see

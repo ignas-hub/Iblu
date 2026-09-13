@@ -143,3 +143,64 @@ def test_work_type_comes_only_from_tapped_answers(monkeypatch):
             "with no tapped answers the work-type split must be empty, "
             "not filled from inferred signal data"
         )
+
+
+# --- the weekly job -------------------------------------------------------
+
+
+def test_weekly_refuses_in_mock_mode(monkeypatch):
+    from iblu_keeper.jobs import weekly
+
+    class _Mock:
+        use_mock = True
+        dry_run = True
+        secretary_webhook_url = "https://example.invalid"
+
+    monkeypatch.setattr(weekly, "settings", _Mock())
+    assert "mock mode" in weekly._guard()
+
+
+def test_weekly_refuses_without_a_webhook(monkeypatch):
+    from iblu_keeper.jobs import weekly
+
+    class _NoHook:
+        use_mock = False
+        dry_run = False
+        secretary_webhook_url = ""
+
+    monkeypatch.setattr(weekly, "settings", _NoHook())
+    monkeypatch.setattr(weekly.db, "is_configured", lambda: True)
+    assert "SECRETARY_WEBHOOK_URL" in weekly._guard()
+
+
+def test_weekly_says_so_when_the_week_was_too_quiet(monkeypatch):
+    """A review built on five signals must not read like a finding."""
+    from iblu_keeper.jobs import weekly
+
+    monkeypatch.setattr(
+        weekly.review_tools, "review",
+        lambda w: {
+            "coverage": {"signals": 5, "days_with_signals": 1, "days_in_window": 7},
+            "by_venture": [], "by_work_type": [],
+            "inbound": {"share_pct": 0, "signals_in_threads_i_did_not_start": 0},
+            "recurring": [],
+            "pings": {"sent": 0, "answered": 0, "answer_rate_pct": None, "target_pct": 80},
+            "since": "2026-09-06T00:00:00+00:00",
+        },
+    )
+    text, _ = weekly.compose_review("7d")
+    assert "too little to draw a conclusion" in text
+
+    monkeypatch.setattr(
+        weekly.review_tools, "review",
+        lambda w: {
+            "coverage": {"signals": 400, "days_with_signals": 6, "days_in_window": 7},
+            "by_venture": [{"key": "blt", "signals": 400, "share_pct": 100}],
+            "by_work_type": [], "recurring": [],
+            "inbound": {"share_pct": 10, "signals_in_threads_i_did_not_start": 40},
+            "pings": {"sent": 10, "answered": 9, "answer_rate_pct": 90, "target_pct": 80},
+            "since": "2026-09-06T00:00:00+00:00",
+        },
+    )
+    text, _ = weekly.compose_review("7d")
+    assert "too little to draw a conclusion" not in text

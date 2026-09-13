@@ -465,8 +465,13 @@ observed days is exactly the flattery the mission forbids, so the markdown
 rendering says so out loud. Counts are evidence of attention, not hours.
 
 ```bash
-context_review(window='30d', response_format='markdown')
+context_review(window='30d', response_format='markdown')       # on demand
+python -m iblu_keeper.jobs.weekly --dry                    # what Sunday will post
 ```
+
+The same read arrives unasked every Sunday at 18:00 (`iblu-weekly.timer`),
+posted into the Secretary space and stored as a durable `decision` entry.
+A review you have to remember to ask for is a review that goes unread.
 
 ## Out of scope (for now)
 - Voice (handled by Claude apps, not this project)

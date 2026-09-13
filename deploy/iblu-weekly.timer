@@ -1,0 +1,13 @@
+[Unit]
+Description=Post the iblu weekly attention review on Sunday evening
+
+[Timer]
+# Sunday 18:00 Zagreb — after the week is done, before the next one starts.
+OnCalendar=Sun *-*-* 18:00:00 Europe/Zagreb
+# Catch up if the box was down: a review is still worth reading late.
+Persistent=true
+AccuracySec=5min
+Unit=iblu-weekly.service
+
+[Install]
+WantedBy=timers.target

@@ -56,12 +56,64 @@ def _parse_iso(ts: str) -> datetime | None:
         return None
 
 
-def _derive_status(latest_json: dict) -> tuple[str, str]:
-    """Return (status, summary) derived from host ts freshness.
+def _expected_hours(schedule: str) -> float:
+    """Rough expected interval (hours) for a cron 5-field schedule.
 
-    - ``healthy``  → every host reports a ts within the freshness window.
-    - ``degraded`` → some hosts are stale but at least one is fresh.
-    - ``error``    → the JSON is missing hosts entirely or none are fresh.
+    Heuristic — not a full cron parser. Good enough to catch obvious skips:
+      "0 4 * * 0"      → 168  (day-of-week set → weekly)
+      "5 */6 * * *"    →   6  (hour is */N)
+      "0 * * * *"      →   1  (hour is *, minute is fixed)
+      "*/15 * * * *"   →   0.25
+      anything else    →  24  (assume daily unless we can prove longer)
+    """
+    parts = schedule.split()
+    if len(parts) != 5:
+        return 168.0
+    minute, hour, _dom, _mon, dow = parts
+    if dow not in ("*", "?"):
+        return 168.0
+    if hour.startswith("*/"):
+        try:
+            return float(hour[2:])
+        except ValueError:
+            pass
+    if hour == "*" and minute.startswith("*/"):
+        try:
+            return max(float(minute[2:]) / 60, 0.05)
+        except ValueError:
+            pass
+    if hour == "*":
+        return 1.0
+    return 24.0
+
+
+def _classify_task(task: dict) -> tuple[str, float]:
+    """Return (status, expected_hours) for one scheduled_tasks entry.
+
+    ``never_ran`` — log file missing (cron file present but never fired).
+    ``stale``     — last run > 2× expected interval + 1h grace.
+    ``healthy``   — within the expected window.
+    """
+    hours_since = task.get("hours_since_run", -1)
+    schedule = task.get("schedule", "")
+    expected = _expected_hours(schedule)
+    if hours_since is None or hours_since < 0:
+        return "never_ran", expected
+    if hours_since > (2 * expected + 1):
+        return "stale", expected
+    return "healthy", expected
+
+
+def _derive_status(latest_json: dict) -> tuple[str, str]:
+    """Return (status, summary) derived from host ts freshness AND cron health.
+
+    Overall status:
+    - ``healthy``  → every host fresh AND every scheduled task healthy.
+    - ``degraded`` → any host stale OR any scheduled task stale/missing, but
+                     at least one host is fresh.
+    - ``error``    → no fresh hosts (or missing hosts field).
+
+    Summary always leads with hosts; appends a cron note when relevant.
     """
     hosts = latest_json.get("hosts") or []
     if not isinstance(hosts, list) or not hosts:
@@ -79,16 +131,29 @@ def _derive_status(latest_json: dict) -> tuple[str, str]:
         age_hours = (now - ts).total_seconds() / 3600
         (fresh if age_hours <= _STALE_HOST_HOURS else stale).append(name)
 
+    # Aggregate scheduled tasks across all hosts.
+    bad_tasks: list[str] = []
+    total_tasks = 0
+    for h in hosts:
+        host_name = h.get("host", "?")
+        for task in h.get("scheduled_tasks", []) or []:
+            total_tasks += 1
+            tstatus, _exp = _classify_task(task)
+            if tstatus != "healthy":
+                bad_tasks.append(f"{task.get('name', '?')}@{host_name}={tstatus}")
+
     total = len(hosts)
     fresh_n = len(fresh)
-    if fresh_n == total:
-        return "healthy", f"{fresh_n}/{total} hosts healthy"
+    task_note = f"; cron issues: {', '.join(bad_tasks)}" if bad_tasks else ""
+
+    if fresh_n == total and not bad_tasks:
+        return "healthy", f"{fresh_n}/{total} hosts healthy, {total_tasks} tasks ok"
     if fresh_n == 0:
-        return "error", f"0/{total} hosts fresh (all stale >{_STALE_HOST_HOURS}h)"
-    stale_names = ", ".join(stale)
+        return "error", f"0/{total} hosts fresh (all stale >{_STALE_HOST_HOURS}h){task_note}"
+    stale_names = ", ".join(stale) if stale else "none"
     return (
         "degraded",
-        f"{fresh_n}/{total} hosts healthy, {len(stale)} stale ({stale_names})",
+        f"{fresh_n}/{total} hosts healthy, {len(stale)} stale ({stale_names}){task_note}",
     )
 
 
