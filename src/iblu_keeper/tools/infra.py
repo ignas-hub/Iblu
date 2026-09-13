@@ -90,15 +90,28 @@ def _expected_hours(schedule: str) -> float:
 def _classify_task(task: dict) -> tuple[str, float]:
     """Return (status, expected_hours) for one scheduled_tasks entry.
 
-    ``never_ran`` — log file missing (cron file present but never fired).
+    Handles two shapes: cron (``kind: "cron"`` with ``schedule``) and systemd
+    timer (``kind: "timer"`` with ``next_run``). For timers we don't try to
+    parse OnCalendar= — freshness comes from last_run, and a not-yet-fired
+    timer whose ``next_run`` is still in the future is ``pending``, not
+    ``never_ran``.
+
+    ``pending``   — timer installed but hasn't fired yet AND has a future next_run.
+    ``never_ran`` — cron file present with no log entry ever.
     ``stale``     — last run > 2× expected interval + 1h grace.
     ``healthy``   — within the expected window.
     """
     hours_since = task.get("hours_since_run", -1)
     schedule = task.get("schedule", "")
     expected = _expected_hours(schedule)
+
     if hours_since is None or hours_since < 0:
+        if task.get("kind") == "timer" and task.get("next_run"):
+            next_dt = _parse_iso(task["next_run"])
+            if next_dt and next_dt > datetime.now(timezone.utc):
+                return "pending", expected
         return "never_ran", expected
+
     if hours_since > (2 * expected + 1):
         return "stale", expected
     return "healthy", expected

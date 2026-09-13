@@ -72,6 +72,14 @@ Claude.ai picks safe permission defaults automatically:
 | `context_get_summary` | What the recorder saw in a window: signal counts, pings, work_log | auto-allow |
 | `context_log_conversation` | Deprecated — use `context_log` | auto-allow |
 
+**Permission defaults.** Exactly two tools ask before running —
+`gmail_send_email` and `chat_send_message` — because both put a message in
+front of another person and cannot be taken back. Everything else is
+auto-allow: a prompt on every call makes the assistant unusable by voice, which
+is its primary mode. The policy lives in `tests/test_tool_permissions.py`, so a
+new tool cannot silently introduce a prompt, nor silently remove one from a
+send.
+
 **Every tool response is stamped** with `fetched_at` (ISO-8601 UTC) and
 `request_id` (UUID), plus a `query` echo of the kwargs used — so the
 caller can verify the data is fresh and the request was understood
