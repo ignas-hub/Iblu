@@ -100,3 +100,107 @@ def test_it_can_actually_read_this_repo(monkeypatch):
     listing = R.repo(action="list")
     names = {e["name"] for e in listing["entries"]}
     assert "src/" in names and ".env" not in names
+
+
+# --- GitHub source --------------------------------------------------------
+
+
+def _no_token(monkeypatch):
+    from iblu_keeper.tools import github_repo as gh
+
+    class _S:
+        github_token = ""
+        github_owner = "ignas-hub"
+
+    monkeypatch.setattr(gh, "settings", _S())
+    return gh
+
+
+def _with_token(monkeypatch, token="ghp_test"):
+    from iblu_keeper.tools import github_repo as gh
+
+    class _S:
+        github_token = token
+        github_owner = "ignas-hub"
+
+    monkeypatch.setattr(gh, "settings", _S())
+    return gh
+
+
+def test_github_is_optional_and_says_so(monkeypatch):
+    """No token must degrade to local-only, never break the tool."""
+    gh = _no_token(monkeypatch)
+    assert gh.configured() is False
+
+    class _Live:
+        use_mock = False
+
+    monkeypatch.setattr(R, "settings", _Live())
+    out = R.repo(action="repos")
+    assert "not configured" in out["github"]
+    assert {r["name"] for r in out["repos"]} == {"iblu", "automations"}
+
+
+def test_bare_repo_names_get_the_owner(monkeypatch):
+    gh = _with_token(monkeypatch)
+    assert gh._full_name("machina") == "ignas-hub/machina"
+    assert gh._full_name("someorg/thing") == "someorg/thing"
+
+
+def test_routing_between_local_and_github():
+    # local aliases read from disk (they may hold uncommitted work)
+    assert R._use_github("iblu", "auto") is False
+    assert R._use_github("automations", "auto") is False
+    # anything else is GitHub
+    assert R._use_github("machina", "auto") is True
+    assert R._use_github("ignas-hub/insights", "auto") is True
+    # and the caller can force either
+    assert R._use_github("iblu", "github") is True
+    assert R._use_github("machina", "local") is False
+
+
+def test_github_refuses_credential_files_too(monkeypatch):
+    """A repo can contain a committed secret by accident."""
+    gh = _with_token(monkeypatch)
+    with pytest.raises(gh.GitHubError, match="credential-shaped"):
+        gh.read_file("machina", "config/.env")
+
+
+def test_github_errors_are_actionable(monkeypatch):
+    gh = _with_token(monkeypatch)
+
+    class _Resp:
+        def __init__(self, code):
+            self.status_code = code
+            self.headers = {"x-ratelimit-remaining": "42"}
+            self.text = "nope"
+
+        def json(self):
+            return {}
+
+    for code, expect in [(401, "expired or revoked"), (403, "Contents: Read"), (404, "not found")]:
+        monkeypatch.setattr(gh.requests, "get", lambda *a, **k: _Resp(code))
+        with pytest.raises(gh.GitHubError, match=expect):
+            gh._get("/anything")
+
+
+def test_github_rate_limit_is_distinguished_from_permission(monkeypatch):
+    gh = _with_token(monkeypatch)
+
+    class _Resp:
+        status_code = 403
+        headers = {"x-ratelimit-remaining": "0"}
+        text = ""
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(gh.requests, "get", lambda *a, **k: _Resp())
+    with pytest.raises(gh.GitHubError, match="rate limit"):
+        gh._get("/anything")
+
+
+def test_a_missing_token_is_explained_not_crashed(monkeypatch):
+    gh = _no_token(monkeypatch)
+    with pytest.raises(gh.GitHubError, match="GITHUB_TOKEN is not set"):
+        gh._headers()

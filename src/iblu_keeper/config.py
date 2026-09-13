@@ -108,6 +108,13 @@ class Settings:
         default_factory=lambda: os.getenv("IBLU_TIMEZONE", "Europe/Zagreb")
     )
 
+    # GitHub read-only access, so the repo tool can reach repositories that
+    # do not live on this box. Fine-grained token, Contents+Metadata read only.
+    github_token: str = field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
+    github_owner: str = field(
+        default_factory=lambda: os.getenv("GITHUB_OWNER", "ignas-hub")
+    )
+
     # Ping composer (Anthropic Messages API).
     anthropic_api_key: str = field(
         default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "")

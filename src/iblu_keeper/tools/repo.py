@@ -219,6 +219,20 @@ def log(repo: str, limit: int = 20) -> dict:
     return {"repo": repo, "count": len(commits), "commits": commits}
 
 
+def _use_github(repo_name: str, source: str) -> bool:
+    """Where to read from.
+
+    One namespace, so the caller never has to know which machine a project is
+    on: a local alias reads from disk (it may have uncommitted work), anything
+    else is a GitHub repository. `source` forces it either way.
+    """
+    if source == "local":
+        return False
+    if source == "github":
+        return True
+    return repo_name not in ROOTS
+
+
 def repo(
     action: str = "list",
     repo_name: str = "iblu",
@@ -226,28 +240,66 @@ def repo(
     query: str | None = None,
     limit: int = 20,
     max_chars: int = MAX_CHARS,
+    source: str = "auto",
+    ref: str | None = None,
 ) -> dict:
-    """Dispatch. One tool, four actions — see the module docstring for why."""
+    """Dispatch across the local disk and GitHub. One tool — see the docstring."""
     if settings.use_mock:
         return dict(_MOCK)
 
+    from . import github_repo as gh
+
     if action == "repos":
+        local = [
+            {"name": name, "source": "local", "path": str(p), "exists": p.is_dir()}
+            for name, p in sorted(ROOTS.items())
+        ]
+        if not gh.configured():
+            return {
+                "repos": local,
+                "github": "not configured — set GITHUB_TOKEN to reach "
+                          "repositories that are not on this box",
+            }
+        try:
+            remote = gh.list_repos(limit=100)
+        except gh.GitHubError as exc:
+            return {"repos": local, "github": f"unavailable: {exc}"}
         return {
-            "repos": [
-                {"name": name, "path": str(p), "exists": p.is_dir()}
-                for name, p in sorted(ROOTS.items())
-            ]
+            "local": local,
+            "github": remote["repos"],
+            "count": len(local) + remote["count"],
         }
-    if action == "list":
-        return list_dir(repo_name, path)
-    if action == "read":
-        if not path:
-            raise RepoError("read requires a path")
-        return read_file(repo_name, path, max_chars)
-    if action == "search":
-        return search(repo_name, query or "", path)
-    if action == "log":
-        return log(repo_name, limit)
+
+    use_gh = _use_github(repo_name, source)
+
+    try:
+        if use_gh:
+            if action == "list":
+                return gh.list_dir(repo_name, path, ref)
+            if action == "read":
+                if not path:
+                    raise RepoError("read requires a path")
+                return gh.read_file(repo_name, path, max_chars, ref)
+            if action == "search":
+                return gh.search(repo_name, query or "")
+            if action == "log":
+                return gh.log(repo_name, limit)
+        else:
+            if action == "list":
+                return list_dir(repo_name, path)
+            if action == "read":
+                if not path:
+                    raise RepoError("read requires a path")
+                return read_file(repo_name, path, max_chars)
+            if action == "search":
+                return search(repo_name, query or "", path)
+            if action == "log":
+                return log(repo_name, limit)
+    except gh.GitHubError as exc:
+        # Surface GitHub problems as the tool's own error type, so the caller
+        # gets one consistent shape whichever source answered.
+        raise RepoError(str(exc)) from exc
+
     raise RepoError(
         f"unknown action {action!r} — expected repos, list, read, search or log"
     )

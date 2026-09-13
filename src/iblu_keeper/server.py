@@ -847,26 +847,35 @@ def repo(
     query: str | None = None,
     limit: int = 20,
     max_chars: int = 20000,
+    source: str = "auto",
+    ref: str | None = None,
 ) -> dict:
-    """Read Ignas's own source code. Read-only — it cannot write, move or run anything.
+    """Read any of Ignas's source code — on this box or on GitHub. Read-only.
+
+    Start with ``action='repos'`` to see what is available. Repositories on
+    this server (``iblu``, ``automations``) are read from disk, so they include
+    uncommitted work; everything else is read from GitHub. You do not need to
+    know which is which — just name the repo.
 
     ``action``:
-      - ``repos``  — which repositories are readable
+      - ``repos``  — every readable repository, local and GitHub
       - ``list``   — directory contents (``path``, default the repo root)
-      - ``read``   — one text file (``path`` required, ``max_chars`` caps it)
-      - ``search`` — literal case-insensitive search (``query``, optional ``path``)
+      - ``read``   — one text file (``path`` required; ``max_chars`` caps it)
+      - ``search`` — find text (``query``; omit ``repo_name`` to search them all)
       - ``log``    — recent commits (``limit``)
 
-    ``repo_name`` is ``iblu`` (this assistant) or ``automations`` (the
-    accounting bots). Credential-shaped files (.env, keys, tokens, service
-    accounts) are refused wherever they appear, and paths cannot escape the
-    repository root.
+    ``repo_name`` accepts a local alias (``iblu``), a bare GitHub name
+    (``machina``) or a full one (``owner/name``). ``ref`` reads a branch, tag or
+    commit. ``source`` forces ``'local'`` or ``'github'`` when it matters.
+
+    Credential-shaped files (.env, keys, tokens, service accounts) are refused
+    from both sources, and local paths cannot escape the repository root.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     return repo_tools.repo(
-        action=action, repo_name=repo_name, path=path,
-        query=query, limit=limit, max_chars=max_chars,
+        action=action, repo_name=repo_name, path=path, query=query,
+        limit=limit, max_chars=max_chars, source=source, ref=ref,
     )
 
 
