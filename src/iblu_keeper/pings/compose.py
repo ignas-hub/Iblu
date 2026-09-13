@@ -107,7 +107,19 @@ class Option(BaseModel):
     @field_validator("label")
     @classmethod
     def _short(cls, v: str) -> str:
-        return v.strip()[:MAX_LABEL]
+        """Trim to a word, not to a character.
+
+        A hard slice produced buttons like "Learned: YEARLY TOP PRIORITY — Ja",
+        which is unreadable on a phone and looks broken rather than shortened.
+        """
+        v = v.strip()
+        if len(v) <= MAX_LABEL:
+            return v
+        cut = v[: MAX_LABEL - 1]
+        space = cut.rfind(" ")
+        if space > MAX_LABEL // 2:
+            cut = cut[:space]
+        return cut.rstrip(" ,.;:—-") + "…"
 
     @model_validator(mode="after")
     def _gains_option_is_a_gain(self) -> "Option":
@@ -427,8 +439,14 @@ def compose_gains_question(evidence: dict[str, list[dict]] | None) -> dict | Non
 
     `evidence` is `{"learned": [...], "progressed": [...], "experienced": [...]}`,
     each item `{"label": str, "evidence_ids": list[str]}` — already-happened,
-    already-dated things, gathered by the caller (see `pings.runner`). No
-    evidence at all means no card: Iblu does not invent a gain to ask about.
+    already-dated things, gathered by the caller (see `pings.runner`).
+
+    A day IBLU could see nothing in still gets the card, with the reply escape
+    as its only option. Iblu never invents a gain — but "what moved today?"
+    with no options of its own is a real question, and dropping it on quiet
+    days would mean the practice fires least on exactly the days it is for.
+    What IBLU can observe is mail, chat and calendar; most of what actually
+    moves a day is none of those.
     """
     evidence = evidence or {}
     options: list[dict] = []
@@ -444,8 +462,6 @@ def compose_gains_question(evidence: dict[str, list[dict]] | None) -> dict | Non
                 "evidence_ids": [str(i) for i in item.get("evidence_ids", [])],
             },
         })
-    if not options:
-        return None
     options.append({
         "key": chr(65 + len(options)), "label": "Add one → reply",
         "payload": {"kind": "gains", "verdict": "other"},

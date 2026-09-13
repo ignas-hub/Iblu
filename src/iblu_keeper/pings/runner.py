@@ -147,7 +147,13 @@ def _gain_evidence(conn: psycopg.Connection, day) -> dict[str, list[dict]]:
     learned = conn.execute(
         "SELECT id, content FROM context_entries "
         "WHERE type IN ('decision', 'correction') AND occurred_at::date = %s "
-        "AND superseded_by IS NULL ORDER BY occurred_at DESC LIMIT 1",
+        "AND superseded_by IS NULL "
+        # A priority, a baseline and the gain rules are the measuring stick,
+        # not progress against it. Without this the evening card offered
+        # "Learned: YEARLY TOP PRIORITY — Jakusi" the day he wrote it down.
+        "AND (source_ref IS NULL OR source_ref !~ '^(priority|baseline|gain):') "
+        "AND NOT ('test' = ANY(tags)) "
+        "ORDER BY occurred_at DESC LIMIT 1",
         (day,),
     ).fetchone()
     if learned:

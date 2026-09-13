@@ -18,7 +18,8 @@ Two rules from the mission shape every query here:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from .. import db
@@ -695,3 +696,179 @@ def one_removal(truth: dict) -> dict:
             f"{thread['signals']}x this week with no single owner"
         ),
     }
+
+
+# --- the gap-language audit (plan §4.3) ------------------------------------
+#
+# Over Ignas's OWN sent text, never anyone else's. The point is not to catch
+# him out; it is to put the way he talks about the week next to what the week
+# actually produced, so the difference is visible rather than argued about.
+
+GAP_PHRASES = [
+    (re.compile(r"\bnot (?:fast|good|far|big) enough\b", re.I), "not enough"),
+    (re.compile(r"\bshould have\b", re.I), "should have"),
+    (re.compile(r"\bbehind(?! the scenes)\b", re.I), "behind"),
+    (re.compile(r"\bstill not\b", re.I), "still not"),
+    (re.compile(r"\b(?:slower|worse|smaller|weaker) than\b", re.I), "compared to someone"),
+    (re.compile(r"\b(?:the )?(?:best|biggest|number one|#1)\b", re.I), "superlative"),
+    (re.compile(r"\bneed(?:s|ed)? to be (?:much )?(?:faster|better|bigger)\b", re.I),
+     "an ideal, not a baseline"),
+    (re.compile(r"\btoo slow\b", re.I), "too slow"),
+]
+
+MAX_QUOTE_WORDS = 15
+MAX_QUOTES = 3
+
+
+def gap_language(conn, since: datetime, until: datetime) -> dict:
+    """Count Gap phrasings in what Ignas himself wrote this week.
+
+    Regex only — the plan allows an LLM to confirm, but a false positive here
+    costs more than a miss: quoting his own words back at him for a phrase he
+    did not mean is the exact grading posture IBLU is supposed to remove. At
+    most three quotes, at most fifteen words each, and only ever `actor='me'`.
+    """
+    rows = conn.execute(
+        """
+        SELECT snippet, occurred_at
+          FROM signals
+         WHERE actor = 'me' AND snippet IS NOT NULL
+           AND occurred_at >= %s AND occurred_at < %s
+         ORDER BY occurred_at
+        """,
+        (since, until),
+    ).fetchall()
+
+    counts: dict[str, int] = {}
+    quotes: list[dict] = []
+    for row in rows:
+        text = row["snippet"] or ""
+        for pattern, label in GAP_PHRASES:
+            match = pattern.search(text)
+            if not match:
+                continue
+            counts[label] = counts.get(label, 0) + 1
+            if len(quotes) < MAX_QUOTES:
+                quotes.append({
+                    "date": row["occurred_at"].date().isoformat(),
+                    "phrase": label,
+                    "quote": _around(text, match.start()),
+                })
+            break  # one finding per message; the tally is of messages, not hits
+
+    return {
+        "messages_scanned": len(rows),
+        "findings": sum(counts.values()),
+        "by_phrase": sorted(counts.items(), key=lambda kv: kv[1], reverse=True),
+        "quotes": quotes,
+        "note": "Ignas's own sent text only. Never anyone else's words.",
+    }
+
+
+def _around(text: str, index: int, words: int = MAX_QUOTE_WORDS) -> str:
+    """A short window of his own sentence around the phrase, never the whole mail."""
+    tokens = text.split()
+    if not tokens:
+        return ""
+    # Which word the match landed in, by character offset.
+    position, seen = 0, 0
+    for i, token in enumerate(tokens):
+        seen += len(token) + 1
+        if seen > index:
+            position = i
+            break
+    half = words // 2
+    start = max(0, position - half)
+    window = tokens[start:start + words]
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if start + words < len(tokens) else ""
+    return f"{prefix}{' '.join(window)}{suffix}"
+
+
+def gap_language_for(since: datetime, until: datetime) -> dict | None:
+    """`gap_language` with its own connection, for callers that have none."""
+    if settings.use_mock:
+        return None
+    try:
+        with db.get_conn() as conn:
+            return gap_language(conn, since, until)
+    except Exception:  # noqa: BLE001 — an audit is never worth losing the review
+        logger.warning("review: gap-language audit unavailable", exc_info=True)
+        return None
+
+
+# --- the monthly backward statement (plan §4.5) ----------------------------
+
+
+def is_last_friday(day: date) -> bool:
+    """True when `day` is the last Friday of its month.
+
+    The monthly statement rides the weekly review rather than getting a timer
+    of its own — one fewer unit to forget, and it lands in the place he already
+    reads on a Friday evening.
+    """
+    if day.weekday() != 4:
+        return False
+    return (day + timedelta(days=7)).month != day.month
+
+
+def backward_statement(conn, since: datetime, until: datetime) -> dict:
+    """Per venture: where it stood on the baseline date, against what exists now.
+
+    Dated evidence, no adjectives. This is the Gain stated at 30 and 90 days —
+    the same measurement as the weekly one, over a window long enough that a
+    slow-moving venture can show anything at all.
+    """
+    from ..store import governance
+
+    baselines = governance.current_baselines(conn)
+    rows = conn.execute(
+        """
+        SELECT venture, type, content, COALESCE(occurred_at, created_at) AS at
+          FROM context_entries
+         WHERE type IN ('decision', 'correction', 'work_log')
+           AND superseded_by IS NULL
+           AND NOT ('test' = ANY(tags))
+           AND (source_ref IS NULL OR source_ref !~ '^(priority|baseline|gain):')
+           AND COALESCE(occurred_at, created_at) >= %s
+           AND COALESCE(occurred_at, created_at) < %s
+         ORDER BY COALESCE(occurred_at, created_at)
+        """,
+        (since, until),
+    ).fetchall()
+
+    since_when = {}
+    for row in rows:
+        since_when.setdefault(row["venture"], []).append(
+            {"date": row["at"].date().isoformat(), "text": row["content"][:160]}
+        )
+
+    return {
+        "since": since.date().isoformat(),
+        "until": until.date().isoformat(),
+        "ventures": [
+            {
+                "venture": b.get("venture"),
+                "baseline_set": (b.get("created_at") or "")[:10],
+                "baseline": (b.get("content") or "")[:240],
+                "since_then": since_when.get(b.get("venture"), []),
+            }
+            for b in baselines
+        ],
+        "note": (
+            "Measured backward from the 2026-09-13 baselines. A venture with "
+            "nothing listed had nothing recorded — which is not the same as "
+            "nothing happening."
+        ),
+    }
+
+
+def backward_statement_for(since: datetime, until: datetime) -> dict | None:
+    if settings.use_mock:
+        return None
+    try:
+        with db.get_conn() as conn:
+            return backward_statement(conn, since, until)
+    except Exception:  # noqa: BLE001
+        logger.warning("review: backward statement unavailable", exc_info=True)
+        return None

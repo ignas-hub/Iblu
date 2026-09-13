@@ -347,7 +347,25 @@ def compose_review(window: str | None = None) -> tuple[str, dict]:
     except Exception:  # the stage/stuck extras are strictly optional
         logger.warning("weekly: could not compute stage_truth", exc_info=True)
 
+    # §4.3 — how he talked about the week, next to what the week produced.
+    gap_audit = None
+    monthly = None
+    try:
+        since_dt = datetime.fromisoformat(data["since"])
+        until_dt = datetime.fromisoformat(data["until"])
+        gap_audit = review_tools.gap_language_for(since_dt, until_dt)
+        # §4.5 — on the last Friday of the month the review carries a fourth
+        # section rather than getting a timer of its own.
+        if review_tools.is_last_friday(until_dt.astimezone(ZoneInfo(settings.iblu_timezone)).date()):
+            monthly = review_tools.backward_statement_for(
+                until_dt - timedelta(days=30), until_dt
+            )
+    except Exception:  # neither is worth losing the review over
+        logger.warning("weekly: gap audit / monthly statement unavailable", exc_info=True)
+
     truth_body = _truth_body(data, stage_extra)
+    if gap_audit and gap_audit["findings"]:
+        truth_body += "\n" + _gap_lines(gap_audit)
     removal_body = _removal_body(removal)
     gains_body, composer = _gains_body(gains_data)
 
@@ -365,6 +383,7 @@ def compose_review(window: str | None = None) -> tuple[str, dict]:
             + "## Gains\n" + gains_text
             + "\n\n## Truth\n" + truth_body
             + "\n\n## One removal\n" + removal_body
+            + (("\n\n## 30 / 90 days\n" + _monthly_body(monthly)) if monthly else "")
         )
 
     text = _section(gains_body)
@@ -508,3 +527,35 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+
+def _gap_lines(audit: dict) -> str:
+    """His own words about the week, quoted back beside the week's evidence.
+
+    Never a judgement, never advice — a count and at most three short excerpts,
+    all of them his. Seeing "we are behind" next to what actually shipped is
+    the whole intervention; saying anything about it would be grading.
+    """
+    phrases = ", ".join(f"{label} x{n}" for label, n in audit["by_phrase"])
+    lines = [
+        f"How the week was described: {audit['findings']} of "
+        f"{audit['messages_scanned']} messages he sent used Gap phrasing"
+        + (f" ({phrases})." if phrases else ".")
+    ]
+    for q in audit["quotes"]:
+        lines.append(f'  {q["date"]} · "{q["quote"]}"')
+    return "\n".join(lines)
+
+
+def _monthly_body(statement: dict) -> str:
+    """Per venture: the baseline, then what is dated since. No adjectives."""
+    lines = [f"Measured back to {statement['since']}."]
+    for item in statement["ventures"]:
+        venture = item["venture"] or "unassigned"
+        lines.append(f"*{venture}* — baseline {item['baseline_set']}:")
+        if not item["since_then"]:
+            lines.append("  nothing recorded since — which is not nothing happening.")
+            continue
+        for entry in item["since_then"][:4]:
+            lines.append(f"  {entry['date']} · {entry['text']}")
+    return "\n".join(lines)

@@ -29,7 +29,7 @@ the start of a task rather than relying on memory.
 
 ---
 
-## Snapshot — as of 2026-09-13 (recording v1 live + mission layer)
+## Snapshot — as of 2026-09-13 (recording v1 live; priorities, stages and the reconstructed day)
 
 **What IBLU is:** a self-hosted personal assistant for Ignas. A FastMCP server
 exposes Google Chat / Gmail / Calendar / Docs / Drive tools that Claude connects
@@ -209,6 +209,25 @@ and Deadlift workspaces via `search.messages`, which requires a **user** token
 (`xoxp-`) and the single scope `search:read` — see HANDOFF §17. The collector
 registry now carries a `scope` (`google` / `slack` / `primary`) instead of a
 boolean, because Slack workspaces are a separate list from Google accounts.
+
+**Governance (sessions 5–8, 2026-09-13):** the yearly priority and the
+2026-09-13 baseline for each of the seven ventures live in `context_entries`;
+`store/governance.py` is the one way to read them and `get_context` returns them
+between the mission and the brief. `store/projects.py` + migration 007 hold
+eight stages and 28 registered initiatives — a project cannot reach
+`autonomous` without a stated finish line, enforced in code, because that is the
+stage Ignas actually fails at. `context_log` returns a `gap_warning` on a goal
+phrased as a distance rather than an outcome; it never blocks the write.
+
+**The Gain layer:** the evening ping carries at most four cards — two attention
+questions, one "what moved today?" (multi-tap, each tap independent) and one
+body/mind card that stores two numbers and interprets nothing. The weekly
+review runs Friday 18:00 over Monday→Friday and reads Gains → Truth → one
+removal, with a fourth 30/90-day section on the last Friday of each month.
+A language validator rejects gap phrasing and falls back to the deterministic
+template rather than sending text that failed. Two validators exist and have
+different jobs: `store/gap_check.py` guards what Ignas writes into IBLU;
+`jobs/review_language.py` guards what IBLU writes back to him.
 
 **Known open items:** external DM partners who are not in Google Contacts
 cannot be named by the People API, so their `counterpart` stays `users/<id>`

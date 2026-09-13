@@ -745,3 +745,91 @@ def test_minutes_tolerate_the_decimal_postgres_returns():
     now = datetime.now(timezone.utc)
     out = review.minutes_from_blocks(_BlocksConn([_block(Decimal("60"))]), now, now)
     assert out["total_minutes"] == 60
+
+
+# --- the gap-language audit (plan §4.3) -----------------------------------
+
+
+class _SnippetConn:
+    def __init__(self, snippets):
+        from datetime import datetime, timezone
+        self._rows = [
+            {"snippet": t, "occurred_at": datetime(2026, 9, 11, tzinfo=timezone.utc)}
+            for t in snippets
+        ]
+
+    def execute(self, *_a, **_k):
+        rows = self._rows
+
+        class _Cur:
+            def fetchall(self):
+                return rows
+
+        return _Cur()
+
+
+def _audit(snippets):
+    from datetime import datetime, timezone
+    from iblu_keeper.tools import review
+
+    now = datetime.now(timezone.utc)
+    return review.gap_language(_SnippetConn(snippets), now, now)
+
+
+def test_gap_phrasings_are_counted():
+    out = _audit([
+        "Sorry, this is not fast enough — I should have shipped it last week.",
+        "All good, shipping Thursday.",
+    ])
+    assert out["findings"] == 1
+    assert out["messages_scanned"] == 2
+
+
+def test_behind_the_scenes_is_not_a_gap_phrase():
+    """A false positive here is the exact grading posture IBLU removes."""
+    assert _audit(["Lots happening behind the scenes on Machina."])["findings"] == 0
+
+
+def test_at_most_three_of_his_own_lines_are_quoted():
+    out = _audit(["we are behind again"] * 10)
+    assert len(out["quotes"]) == 3
+
+
+def test_a_quote_is_short_and_marked_as_an_excerpt():
+    long = "word " * 60 + "we are behind on this " + "word " * 60
+    [quote] = _audit([long])["quotes"]
+    assert len(quote["quote"].split()) <= 15 + 2
+    assert "…" in quote["quote"]
+
+
+def test_one_finding_per_message_not_per_phrase():
+    """The tally counts messages, so one anxious sentence is not three."""
+    out = _audit(["this is too slow, we are behind, and still not the best"])
+    assert out["findings"] == 1
+
+
+def test_the_audit_says_whose_words_it_read():
+    assert "own sent text only" in _audit([])["note"]
+
+
+# --- the monthly backward statement (plan §4.5) ---------------------------
+
+
+def test_the_monthly_section_rides_the_last_friday_of_the_month():
+    """No timer of its own — one fewer unit to forget, and it lands where he
+    already reads on a Friday evening."""
+    from datetime import date
+    from iblu_keeper.tools import review
+
+    assert review.is_last_friday(date(2026, 9, 25))
+    assert review.is_last_friday(date(2026, 10, 30))
+    assert not review.is_last_friday(date(2026, 9, 18))   # a Friday, not the last
+    assert not review.is_last_friday(date(2026, 9, 26))   # the Saturday after
+
+
+def test_a_month_with_five_fridays_only_fires_on_the_fifth():
+    from datetime import date
+    from iblu_keeper.tools import review
+
+    fridays = [date(2026, 10, d) for d in (2, 9, 16, 23, 30)]
+    assert [review.is_last_friday(f) for f in fridays] == [False, False, False, False, True]
