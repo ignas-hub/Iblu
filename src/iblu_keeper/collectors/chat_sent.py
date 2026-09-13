@@ -57,21 +57,25 @@ def _space_label(backend, space: dict, self_id: str) -> str:
     return space.get("name", "unknown space")
 
 
-def collect(conn: psycopg.Connection, *, dry: bool = False) -> int:
+def collect(
+    conn: psycopg.Connection, *, dry: bool = False, account: dict | None = None
+) -> int:
     """Insert a signal for every Chat message I sent since the watermark."""
     from ..tools.chat import get_backend
 
-    backend = get_backend()
+    alias = (account or {}).get("alias") or settings.primary_alias
+    backend = get_backend(None if alias == settings.primary_alias else alias)
     if not hasattr(backend, "_ensure_self_id"):
         raise RuntimeError(
             "chat backend is not the Google backend — refusing to collect "
             "(mock data must never reach the database)"
         )
 
-    me = settings.google_user_email
+    me = (account or {}).get("email") or settings.google_user_email
+    state_key = NAME if alias == settings.primary_alias else f"{NAME}:{alias}"
     self_id = backend._ensure_self_id()
     self_name = f"users/{self_id}"
-    since = default_since(get_watermark(conn, NAME))
+    since = default_since(get_watermark(conn, state_key))
     svc = backend._service()
 
     inserted = 0
@@ -182,6 +186,6 @@ def collect(conn: psycopg.Connection, *, dry: bool = False) -> int:
             break
 
     if not dry:
-        set_state(conn, NAME, watermark=newest, error=None)
-    logger.info("%s: %d new signal(s) across %d space(s)", NAME, inserted, seen_spaces)
+        set_state(conn, state_key, watermark=newest, error=None)
+    logger.info("%s[%s]: %d new signal(s) across %d space(s)", NAME, alias, inserted, seen_spaces)
     return inserted

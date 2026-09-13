@@ -33,10 +33,10 @@ MAX_RESULTS = 250
 FRESHLY_CREATED = timedelta(hours=24)
 
 
-def _service():
+def _service(account: str | None = None):
     from ..google_auth import build_service
 
-    return build_service("calendar", "v3")
+    return build_service("calendar", "v3", account=account)
 
 
 def _parse(raw: str | None) -> datetime | None:
@@ -117,14 +117,24 @@ def _classify(before: dict, after: dict) -> str:
     return "changed"
 
 
-def collect(conn: psycopg.Connection, *, dry: bool = False) -> int:
-    """Diff the calendar against the stored baseline and record what moved."""
-    me = settings.google_user_email
-    seeded = get_cursor(conn, NAME) == "seeded"
+def collect(
+    conn: psycopg.Connection, *, dry: bool = False, account: dict | None = None
+) -> int:
+    """Diff the calendar against the stored baseline and record what moved.
+
+    The baseline is namespaced by account (migration 004): two Workspaces can
+    each have a calendar called 'primary', and event ids are only unique within
+    a calendar, so a shared baseline would let one company's meetings answer for
+    another's.
+    """
+    alias = (account or {}).get("alias") or settings.primary_alias
+    me = (account or {}).get("email") or settings.google_user_email
+    state_key = NAME if alias == settings.primary_alias else f"{NAME}:{alias}"
+    seeded = get_cursor(conn, state_key) == "seeded"
     now = datetime.now(timezone.utc)
 
     events = (
-        _service()
+        _service(None if alias == settings.primary_alias else alias)
         .events()
         .list(
             calendarId=CALENDAR_ID,
@@ -143,8 +153,8 @@ def collect(conn: psycopg.Connection, *, dry: bool = False) -> int:
         row["event_id"]: row
         for row in conn.execute(
             "SELECT event_id, fingerprint, payload FROM calendar_seen "
-            "WHERE calendar_id = %s",
-            (CALENDAR_ID,),
+            "WHERE account = %s AND calendar_id = %s",
+            (me, CALENDAR_ID),
         ).fetchall()
     }
 
@@ -219,27 +229,27 @@ def collect(conn: psycopg.Connection, *, dry: bool = False) -> int:
             conn.execute(
                 """
                 INSERT INTO calendar_seen
-                    (calendar_id, event_id, updated, fingerprint, payload, last_seen_at)
-                VALUES (%s, %s, %s, %s, %s, now())
-                ON CONFLICT (calendar_id, event_id) DO UPDATE SET
+                    (account, calendar_id, event_id, updated, fingerprint,
+                     payload, last_seen_at)
+                VALUES (%s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (account, calendar_id, event_id) DO UPDATE SET
                     updated = EXCLUDED.updated,
                     fingerprint = EXCLUDED.fingerprint,
                     payload = EXCLUDED.payload,
                     last_seen_at = now()
                 """,
-                (CALENDAR_ID, event_id, updated, fingerprint, Jsonb(payload)),
+                (me, CALENDAR_ID, event_id, updated, fingerprint, Jsonb(payload)),
             )
 
     if not dry:
-        set_state(conn, NAME, watermark=now, cursor="seeded", error=None)
+        set_state(conn, state_key, watermark=now, cursor="seeded", error=None)
 
     if not seeded:
         logger.info(
-            "%s: seeded baseline with %d event(s), no signals emitted (first run)",
-            NAME,
-            len(events),
+            "%s[%s]: seeded baseline with %d event(s), no signals emitted (first run)",
+            NAME, alias, len(events),
         )
         return 0
 
-    logger.info("%s: %d change(s) across %d event(s)", NAME, inserted, len(events))
+    logger.info("%s[%s]: %d change(s) across %d event(s)", NAME, alias, inserted, len(events))
     return inserted

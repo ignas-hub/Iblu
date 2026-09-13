@@ -341,3 +341,22 @@ mailbox the moment aliases were switched on.
 
 Measured over 90 days: BLT keeps 14 and drops 26, Choco keeps 14 and drops 26,
 Deadlift keeps all 40 (single address, no groups).
+
+### 15. One mirror calendar, on BLT, covering every venture
+
+Decided 2026-09-13 by Ignas. The Secretary calendar that mirrors `blocks` is a
+single calendar on blanklabel.team covering all ventures — not one per
+Workspace. The analyst writes Deadlift- and Choco-detected work into it.
+
+One place to look, and cross-venture questions ("did Deadlift eat my BLT week?")
+are answered by reading one calendar rather than joining three.
+
+Two consequences:
+
+- IBLU needs multi-account calendar **reads** — each Workspace's meetings are
+  evidence of where attention went — but **not** multi-account calendar writes.
+  The `calendar` tool stays primary-only until something actually needs
+  otherwise.
+- The mirror must be a **separate calendar, never the BLT primary**. It will
+  contain Choco and Deadlift work, and a shared primary would expose one
+  client's activity to another's colleagues. `SECRETARY_CALENDAR_ID` names it.

@@ -81,6 +81,21 @@ def _send_as_addresses(svc, me: str) -> set[str]:
     return addresses
 
 
+def _group_author(headers: dict[str, str]) -> str | None:
+    """The real author behind a Google Group rewrite, or None.
+
+    `"'Diana Saavedra' via ap" <ap@chocoagency.com>` -> "Diana Saavedra".
+    Keeping the author means inbound group traffic is attributable later,
+    rather than 31 identical-looking rows from the group address.
+    """
+    raw = headers.get("from") or ""
+    if " via " not in raw.lower():
+        return None
+    display = raw.split("<")[0].strip().strip('"').strip()
+    author = display.split(" via ")[0].strip().strip("'").strip()
+    return author or None
+
+
 def _is_group_delivery(headers: dict[str, str]) -> bool:
     """True when this is Google Group traffic, not something the user sent.
 
@@ -205,13 +220,24 @@ def collect(
         newest = max(newest, occurred)
 
         # `in:sent` is not the same as "I wrote it" — see _is_mine.
-        if not _is_mine(headers, me, my_addresses):
-            skipped_not_mine += 1
-            logger.debug(
-                "%s: skipping %s, From=%r is not me",
-                NAME, message_id, headers.get("from"),
-            )
-            continue
+        mine = _is_mine(headers, me, my_addresses)
+        group_author = _group_author(headers)
+        from_address = _address_of(headers.get("from"))
+
+        if not mine:
+            # Mail delivered through a Google Group Ignas belongs to. He did not
+            # write it, so it is never his attention — but on a group he works
+            # (ap@chocoagency.com is the Choco payables queue) the inbound
+            # volume is real demand, and invisible demand cannot be reasoned
+            # about. Recorded with actor='other' so the attention split stays
+            # honest while the load becomes visible.
+            if not (group_author and from_address in my_addresses):
+                skipped_not_mine += 1
+                logger.debug(
+                    "%s: skipping %s, From=%r is not me",
+                    NAME, message_id, headers.get("from"),
+                )
+                continue
 
         body = _extract_body(full.get("payload", {}))
         thread_id = full.get("threadId")
@@ -236,12 +262,12 @@ def collect(
 
         row = {
             "source": "gmail",
-            "kind": "sent",
+            "kind": "sent" if mine else "received",
             "account": me,
             "occurred_at": occurred,
-            "actor": "me",
-            "initiator": initiator,
-            "counterpart": counterpart,
+            "actor": "me" if mine else "other",
+            "counterpart": group_author or counterpart,
+            "initiator": initiator if mine else "other",
             "container": thread_id,
             "subject": subject,
             "snippet": snippets.snippet(body),
@@ -254,6 +280,7 @@ def collect(
                 "to": to_addresses,
                 "cc_count": len(_addresses(headers.get("cc"))),
                 "thread_len": thread_len,
+                **({"group": from_address} if not mine else {}),
             },
         }
 

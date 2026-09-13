@@ -234,7 +234,12 @@ def test_calendar_signals_are_never_clustered_as_threads(monkeypatch):
             class _R:
                 @staticmethod
                 def fetchall():
-                    return calendar_rows if "FROM signals" in sql else []
+                    if "actor = 'me'" in sql:
+                        return calendar_rows
+                    return []
+                @staticmethod
+                def fetchone():
+                    return {"n": 0}
             return _R()
 
     from contextlib import contextmanager
@@ -251,3 +256,56 @@ def test_calendar_signals_are_never_clustered_as_threads(monkeypatch):
     # but they are still counted
     assert out["by_source"] == [{"key": "calendar", "signals": 7, "share_pct": 100}]
     assert out["coverage"]["signals"] == 7
+
+
+def test_group_demand_never_enters_the_attention_split(monkeypatch):
+    """Other people's mail landing on a group Ignas works is demand, not his
+    attention. Counting it would inflate the venture split with work he did not
+    do — the exact flattery the mission forbids."""
+    from datetime import datetime, timezone
+
+    class _Live:
+        use_mock = False
+        dry_run = False
+
+    monkeypatch.setattr(review, "settings", _Live())
+    now = datetime.now(timezone.utc)
+    seen: list[str] = []
+
+    mine = [{
+        "id": 1, "source": "gmail", "occurred_at": now, "counterpart": "a@b.com",
+        "container": "t1", "subject": "mine", "initiator": "me",
+        "venture": "blt", "work_type": None, "project": None, "actor": "me",
+    }]
+
+    class _Conn:
+        def execute(self, sql, params=None):
+            seen.append(" ".join(sql.split()))
+            class _R:
+                @staticmethod
+                def fetchall():
+                    if "actor = 'other'" in sql:
+                        return [{"venture": "choco", "counterpart": "Diana", "n": 31}]
+                    return mine if "FROM signals" in sql else []
+                @staticmethod
+                def fetchone():
+                    return {"n": 31}
+            return _R()
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _conn():
+        yield _Conn()
+
+    monkeypatch.setattr(review.db, "get_conn", _conn)
+    out = review.review("7d")
+
+    # the signals query must be filtered to actor='me'
+    assert any("actor = 'me'" in q for q in seen), "attention query is not filtered"
+    assert out["coverage"]["signals"] == 1, "demand must not be counted as attention"
+    assert out["by_venture"] == [{"key": "blt", "signals": 1, "share_pct": 100}]
+    # but the demand is reported
+    assert out["inbound_demand"]["signals"] == 31
+    assert out["inbound_demand"]["top_senders"][0]["who"] == "Diana"
+    assert "Demand, not your attention" in review.as_markdown(out)

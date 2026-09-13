@@ -126,11 +126,10 @@ def insert_signal(conn: psycopg.Connection, row: dict) -> bool:
 def _registry() -> list[tuple[str, Callable, bool]]:
     """Imported lazily so `import collectors` never pulls in Google clients.
 
-    The flag says whether the collector is multi-account aware. Chat and
-    calendar are not yet: the Chat backend resolves one self-id per process,
-    and a second calendar would need its own `calendar_seen` namespace. Running
-    them once, against the primary account, is correct — running them blindly
-    per account would attribute another Workspace's events to Ignas.
+    All three collectors are multi-account aware: the Chat backend is cached
+    per account (each resolves its own self-id) and `calendar_seen` is
+    namespaced by account (migration 004), so one Workspace's baseline can
+    never answer for another's.
     """
     from .calendar_changes import collect as calendar_collect
     from .chat_sent import collect as chat_collect
@@ -138,8 +137,8 @@ def _registry() -> list[tuple[str, Callable, bool]]:
 
     return [
         ("gmail_sent", gmail_collect, True),
-        ("chat_sent", chat_collect, False),
-        ("calendar_changes", calendar_collect, False),
+        ("chat_sent", chat_collect, True),
+        ("calendar_changes", calendar_collect, True),
     ]
 
 

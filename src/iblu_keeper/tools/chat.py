@@ -185,19 +185,23 @@ class GoogleChatBackend(ChatBackend):
 
     _PREVIEW_MAX = 140
 
-    def __init__(self) -> None:
+    def __init__(self, account: str | None = None) -> None:
         self._name_cache: dict[str, str] = {}  # "users/<id>" stripped → display
         self._self_user_id: str | None = None
+        # Which Google account this backend acts as. The self-id and the name
+        # cache are per instance, never module-level: a shared self-id across
+        # Workspaces would make one person's messages look like another's.
+        self._account = account
 
     def _service(self):
         from ..google_auth import build_service
 
-        return build_service("chat", "v1")
+        return build_service("chat", "v1", account=self._account)
 
     def _people(self):
         from ..google_auth import build_service
 
-        return build_service("people", "v1")
+        return build_service("people", "v1", account=self._account)
 
     def _ensure_self_id(self) -> str:
         if self._self_user_id is not None:
@@ -671,17 +675,21 @@ class GoogleChatBackend(ChatBackend):
 # --------------------------------------------------------------------------- #
 # Backend selection
 # --------------------------------------------------------------------------- #
-@lru_cache(maxsize=1)
-def get_backend() -> ChatBackend:
-    """Return the active Chat backend.
+@lru_cache(maxsize=8)
+def get_backend(account: str | None = None) -> ChatBackend:
+    """Return the active Chat backend for one Google account.
 
     Mock when dry-run / no credentials, otherwise the real Google Chat backend.
     This single function is the only place that decides which backend is live —
     swap the alternative implementation in here if the Chat API path fails.
+
+    Cached PER ACCOUNT rather than as a singleton: each backend resolves and
+    caches its own self-id, and handing one Workspace's backend to another
+    would attribute one person's messages to someone else.
     """
     if settings.use_mock:
         return MockChatBackend()
-    return GoogleChatBackend()
+    return GoogleChatBackend(account=account)
 
 
 # --------------------------------------------------------------------------- #

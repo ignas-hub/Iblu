@@ -61,10 +61,28 @@ def review(window: str = "7d") -> dict:
     with db.get_conn() as conn:
         rows = conn.execute(
             "SELECT id, source, occurred_at, counterpart, container, subject, "
-            "       initiator, venture, work_type, project "
-            "FROM signals WHERE occurred_at >= %s ORDER BY occurred_at",
+            "       initiator, venture, work_type, project, actor "
+            "FROM signals WHERE occurred_at >= %s AND actor = 'me' "
+            "ORDER BY occurred_at",
             (since,),
         ).fetchall()
+
+        # Inbound demand: things that landed on a group Ignas works (the Choco
+        # payables queue, the BLT contracts group) which he did not write.
+        # Counted separately and NEVER mixed into the attention split — other
+        # people's mail inflating his numbers is precisely the flattery the
+        # mission forbids.
+        demand = conn.execute(
+            "SELECT venture, counterpart, count(*) AS n FROM signals "
+            "WHERE occurred_at >= %s AND actor = 'other' "
+            "GROUP BY venture, counterpart ORDER BY n DESC LIMIT 10",
+            (since,),
+        ).fetchall()
+        demand_total = conn.execute(
+            "SELECT count(*) AS n FROM signals "
+            "WHERE occurred_at >= %s AND actor = 'other'",
+            (since,),
+        ).fetchone()["n"]
 
         # work_type comes from what Ignas TAPPED, not from what was inferred —
         # signals.work_type is almost always null, and guessing here would
@@ -189,6 +207,19 @@ def review(window: str = "7d") -> dict:
             "signals_in_threads_i_did_not_start": inbound,
             "share_pct": round(100 * inbound / len(rows)) if rows else 0,
         },
+        "inbound_demand": {
+            "signals": demand_total,
+            "note": (
+                "Landed on a group Ignas works but was written by someone else. "
+                "Demand on his time, not evidence of his attention — never "
+                "counted in the splits above."
+            ),
+            "top_senders": [
+                {"who": d["counterpart"] or "unknown", "venture": d["venture"],
+                 "signals": d["n"]}
+                for d in demand
+            ],
+        },
         "pings": {
             "sent": len(expected),
             "answered": len(answered),
@@ -241,6 +272,16 @@ def as_markdown(data: dict) -> str:
         for t in data["recurring"][:5]:
             who = "you started it" if t["started_by"] == "me" else "someone else started it"
             lines.append(f"- {t['name']} — {t['signals']}x, {who}")
+
+    demand = data.get("inbound_demand") or {}
+    if demand.get("signals"):
+        top = ", ".join(
+            f"{d['who']} {d['signals']}" for d in demand["top_senders"][:3]
+        )
+        lines.append(
+            f"\n**Landed on your groups:** {demand['signals']} items you did not "
+            f"write{' — ' + top if top else ''}. (Demand, not your attention.)"
+        )
 
     p = data["pings"]
     if p["sent"]:
