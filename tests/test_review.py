@@ -204,3 +204,50 @@ def test_weekly_says_so_when_the_week_was_too_quiet(monkeypatch):
     )
     text, _ = weekly.compose_review("7d")
     assert "too little to draw a conclusion" not in text
+
+
+def test_calendar_signals_are_never_clustered_as_threads(monkeypatch):
+    """All calendar signals share container='primary'.
+
+    Clustering them would merge every unrelated event into one bogus "thread"
+    named after whichever happened first — which is exactly what it did: seven
+    separate diary changes were reported as "IBLU recorder self-test — 7x".
+    """
+    from datetime import datetime, timezone
+
+    class _Live:
+        use_mock = False
+        dry_run = False
+
+    monkeypatch.setattr(review, "settings", _Live())
+    now = datetime.now(timezone.utc)
+
+    calendar_rows = [
+        {"id": i, "source": "calendar", "occurred_at": now, "counterpart": None,
+         "container": "primary", "subject": f"Event {i}", "initiator": None,
+         "venture": "blt", "work_type": None, "project": None}
+        for i in range(7)
+    ]
+
+    class _Conn:
+        def execute(self, sql, params=None):
+            class _R:
+                @staticmethod
+                def fetchall():
+                    return calendar_rows if "FROM signals" in sql else []
+            return _R()
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _conn():
+        yield _Conn()
+
+    monkeypatch.setattr(review.db, "get_conn", _conn)
+    out = review.review("7d")
+
+    assert out["top_threads"] == [], "calendar changes must not appear as threads"
+    assert out["recurring"] == [], "a diary change is not something 'touched repeatedly'"
+    # but they are still counted
+    assert out["by_source"] == [{"key": "calendar", "signals": 7, "share_pct": 100}]
+    assert out["coverage"]["signals"] == 7

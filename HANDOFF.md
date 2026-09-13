@@ -304,3 +304,17 @@ Consequences for this repo:
 4. **When a new tool is unavoidable, say so in the handover**, with the words
    "you will need to set this to Always allow in Settings > Connectors", rather
    than claiming a restart or reconnect will apply it. It will not.
+
+### 13. Never delete a `calendar_seen` row for an event that still exists
+
+Found 2026-09-13. Cleaning up after a calendar acceptance test, the test event
+was deleted from Google AND its `calendar_seen` baseline row was deleted. The
+next tick fetched the calendar with `showDeleted=True`, found an event it had no
+baseline for, saw its `created` timestamp was within 24 h, and emitted a fresh
+`created` signal — re-creating exactly the row the cleanup had removed.
+
+`calendar_seen` is the memory of what has already been reported. Deleting a row
+does not erase history; it makes the collector forget it ever saw the event, so
+the event gets reported again. To remove a test event: delete it in Google,
+let one tick run so the collector records the cancellation, then delete the
+`signals` rows only — and leave the baseline alone.

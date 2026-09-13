@@ -23,6 +23,8 @@ logger = logging.getLogger("iblu_keeper.collectors.gmail_sent")
 
 NAME = "gmail_sent"
 MAX_PER_RUN = 100
+# How far a brand-new account looks back on its very first run.
+FIRST_RUN_HOURS = 168
 
 
 def _service(account: str | None = None):
@@ -118,7 +120,11 @@ def collect(
     alias = (account or {}).get("alias") or settings.primary_alias
     me = (account or {}).get("email") or settings.google_user_email
     state_key = NAME if alias == settings.primary_alias else f"{NAME}:{alias}"
-    since = default_since(get_watermark(conn, state_key))
+    # An account joining mid-stream would otherwise start with 24h of history
+    # while the others have weeks, and the venture split would under-report it
+    # for the first day. A first run reaches back a week; subsequent runs use
+    # the watermark as normal.
+    since = default_since(get_watermark(conn, state_key), fallback_hours=FIRST_RUN_HOURS)
     svc = _service(None if alias == settings.primary_alias else alias)
 
     # Gmail's `after:` takes whole seconds since the epoch.

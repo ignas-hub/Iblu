@@ -98,6 +98,18 @@ def review(window: str = "7d") -> dict:
     inbound = 0
 
     for row in rows:
+        # Calendar signals all share container='primary', so clustering them as
+        # threads would merge every unrelated event into one bogus "thread"
+        # named after whichever happened first. They are changes to the diary,
+        # not conversations — counted, but never reported as something touched
+        # repeatedly.
+        if row["source"] == "calendar":
+            by_venture[row["venture"] or "unclassified"] = (
+                by_venture.get(row["venture"] or "unclassified", 0) + 1
+            )
+            by_source["calendar"] = by_source.get("calendar", 0) + 1
+            continue
+
         by_venture[row["venture"] or "unclassified"] = (
             by_venture.get(row["venture"] or "unclassified", 0) + 1
         )

@@ -66,7 +66,9 @@ def _summary(results: dict) -> str:
     }
     parts = []
     for name, value in results.items():
-        label = short.get(name, name)
+        # Keys are "<collector>" or "<collector>:<account alias>".
+        base, _, alias = name.partition(":")
+        label = short.get(base, base) + (f":{alias}" if alias else "")
         parts.append(
             f"{label}={value:+d}" if isinstance(value, int) else f"{label}=ERROR"
         )
