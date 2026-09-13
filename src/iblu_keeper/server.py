@@ -51,6 +51,7 @@ def _maybe_markdown(result, kind: str, response_format: str):
 from .tools import calendar as calendar_tools
 from .tools import chat as chat_tools
 from .tools import context as context_tools
+from .tools import repo as repo_tools
 from .tools import review as review_tools
 from .tools import gmail as gmail_tools
 
@@ -836,6 +837,39 @@ def context_get_summary(window: str = "1d") -> dict:
 # --------------------------------------------------------------------------- #
 # Infrastructure status (reads collector output from Drive)
 # --------------------------------------------------------------------------- #
+@mcp.tool(name="repo", annotations={"title": "Read Ignas's Code", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_retry("repo")
+def repo(
+    action: str = "list",
+    repo_name: str = "iblu",
+    path: str | None = None,
+    query: str | None = None,
+    limit: int = 20,
+    max_chars: int = 20000,
+) -> dict:
+    """Read Ignas's own source code. Read-only — it cannot write, move or run anything.
+
+    ``action``:
+      - ``repos``  — which repositories are readable
+      - ``list``   — directory contents (``path``, default the repo root)
+      - ``read``   — one text file (``path`` required, ``max_chars`` caps it)
+      - ``search`` — literal case-insensitive search (``query``, optional ``path``)
+      - ``log``    — recent commits (``limit``)
+
+    ``repo_name`` is ``iblu`` (this assistant) or ``automations`` (the
+    accounting bots). Credential-shaped files (.env, keys, tokens, service
+    accounts) are refused wherever they appear, and paths cannot escape the
+    repository root.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
+    return repo_tools.repo(
+        action=action, repo_name=repo_name, path=path,
+        query=query, limit=limit, max_chars=max_chars,
+    )
+
+
 @mcp.tool(name="get_infra_status", annotations={"title": "Get Infrastructure Status", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def get_infra_status() -> dict:

@@ -55,7 +55,7 @@ connector itself authenticates Claude.ai via FastMCP's Google provider (DCR).
 `schema_migrations`. Before this, IBLU persisted nothing but `data/token.json`
 and `data/drafts.jsonl`.
 
-**Tools currently exposed (37).** Permission policy (set 2026-09-13): only
+**Tools currently exposed (38).** Permission policy (set 2026-09-13): only
 `gmail_send_email` and `chat_send_message` ask; the other 35 are auto-allow,
 including `gmail_reply`. Enforced by `tests/test_tool_permissions.py` — which keeps the annotations
 honest but CANNOT set the client's behaviour: claude.ai stores Allow/Ask per
