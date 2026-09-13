@@ -10,22 +10,34 @@ import base64
 import logging
 from email.message import EmailMessage
 
-from ..config import settings
+from ..config import resolve_account, settings
 from ..store import drafts
 
 logger = logging.getLogger("iblu_keeper.tools.gmail")
 
 
-def _service():
+def _service(account: str | None = None):
     from ..google_auth import build_service
 
-    return build_service("gmail", "v1")
+    return build_service("gmail", "v1", account=account)
 
 
-def _build_raw(to: str, subject: str, body: str) -> str:
+def _from_address(account: str | None = None) -> str:
+    """The From address for one account, defaulting to the primary mailbox.
+
+    Only consults `settings.account(...)` when an explicit `account` is
+    given, so the default (no account) path never depends on anything but
+    `settings.google_user_email` — exactly as before multi-account support.
+    """
+    if not account:
+        return settings.google_user_email
+    return settings.account(account).get("email") or settings.google_user_email
+
+
+def _build_raw(to: str, subject: str, body: str, account: str | None = None) -> str:
     msg = EmailMessage()
     msg["To"] = to
-    msg["From"] = settings.google_user_email
+    msg["From"] = _from_address(account)
     msg["Subject"] = subject
     msg.set_content(body)
     return base64.urlsafe_b64encode(msg.as_bytes()).decode()
@@ -35,15 +47,18 @@ def _build_raw(to: str, subject: str, body: str) -> str:
 # Tools
 # --------------------------------------------------------------------------- #
 def search(
-    query: str, limit: int = 20, page_token: str | None = None
+    query: str, limit: int = 20, page_token: str | None = None,
+    account: str | None = None,
 ) -> dict:
     """Search Gmail. Returns lightweight message summaries (newest first).
 
     Pass ``page_token`` to fetch the next page (the value returned in the
     previous response's ``next_page_token``). Returns
     ``{items, count, next_page_token}``; ``next_page_token`` is None when
-    there are no more results.
+    there are no more results. ``account`` — which mailbox to search: ``blt``
+    (default), ``deadlift``, ``choco``.
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return {
             "items": [
@@ -61,7 +76,7 @@ def search(
             "next_page_token": None,
         }
 
-    service = _service()
+    service = _service(account)
     list_kwargs: dict = {"userId": "me", "q": query, "maxResults": limit}
     if page_token:
         list_kwargs["pageToken"] = page_token
@@ -94,8 +109,13 @@ def search(
     }
 
 
-def get_message(message_id: str) -> dict:
-    """Fetch a single message with its plain-text body."""
+def get_message(message_id: str, account: str | None = None) -> dict:
+    """Fetch a single message with its plain-text body.
+
+    ``account`` — which mailbox to read: ``blt`` (default), ``deadlift``,
+    ``choco``.
+    """
+    account = resolve_account(account)
     if settings.use_mock:
         return {
             "_mock": True,
@@ -107,7 +127,7 @@ def get_message(message_id: str) -> dict:
             "body": "MOCK DATA — server is in DRY_RUN mode, not live Gmail.",
         }
 
-    service = _service()
+    service = _service(account)
     full = (
         service.users().messages().get(userId="me", id=message_id, format="full").execute()
     )
@@ -156,8 +176,13 @@ def draft_email(to: str, subject: str, body: str) -> dict:
     return {"id": created.get("id"), "to": to, "subject": subject, "status": "draft"}
 
 
-def send_email(to: str, subject: str, body: str) -> dict:
-    """Send an email immediately. In mock mode, returns a clearly fake result."""
+def send_email(to: str, subject: str, body: str, account: str | None = None) -> dict:
+    """Send an email immediately. In mock mode, returns a clearly fake result.
+
+    ``account`` — which identity to send as: ``blt`` (default), ``deadlift``,
+    ``choco``.
+    """
+    account = resolve_account(account)
     if settings.use_mock:
         logger.warning("MOCK send_email to %s — NOT actually sent (DRY_RUN).", to)
         return {
@@ -169,11 +194,11 @@ def send_email(to: str, subject: str, body: str) -> dict:
             "note": "MOCK MODE — email was NOT delivered. Set DRY_RUN=false.",
         }
 
-    service = _service()
+    service = _service(account)
     sent = (
         service.users()
         .messages()
-        .send(userId="me", body={"raw": _build_raw(to, subject, body)})
+        .send(userId="me", body={"raw": _build_raw(to, subject, body, account)})
         .execute()
     )
     # The real Gmail message id is proof the send actually reached Google.
@@ -193,18 +218,28 @@ def send_email(to: str, subject: str, body: str) -> dict:
 # Read / unread + reply tools (added for voice-style workflows)
 # --------------------------------------------------------------------------- #
 def list_unread(
-    limit: int = 10, query: str | None = None, page_token: str | None = None
+    limit: int = 10, query: str | None = None, page_token: str | None = None,
+    account: str | None = None,
 ) -> dict:
-    """List unread emails, newest first. Returns paginated envelope."""
+    """List unread emails, newest first. Returns paginated envelope.
+
+    ``account`` — which mailbox to read: ``blt`` (default), ``deadlift``,
+    ``choco``.
+    """
     q = "is:unread" + (f" {query}" if query else "")
-    return search(q, limit=limit, page_token=page_token)
+    return search(q, limit=limit, page_token=page_token, account=account)
 
 
-def mark_read(message_id: str) -> dict:
-    """Remove the UNREAD label from a message (i.e. mark it as read)."""
+def mark_read(message_id: str, account: str | None = None) -> dict:
+    """Remove the UNREAD label from a message (i.e. mark it as read).
+
+    ``account`` — which mailbox the message is in: ``blt`` (default),
+    ``deadlift``, ``choco``.
+    """
+    account = resolve_account(account)
     if settings.use_mock:
         return {"id": message_id, "status": "read", "mock": True}
-    service = _service()
+    service = _service(account)
     res = (
         service.users()
         .messages()
@@ -217,11 +252,16 @@ def mark_read(message_id: str) -> dict:
     return {"id": res.get("id", message_id), "status": "read", "labels": res.get("labelIds", [])}
 
 
-def mark_unread(message_id: str) -> dict:
-    """Add the UNREAD label to a message (i.e. mark it as unread)."""
+def mark_unread(message_id: str, account: str | None = None) -> dict:
+    """Add the UNREAD label to a message (i.e. mark it as unread).
+
+    ``account`` — which mailbox the message is in: ``blt`` (default),
+    ``deadlift``, ``choco``.
+    """
+    account = resolve_account(account)
     if settings.use_mock:
         return {"id": message_id, "status": "unread", "mock": True}
-    service = _service()
+    service = _service(account)
     res = (
         service.users()
         .messages()
@@ -241,18 +281,20 @@ def _walk_parts(payload: dict):
         yield from _walk_parts(part)
 
 
-def list_attachments(message_id: str) -> list[dict]:
+def list_attachments(message_id: str, account: str | None = None) -> list[dict]:
     """List the attachments of a Gmail message (filename, size, MIME type, id).
 
     Returns lightweight metadata only — use `read_attachment` to fetch and
-    extract the content of one.
+    extract the content of one. ``account`` — which mailbox the message is
+    in: ``blt`` (default), ``deadlift``, ``choco``.
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return [{
             "attachment_id": "MOCK_ATT_1", "filename": "mock-contract.pdf",
             "mime_type": "application/pdf", "size_bytes": 12345,
         }]
-    service = _service()
+    service = _service(account)
     full = (
         service.users().messages()
         .get(userId="me", id=message_id, format="full").execute()
@@ -335,14 +377,18 @@ def _sniff_mime(data: bytes) -> str:
 
 
 def read_attachment(
-    message_id: str, attachment_id: str, max_chars: int = 12000
+    message_id: str, attachment_id: str, max_chars: int = 12000,
+    account: str | None = None,
 ) -> dict:
     """Fetch a Gmail attachment and extract its content as text.
 
     Supports PDF (via pypdf), DOCX (lightweight XML extract), and any text/*
     MIME type. Returns {filename, mime_type, size_bytes, text, truncated}.
     For binary attachments we can't parse, `text` is empty and `note` explains.
+    ``account`` — which mailbox the message is in: ``blt`` (default),
+    ``deadlift``, ``choco``.
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return {
             "filename": "mock.pdf", "mime_type": "application/pdf",
@@ -350,7 +396,7 @@ def read_attachment(
             "truncated": False, "mock": True,
         }
 
-    service = _service()
+    service = _service(account)
 
     # Download the attachment bytes first. The attachmentId field is the
     # primary key for this operation; the metadata-lookup below is for
@@ -429,13 +475,15 @@ def _gdoc_id(url_or_id: str) -> str:
     return url_or_id.strip()
 
 
-def read_gdoc(url_or_id: str, max_chars: int = 20000) -> dict:
+def read_gdoc(url_or_id: str, max_chars: int = 20000, account: str | None = None) -> dict:
     """Fetch a Google Doc (or Sheet/Slides) as plain text via Drive Export.
 
     Accepts either a full sharing URL (e.g. https://docs.google.com/document/d/<ID>/edit)
     or a raw file ID. For Docs we export as text/plain; for Sheets we use CSV;
-    for Slides we fall back to text/plain.
+    for Slides we fall back to text/plain. ``account`` — which Drive to read
+    from: ``blt`` (default), ``deadlift``, ``choco``.
     """
+    account = resolve_account(account)
     file_id = _gdoc_id(url_or_id)
     if settings.use_mock:
         return {
@@ -445,7 +493,7 @@ def read_gdoc(url_or_id: str, max_chars: int = 20000) -> dict:
 
     from ..google_auth import build_service
 
-    drive = build_service("drive", "v3")
+    drive = build_service("drive", "v3", account=account)
     meta = drive.files().get(
         fileId=file_id, fields="id,name,mimeType", supportsAllDrives=True,
     ).execute()
@@ -471,21 +519,25 @@ def read_gdoc(url_or_id: str, max_chars: int = 20000) -> dict:
     }
 
 
-def reply(message_id: str, body: str, send: bool = True) -> dict:
+def reply(
+    message_id: str, body: str, send: bool = True, account: str | None = None
+) -> dict:
     """Reply to a Gmail message, properly threaded.
 
     Looks up the original message's From/Subject/Message-Id/References headers,
     composes a threaded reply, and either sends it (`send=True`) or saves it
     as a draft (`send=False`). The recipient is taken from the original
-    message's `Reply-To` if present, else `From`.
+    message's `Reply-To` if present, else `From`. ``account`` — which mailbox
+    to reply as: ``blt`` (default), ``deadlift``, ``choco``.
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return {
             "id": "MOCK_REPLY", "in_reply_to": message_id,
             "status": "sent" if send else "draft", "mock": True,
         }
 
-    service = _service()
+    service = _service(account)
     original = (
         service.users()
         .messages()
@@ -505,7 +557,7 @@ def reply(message_id: str, body: str, send: bool = True) -> dict:
 
     msg = EmailMessage()
     msg["To"] = reply_to
-    msg["From"] = settings.google_user_email
+    msg["From"] = _from_address(account)
     msg["Subject"] = subject
     original_mid = headers.get("Message-ID") or headers.get("Message-Id")
     if original_mid:

@@ -292,3 +292,73 @@ def test_mirror_events_never_block_time_and_never_notify():
     assert body["transparency"] == "transparent"
     assert body["reminders"] == {"useDefault": False, "overrides": []}
     assert body["extendedProperties"]["private"]["iblu"] == "block"
+
+
+# --- untracked time --------------------------------------------------------
+
+
+def workday():
+    return at(7, 0), at(20, 0)
+
+
+def test_an_unaccounted_stretch_of_the_workday_becomes_an_untracked_block():
+    blocks = B.build(B.cluster_signals([signal(1, at(9, 0))]), [], workday=workday())
+    untracked = [b for b in blocks if b["untracked"]]
+    assert untracked, "the rest of the workday should be visible as unknown"
+    assert all(b["venture"] is None for b in untracked)
+    assert all(b["attention"] == "ambiguous" for b in untracked)
+    assert all(b["confidence"] == "inferred" for b in untracked)
+    assert "nothing recorded, and nothing on the calendar" in untracked[0]["reasoning"]
+
+
+def test_untracked_blocks_cover_the_workday_and_nothing_outside_it():
+    blocks = B.build(B.cluster_signals([signal(1, at(9, 0))]), [], workday=workday())
+    assert min(b["starts_at"] for b in blocks) == at(7, 0)
+    assert max(b["ends_at"] for b in blocks) == at(20, 0)
+
+
+def test_a_short_unaccounted_gap_is_not_reported():
+    """Twenty minutes between two tasks is a gap between tasks, not a gap in
+    the record."""
+    rows = [signal(1, at(9, 0)), signal(2, at(9, 40))]   # a 15-minute hole
+    blocks = B.build(B.cluster_signals(rows), [], workday=(at(9, 0), at(9, 55)))
+    assert not [b for b in blocks if b["untracked"]]
+
+
+def test_an_untracked_stretch_never_merges_with_an_unaccounted_meeting():
+    """Both are 'unknown', but only one of them has a name to ask about."""
+    blocks = B.build([], [intent(at(9, 0), at(10, 0), title="Standup")], workday=workday())
+    named = [b for b in blocks if not b["untracked"]]
+    assert len(named) == 1 and named[0]["intent_title"] == "Standup"
+
+
+def test_evidence_outside_the_workday_still_produces_a_block():
+    """The workday bounds say where silence is worth reporting, not where work
+    counts. A 21:30 commit is still work."""
+    blocks = B.build(B.cluster_signals([signal(1, at(21, 30))]), [], workday=workday())
+    assert any(b["starts_at"] >= at(21, 0) and not b["untracked"] for b in blocks)
+
+
+# --- confirmed blocks survive a rebuild ------------------------------------
+
+
+def test_a_confirmed_block_is_carved_out_of_a_rebuild():
+    """Acceptance E2: a tapped answer is the truth for its span; a later
+    reconstruction only describes what is left."""
+    blocks = B.build(B.cluster_signals([signal(1, at(9, 0))]), [], workday=workday())
+    carved = B._carve_out(blocks, [(at(10, 0), at(12, 0))])
+    for b in carved:
+        assert not (b["starts_at"] < at(12, 0) and b["ends_at"] > at(10, 0)), (
+            "a rebuild overlapped a confirmed block"
+        )
+
+
+def test_carving_drops_slivers_rather_than_emitting_them():
+    blocks = B.build(B.cluster_signals([signal(1, at(9, 0))]), [], workday=workday())
+    carved = B._carve_out(blocks, [(at(7, 10), at(19, 50))])
+    assert all(b["ends_at"] - b["starts_at"] >= B.FLOOR for b in carved)
+
+
+def test_carving_nothing_changes_nothing():
+    blocks = B.build(B.cluster_signals([signal(1, at(9, 0))]), [], workday=workday())
+    assert B._carve_out(blocks, []) == blocks

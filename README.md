@@ -50,7 +50,7 @@ Claude.ai picks safe permission defaults automatically:
 | `gmail_read_attachment` | Download + extract text from PDF / DOCX / text attachments | auto-allow |
 | `gmail_draft_email` | Save a Gmail draft (does NOT send) | auto-allow |
 | `gmail_send_email` | Send an email immediately | **ask** |
-| `gmail_reply` | Threaded reply (proper In-Reply-To / References) | auto-allow |
+| `gmail_reply` | Threaded reply (proper In-Reply-To / References) | **ask** |
 | `gmail_mark_read` / `gmail_mark_unread` | Toggle UNREAD label | auto-allow |
 | `gdoc_read` | Fetch a Google Doc / Sheet / Slides as plain text (URL or ID) | auto-allow |
 | `calendar` | See and manage the calendar: list / find free time / create / move / update / delete | auto-allow |

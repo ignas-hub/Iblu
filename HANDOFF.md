@@ -273,37 +273,49 @@ describe the June state; these supersede it where they conflict.
     `Settings` is a frozen dataclass: substitute the module-level `settings`
     object, never patch its attributes.
 
-### 12. Adding a tool costs Ignas a click — prefer a parameter
+### 12. Tool surface: one tool per domain × side-effect class
 
-Verified 2026-09-13. claude.ai does **not** derive its per-tool Allow/Ask
-setting from MCP annotations. Five tools with byte-identical annotations showed
-different states in the connector UI, split purely by when each was first
-registered: tools present when the connector was last configured were Allow,
-tools that appeared afterwards defaulted to Ask.
+Restated 2026-09-13 evening by Ignas, superseding the earlier "prefer a
+parameter, a tool costs a click" framing. The rule is now:
 
-This is by design, not a bug. The MCP spec says clients "MUST consider tool
-annotations to be untrusted unless they come from trusted servers", and
-Anthropic's permission docs state that MCP toolsets "default to always_ask …
-so that new tools added to an MCP server do not execute without approval".
-There is no server-side override — no annotation, no `_meta`, no capability.
+> **One MCP tool per domain × side-effect class.** Reads for a domain live in
+> one tool; sends and writes for that domain live in another. Never a god tool.
+> A new tool costs one Allow click, once — and that click never shapes
+> architecture. New capabilities over existing data go in as parameters or
+> views of the read tool for that domain.
 
-Consequences for this repo:
+The click is real but it is a one-time cost, and paying it is the right trade
+when the alternative is a read tool that can also send, or a single `do()` with
+a twenty-value `action` enum. What the click must never do is push a *write*
+into a read tool to avoid a prompt.
 
-1. **Every new `@mcp.tool` costs Ignas a manual click**, forever, in a UI he
-   has to find. A permission prompt mid-drive is exactly the friction the
-   mission forbids, so the cost is real, not cosmetic.
-2. **Prefer extending an existing tool with a parameter** over registering a
-   new one. `context_review` should have been `context_get_summary(view=
-   'review')` — it would have shipped already-allowed. Register a genuinely
-   new tool only when the capability does not belong on any existing one.
-3. **Annotations still matter** — they drive the *grouping* in that UI. The 16
-   tools with `readOnlyHint: true` are exactly the "Read-only tools (16)"
-   group, which is what makes the group-level "always allow" control usable in
-   one action instead of tool by tool. `tests/test_tool_permissions.py` keeps
-   them honest; it cannot enforce client behaviour and says so.
-4. **When a new tool is unavoidable, say so in the handover**, with the words
-   "you will need to set this to Always allow in Settings > Connectors", rather
-   than claiming a restart or reconnect will apply it. It will not.
+The mechanics behind the click, verified 2026-09-13, still hold and are worth
+keeping straight:
+
+1. **claude.ai does not derive Allow/Ask from MCP annotations.** Five tools with
+   byte-identical annotations showed different states in the connector UI, split
+   purely by when each was first registered: tools present when the connector
+   was last configured were Allow, tools that appeared afterwards defaulted to
+   Ask. This is by design — the MCP spec says clients "MUST consider tool
+   annotations to be untrusted unless they come from trusted servers", and
+   Anthropic's permission docs state that MCP toolsets "default to always_ask …
+   so that new tools added to an MCP server do not execute without approval".
+   There is no server-side override: no annotation, no `_meta`, no capability.
+2. **Annotations still matter — they drive the *grouping*.** The tools with
+   `readOnlyHint: true` are exactly the "Read-only tools" group, which is what
+   makes the group-level "always allow" control usable in one action instead of
+   tool by tool. That grouping is the reason the domain × side-effect split
+   above is the right shape: it keeps every read in the group Ignas can allow
+   once. `tests/test_tool_permissions.py` keeps the annotations honest; it
+   cannot enforce client behaviour and says so.
+3. **When a new tool ships, say so in the handover**, with the words "you will
+   need to set this to Always allow in Settings > Connectors", rather than
+   claiming a restart or reconnect will apply it. It will not.
+4. **Three tools ask**, and only these three, because each puts a message in
+   front of another human and cannot be taken back: `gmail_send_email`,
+   `chat_send_message`, `gmail_reply`. A threaded reply lands in someone's inbox
+   exactly as a new mail does — the thread makes it more likely to be read, not
+   less.
 
 ### 13. Never delete a `calendar_seen` row for an event that still exists
 
@@ -412,3 +424,79 @@ Venture attribution is inverted relative to the other collectors: a keyword hit
 is `inferred`, but the **workspace itself** is `fact` (`SLACK_VENTURE_<ALIAS>`).
 Deadlift's Slack *is* Deadlift; that is stronger evidence than a word in a
 message.
+
+### 18. The judge relabels; it never reshapes
+
+Built 2026-09-13 (`analyst/judge.py`). The reconstruction is split in two on
+purpose: `blocks.build()` decides *where* the day's boundaries are, and an LLM
+decides *what each stretch was*. Boundaries are arithmetic over timestamps and
+must be reproducible; "Re: Noshinku 3PL training is BLT client work, not Choco
+delivery" is a judgement no rule table will ever make well. "Scripts fetch; the
+LLM judges" is this line, drawn concretely.
+
+Four things the judge may not do, each enforced *after* the call rather than
+asked for politely in the prompt:
+
+- **Move a boundary.** Start and end come back unchanged or the whole response
+  is rejected. A model that can reshape the timeline can invent an hour of work.
+- **Upgrade confidence.** Only a tap makes a block a `fact`.
+- **Invent a code.** Every venture, work type and project it returns must
+  already exist. (Projects are the exception while the registry is empty —
+  before there is a registry there is nothing to contradict.)
+- **Fill in an untracked stretch.** An untracked block has no evidence at all;
+  guessing what an unobserved hour was would make every other number in IBLU
+  unbelievable. This one is checked first, before any other field is applied.
+
+The duration stays IBLU's: the judge supplies only the "why", and the `N min ·`
+prefix is prepended afterwards. Letting it rewrite the whole reasoning line lost
+the minutes, which is the one number a glance at the card actually needs.
+
+Any violation, timeout or malformed response is a silent no-op — the computed
+day stands and `llm=false` is recorded, so a later reader can tell which days
+were judged and which were merely counted.
+
+### 19. Gap warnings advise; they never block
+
+Built 2026-09-13 (`store/gap_check.py`). When a `decision` or `preference` is
+written in Gap language — a superlative, a comparison to another company, a
+race, an obligation, a distance from an ideal — `context_log` returns a
+`gap_warning` alongside the id, suggesting a backward-measurable rewrite.
+
+**The entry is always written first.** A warning that could block would make
+IBLU a grader, and IBLU measures; it does not grade. Ignas's goals are his to
+phrase; the tool only says once what that phrasing will cost him when the year
+is up and there is nothing to measure backward to.
+
+The stricter "names no observable end state" check applies only to entries
+tagged `priority`. An ordinary decision is allowed to be a sentence about a
+choice.
+
+Note there are two language checkers and they have different jobs: this one
+guards what *Ignas writes into IBLU*; `jobs/review_language.py` guards what
+*IBLU writes back to him*. Keep them separate — the first advises, the second
+rejects and falls back to a deterministic template.
+
+### 20. Sessions 5–8 vs. the brief: what the repo already had
+
+The Sessions 5–8 brief (`docs/plans/2026-09-13-sessions5-8.md`) was written
+against `d1e8958`, eight commits behind `main` at the time it was executed. Rule
+1 of that brief says the repo wins. Where it won, for anyone reading the brief
+later and wondering why the code does not match:
+
+| The brief says | The repo had | Resolution |
+|---|---|---|
+| stages/projects = migration 004 | 004 is multi-account calendar | stages/projects became **007** |
+| build `blocks` as migration 005 | 005 built, 006 added `intent_title` | extended, not rebuilt |
+| `blocks.start_at` / `end_at` / `created_by` | `starts_at` / `ends_at` / `source` | repo names kept |
+| `IBLU_ACCOUNTS='blanklabel:…'` | `GOOGLE_ACCOUNTS='blt,deadlift,choco'` + per-alias `GOOGLE_ACCOUNT_<ALIAS>_*` | repo names kept; primary alias is `blt`, not `blanklabel` |
+| Session 6 = build multi-account | all three Workspaces already authorized and collecting | only the read tools' `account` parameter and per-account health remained |
+| create the Secretary calendar | created and wired (`129b3fa`) | nothing to do |
+| weekly review on Sunday | Sunday 18:00 | moved to **Friday 18:00** per the brief; window Mon 00:00 → Fri 18:00 |
+
+One place the brief won over the repo, deliberately: **untracked blocks.** The
+repo emitted no block at all for an unobserved stretch, on the reasoning that
+inventing one invents a fact. The brief wants a `venture=NULL`, `ambiguous`
+block for any unaccounted stretch of at least 30 minutes inside 07:00–20:00 —
+and it is right, because the evening ping's `gap` question needs something to
+supersede when Ignas says what the hour was. Both readings honour "silence is
+never presence"; only the brief's gives him a way to answer.

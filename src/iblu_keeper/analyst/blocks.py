@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from ..collectors import venture_hints
@@ -43,6 +43,17 @@ TAIL = timedelta(minutes=10)
 # An ambiguous remainder shorter than this is scheduling noise, not a gap in
 # the record.
 MIN_AMBIGUOUS = timedelta(minutes=15)
+
+# The stretch of the local day that IBLU claims to have an opinion about.
+# Outside it, absence of evidence is not evidence of anything — he is asleep,
+# or living, and a grey block there would be noise pretending to be a finding.
+WORKDAY_START = time(7, 0)
+WORKDAY_END = time(20, 0)
+
+# An unobserved stretch inside the workday shorter than this is the gap between
+# two tasks, not a gap in the record. Half an hour is the smallest span it is
+# worth asking him about.
+MIN_UNTRACKED = timedelta(minutes=30)
 
 
 def _tz() -> ZoneInfo:
@@ -200,8 +211,18 @@ def _cut_points(cluster: Cluster, intents: list[Interval]) -> list[datetime]:
     return sorted(points)
 
 
-def build(clusters: list[Cluster], intents: list[Interval]) -> list[dict]:
-    """Assemble the day. Returns block dicts ready for `_insert`."""
+def build(
+    clusters: list[Cluster],
+    intents: list[Interval],
+    workday: tuple[datetime, datetime] | None = None,
+) -> list[dict]:
+    """Assemble the day. Returns block dicts ready for `_insert`.
+
+    `workday` is the span IBLU will account for — pass it to have unobserved
+    stretches inside it come back as `untracked` blocks (what the evening ping's
+    `gap` question asks about). Omit it and only evidence and intent produce
+    blocks, which is what the unit tests want.
+    """
     blocks: list[dict] = []
 
     for cluster in clusters:
@@ -267,6 +288,8 @@ def build(clusters: list[Cluster], intents: list[Interval]) -> list[dict]:
                 }
             )
 
+    blocks += _untracked(blocks, workday)
+
     blocks.sort(key=lambda b: (b["starts_at"], b["ends_at"]))
     merged = _merge_adjacent(blocks)
     # The line is written last, so it describes the block that survived the
@@ -274,6 +297,7 @@ def build(clusters: list[Cluster], intents: list[Interval]) -> list[dict]:
     for block in merged:
         block["reasoning"] = _reasoning(block)
         block["intent_title"] = block.pop("_intent_title", None)
+        block["untracked"] = bool(block.pop("_untracked", False))
         block.pop("_sources", None)
     return merged
 
@@ -283,9 +307,14 @@ def _merge_adjacent(blocks: list[dict]) -> list[dict]:
     out: list[dict] = []
     for b in blocks:
         prev = out[-1] if out else None
-        same = prev and prev["ends_at"] == b["starts_at"] and all(
-            prev[k] == b[k]
-            for k in ("venture", "work_type", "project", "attention", "confidence")
+        same = (
+            prev
+            and prev["ends_at"] == b["starts_at"]
+            and prev.get("_untracked") == b.get("_untracked")
+            and all(
+                prev[k] == b[k]
+                for k in ("venture", "work_type", "project", "attention", "confidence")
+            )
         )
         if same:
             prev["ends_at"] = b["ends_at"]
@@ -315,6 +344,8 @@ def _reasoning(block: dict) -> str:
     title = block.get("_intent_title")
 
     if block["attention"] == "ambiguous":
+        if not title:
+            return f"{minutes} min · nothing recorded, and nothing on the calendar either"
         return f'{minutes} min · "{title}" was on the calendar; nothing recorded during it'
 
     evidence = ", ".join(
@@ -488,13 +519,24 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
         logger.warning("analyst: no intent calendar for %s (%s)", on, exc)
         intents = []
 
-    rows = build(cluster_signals(signals), intents)
+    # Anything Ignas confirmed by tapping is a fact, and a later reconstruct is
+    # a guess. The guess never overwrites the fact: confirmed blocks are held
+    # out of the rebuild entirely and the new timeline is cut around them.
+    confirmed = [b for b in live_blocks(conn, on) if b["confidence"] == "fact"]
+    workday = workday_bounds(on)
+    rows = build(cluster_signals(signals), intents, workday=workday)
+    rows = _carve_out(rows, [(b["starts_at"], b["ends_at"]) for b in confirmed])
+
+    # The arithmetic is done; now the judgement. A failing judge is a no-op —
+    # the computed day stands and `llm=False` says so.
+    rows, llm_used = _judge(conn, rows, signals)
 
     summary = {
         "date": on.isoformat(),
         "signals": len(signals),
         "intents": len(intents),
         "blocks": len(rows),
+        "confirmed_kept": len(confirmed),
         "by_attention": _counts(rows),
         "minutes": {
             k: sum(
@@ -504,6 +546,7 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
             )
             for k in ("present", "displaced", "ambiguous")
         },
+        "llm": llm_used,
         "dry": dry,
     }
     if dry:
@@ -519,7 +562,10 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
         ]
         return summary
 
-    previous = [b["id"] for b in live_blocks(conn, on)]
+    # `confirmed` rows stay live — they are not superseded and not rewritten.
+    previous = [
+        b["id"] for b in live_blocks(conn, on) if b["confidence"] != "fact"
+    ]
     new_ids = _insert(conn, on, rows)
     _supersede(conn, on, previous, new_ids)
     summary["superseded"] = len(previous)
@@ -536,8 +582,96 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
     return summary
 
 
+def _judge(conn, rows: list[dict], signals: list[dict]) -> tuple[list[dict], bool]:
+    """Let the LLM relabel the day. Never fatal — see `analyst/judge.py`."""
+    from .judge import judge
+
+    try:
+        ventures = [r["code"] for r in conn.execute("SELECT code FROM ventures").fetchall()]
+        work_types = [r["code"] for r in conn.execute("SELECT code FROM work_types").fetchall()]
+        try:  # the project registry may not exist yet on an older database
+            projects = [
+                r["code"] for r in conn.execute("SELECT code FROM projects").fetchall()
+            ]
+        except Exception:
+            conn.rollback()
+            projects = []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("analyst: could not read the taxonomy (%s) — skipping the judge", exc)
+        return rows, False
+
+    return judge(
+        rows, signals,
+        ventures=ventures, work_types=work_types, projects=projects, tz=_tz(),
+    )
+
+
 def _counts(rows: list[dict]) -> dict[str, int]:
     out = {"present": 0, "displaced": 0, "ambiguous": 0}
     for r in rows:
         out[r["attention"]] += 1
+    return out
+
+
+def _untracked(blocks: list[dict], workday: tuple[datetime, datetime] | None) -> list[dict]:
+    """The stretches of the workday nothing accounts for.
+
+    These are the only blocks IBLU writes with no evidence *and* no intent, and
+    they exist for one reason: the evening ping's `gap` question needs something
+    to supersede when Ignas says what an unaccounted hour was. They are
+    `ambiguous` with `venture = NULL` — the schema's way of saying "unknown",
+    which is not the same as "idle" and must never be rendered as idle.
+    """
+    if workday is None:
+        return []
+    covered = [(b["starts_at"], b["ends_at"]) for b in blocks]
+    out = []
+    for start, end in _subtract(workday, covered):
+        if end - start < MIN_UNTRACKED:
+            continue
+        out.append(
+            {
+                "starts_at": start,
+                "ends_at": end,
+                "venture": None,
+                "work_type": None,
+                "project": None,
+                "attention": "ambiguous",
+                "confidence": "inferred",
+                "evidence": [],
+                "intent_event_id": None,
+                "_sources": {},
+                "_intent_title": None,
+                "_untracked": True,
+            }
+        )
+    return out
+
+
+def workday_bounds(on: date, tz: ZoneInfo | None = None) -> tuple[datetime, datetime]:
+    """The part of a local day IBLU will account for, in UTC."""
+    tz = tz or _tz()
+    start = datetime.combine(on, WORKDAY_START, tzinfo=tz)
+    end = datetime.combine(on, WORKDAY_END, tzinfo=tz)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
+def _carve_out(rows: list[dict], keep: list[tuple[datetime, datetime]]) -> list[dict]:
+    """Remove the spans already answered for from a freshly built day.
+
+    A block Ignas confirmed is the truth for its span; the reconstruction is
+    only allowed to describe what is left. A remainder shorter than the floor
+    is dropped rather than emitted as a sliver.
+    """
+    if not keep:
+        return rows
+    out: list[dict] = []
+    for row in rows:
+        for start, end in _subtract((row["starts_at"], row["ends_at"]), keep):
+            if end - start < FLOOR:
+                continue
+            piece = dict(row)
+            piece["starts_at"], piece["ends_at"] = start, end
+            piece["evidence"] = [] if piece.get("untracked") else piece["evidence"]
+            out.append(piece)
     return out

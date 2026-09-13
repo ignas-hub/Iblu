@@ -18,6 +18,10 @@ should ask.** Everything else — reads, drafts, Drive and Docs writes, memory
 writes — should be allowed, because a prompt on every call makes the assistant
 unusable by voice, which is its primary mode.
 
+Revised the same evening: a reply is a message to another human too. A threaded
+reply lands in someone's inbox exactly as a new mail does, and the thread makes
+it *more* likely to be read, not less. `gmail_reply` joined the ask class.
+
 This test keeps the annotations honest so the grouping stays correct and the
 intent is recorded. It cannot enforce the client's behaviour.
 """
@@ -31,9 +35,9 @@ import pytest
 
 SERVER = Path(__file__).resolve().parents[1] / "src" / "iblu_keeper" / "server.py"
 
-# The only two tools that may ask. Both put a message in front of another
-# person and cannot be taken back.
-MUST_ASK = {"gmail_send_email", "chat_send_message"}
+# The only tools that may ask. Each puts a message in front of another person
+# and cannot be taken back.
+MUST_ASK = {"gmail_send_email", "chat_send_message", "gmail_reply"}
 
 ANNOTATION_KEYS = {
     "readOnlyHint",
@@ -81,7 +85,7 @@ def test_only_sending_to_a_human_is_marked_as_needing_confirmation():
 
 
 @pytest.mark.parametrize("name", sorted(MUST_ASK))
-def test_the_two_sends_keep_both_flags(name):
+def test_every_send_keeps_both_flags(name):
     """Either flag alone is enough to prompt; require both, explicitly."""
     flags = _tools()[name]
     assert flags["destructiveHint"] is True

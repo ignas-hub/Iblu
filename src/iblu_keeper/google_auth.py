@@ -157,24 +157,53 @@ def _load_credentials(alias: str | None = None):
     return creds
 
 
+def _probe_account(alias: str | None) -> dict:
+    """Probe whether live Google credentials work for ONE account. Never raises.
+
+    Returns {"ok": bool, "account": str|None, "error": str|None,
+    "token_file_exists": bool}. Shared by `auth_status` (primary account) and
+    `auth_status_by_account` (every configured alias) so there is exactly one
+    place that decides what "authorized" means — never print the token or
+    client secret, only booleans and the (non-secret) account email.
+    """
+    resolved = alias or settings.primary_alias
+    acct = settings.account(resolved)
+    token_file_exists = bool(acct["token_file"]) and os.path.exists(acct["token_file"])
+    if settings.dry_run:
+        return {"ok": False, "account": None, "error": "DRY_RUN is enabled (mock mode)",
+                "token_file_exists": token_file_exists}
+    if not (acct["client_id"] and acct["client_secret"] and token_file_exists):
+        return {"ok": False, "account": None,
+                "error": "No OAuth client configured or token file missing",
+                "token_file_exists": token_file_exists}
+    try:
+        creds = get_credentials_for(resolved)
+        return {"ok": bool(creds and creds.valid),
+                "account": acct["email"] or None, "error": None,
+                "token_file_exists": token_file_exists}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "account": None, "error": str(exc),
+                "token_file_exists": token_file_exists}
+
+
 def auth_status() -> dict:
-    """Probe whether live Google credentials currently work.
+    """Probe whether live Google credentials currently work for the primary account.
 
     Returns {"ok": bool, "account": str|None, "error": str|None}. Safe to call
     from the health endpoint — it triggers a token refresh if needed but does
     not raise.
     """
-    if settings.dry_run:
-        return {"ok": False, "account": None, "error": "DRY_RUN is enabled (mock mode)"}
-    if not settings.has_google_credentials:
-        return {"ok": False, "account": None,
-                "error": "No OAuth client configured or token file missing"}
-    try:
-        creds = get_credentials()
-        return {"ok": bool(creds and creds.valid),
-                "account": settings.google_user_email, "error": None}
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "account": None, "error": str(exc)}
+    return _probe_account(None)
+
+
+def auth_status_by_account() -> dict[str, dict]:
+    """Probe EVERY configured account alias (`settings.account_aliases`).
+
+    Each entry has the same shape as `auth_status`, plus `token_file_exists`.
+    A failing account never raises and never blocks the others — used by
+    `server_health` to report per-account auth status.
+    """
+    return {alias: _probe_account(alias) for alias in settings.account_aliases}
 
 
 def get_credentials(scopes: Sequence[str] | None = None):  # noqa: ARG001

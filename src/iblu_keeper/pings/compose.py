@@ -14,33 +14,49 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter
 from datetime import datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ..config import settings
 
 logger = logging.getLogger("iblu_keeper.pings.compose")
 
-MAX_QUESTIONS = 3
-MAX_OPTIONS = 4
+# Ceilings the Pydantic schema itself will not exceed. These are NOT the
+# binding tap budget (plan §0) — that is `enforce_tap_budget`, below, which
+# depends on the ping *kind*. These are just the shape any single question can
+# ever take: the widest card evening ships is body/mind (4 options + escape).
+MAX_QUESTIONS = 4
+MAX_OPTIONS = 5
 MAX_TEXT = 160
 MAX_LABEL = 40
 
-QIDS = ("sink", "displaced", "split", "work_type")
+QIDS = ("sink", "displaced", "split", "work_type", "gap", "gains", "body_mind")
 VERDICTS = (
     "planned_mine", "unplanned_mine", "someone_else", "one_off",
     "did_it", "other", "right", "more", "way_off",
     "classify",   # answer to the work_type question: the tapped option IS the answer
+    "meeting", "deep_work", "personal_life",           # gap (§3.3)
+    "learned", "progressed", "experienced",            # gains (§4.1)
+    "strong_excited", "strong_tired", "weak_excited", "weak_exhausted",  # body_mind (§4.2)
+)
+
+# Plan §4.6 — carried verbatim on every LLM call this module makes.
+GAIN_SYSTEM_RULE = (
+    "Measure backward from the baselines, never against an ideal, a goal, a "
+    "competitor or another person. State gains as dated evidence. Never "
+    "praise generically. Never present a plan as a gain. Gains first."
 )
 
 
 class Payload(BaseModel):
     """The structured meaning behind an option — this is what gets analysed."""
 
-    kind: Literal["sink", "displaced", "split", "work_type"]
+    kind: Literal["sink", "displaced", "split", "work_type", "gap", "gains", "body_mind"]
     verdict: Literal[VERDICTS]  # type: ignore[valid-type]
     venture: str | None = None
     work_type: str | None = None
@@ -48,6 +64,29 @@ class Payload(BaseModel):
     signal_ids: list[int] = Field(default_factory=list)
     container: str | None = None
     event_id: str | None = None
+
+    # split / gap (§3.3): the analyst block a tap confirms or corrects, and
+    # the attention verdict the correction should carry. Never written to
+    # directly — a tap always writes a NEW blocks row and supersedes this one.
+    block_id: int | None = None
+    attention: Literal["present", "displaced", "ambiguous"] | None = None
+
+    # gains (§4.1): which of the three kinds this tap is, and the evidence it
+    # points back at (context_entries ids, block ids — kept as strings since
+    # they come from more than one table).
+    gain_kind: Literal["learned", "progressed", "experienced"] | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+
+    # body_mind (§4.2): the 1-5 numbers IBLU stores and nothing else.
+    body: int | None = None
+    mind: int | None = None
+
+    @field_validator("body", "mind")
+    @classmethod
+    def _on_the_1_to_5_scale(cls, v: int | None) -> int | None:
+        if v is not None and not (1 <= v <= 5):
+            raise ValueError(f"body/mind is a 1-5 scale, got {v!r}")
+        return v
 
 
 class Option(BaseModel):
@@ -70,6 +109,20 @@ class Option(BaseModel):
     def _short(cls, v: str) -> str:
         return v.strip()[:MAX_LABEL]
 
+    @model_validator(mode="after")
+    def _gains_option_is_a_gain(self) -> "Option":
+        # Plan §4.1: "reject any option that is a plan, a percentage, future
+        # tense, or a goal not yet reached." The escape hatch ("Add one →
+        # reply") records no claim of its own, so it is exempt — the claim it
+        # eventually carries is validated on the reply, not on the button.
+        if self.payload.kind == "gains" and self.payload.verdict != "other":
+            ok, reason = validate_gain_option(self.label)
+            if not ok:
+                raise ValueError(
+                    f"gains option reads like a {reason}, not a gain: {self.label!r}"
+                )
+        return self
+
 
 # Internal schema words that must never reach the person answering. "sink" is
 # the qid for the attention question; asked as "biggest sink?" it is meaningless
@@ -90,9 +143,13 @@ VAGUE = (
 
 
 class Question(BaseModel):
-    qid: Literal["sink", "displaced", "split", "work_type"]
+    qid: Literal["sink", "displaced", "split", "work_type", "gap", "gains", "body_mind"]
     text: str
     options: list[Option] = Field(min_length=2, max_length=MAX_OPTIONS)
+    # gains (§4.1) is not a supersede chain: Ignas can tap more than one of
+    # its options over the evening, each an independent gain. Every other
+    # kind is a single answer, corrected by re-tapping.
+    multi: bool = False
 
     @field_validator("text")
     @classmethod
@@ -169,6 +226,284 @@ def calendar_lines(events: list) -> str:
 
 
 # --------------------------------------------------------------------------
+# tap budget (plan §0, binding) — the single place that enforces it
+# --------------------------------------------------------------------------
+
+# midday: a flat cap, any kind. evening (and 'test', which exercises the same
+# card shapes for hand-inspection): at most 2 attention questions, 1 gains
+# card, 1 body/mind card — 4 total, never more.
+TAP_BUDGET: dict[str, dict[str, int]] = {
+    "midday": {"total": 2, "attention": 2},
+    "evening": {"total": 4, "attention": 2, "gains": 1, "body_mind": 1},
+}
+TAP_BUDGET["test"] = TAP_BUDGET["evening"]
+
+_ATTENTION_QIDS = {"sink", "displaced", "split", "work_type", "gap"}
+
+
+def _bucket(qid: str) -> str:
+    if qid == "gains":
+        return "gains"
+    if qid == "body_mind":
+        return "body_mind"
+    return "attention"
+
+
+def enforce_tap_budget(kind: str, questions: list["Question"]) -> list["Question"]:
+    """Trim to the binding tap budget for this ping kind.
+
+    This is the one place the cap is enforced, so a composer that drifts
+    (an LLM that returns 3 attention questions, a fallback that appends both
+    gains and a stray sixth card) cannot silently exceed it — every path into
+    a `pings` row passes through here. Order is preserved: earlier questions
+    in the list win their bucket's slots.
+    """
+    budget = TAP_BUDGET.get(kind, TAP_BUDGET["midday"])
+    counts = {"attention": 0, "gains": 0, "body_mind": 0}
+    kept: list[Question] = []
+    for q in questions:
+        bucket = _bucket(q.qid)
+        if counts[bucket] >= budget.get(bucket, 0):
+            continue
+        if len(kept) >= budget["total"]:
+            break
+        kept.append(q)
+        counts[bucket] += 1
+    return kept
+
+
+# --------------------------------------------------------------------------
+# split & gap — confirming and correcting the reconstructed day (plan §3.3)
+# --------------------------------------------------------------------------
+#
+# Both read `blocks` (the analyst's reconstruction, `analyst.blocks.live_blocks`)
+# rather than clustering signals themselves: the day has already been judged
+# once, and these two cards exist to confirm or correct that judgement, not to
+# re-derive it. A tap writes a NEW `blocks` row — never an UPDATE of the one it
+# corrects — via `pings.answers._write_block_correction`.
+
+
+def _day_ventures(blocks: list[dict]) -> list[str]:
+    """Tracked ventures seen in the day's blocks, busiest first."""
+    counts = Counter(b["venture"] for b in blocks if b.get("venture"))
+    return [v for v, _ in counts.most_common()]
+
+
+def _default_top_venture(blocks: list[dict], signals: list[dict]) -> str | None:
+    """The venture most of the day (or, failing that, the window) belongs to."""
+    day_ventures = _day_ventures(blocks)
+    if day_ventures:
+        return day_ventures[0]
+    split = [v for v, _ in _venture_split(signals) if v != "unknown"]
+    return split[0] if split else None
+
+
+def _local(dt: datetime) -> str:
+    return dt.astimezone(ZoneInfo(settings.iblu_timezone)).strftime("%H:%M")
+
+
+def compose_split_question(blocks: list[dict]) -> dict | None:
+    """Confirm one still-inferred block: `"14:00–16:00 looks like Deadlift · Machina — right?"`.
+
+    Only `inferred` blocks are worth asking about — a `fact` block is already
+    confirmed. The busiest one is picked so a single tap corrects the most
+    consequential guess of the day.
+    """
+    candidates = [
+        b for b in blocks
+        if b.get("venture") and b.get("confidence") == "inferred"
+    ]
+    if not candidates:
+        return None
+    block = max(candidates, key=lambda b: b["ends_at"] - b["starts_at"])
+
+    name = block["venture"]
+    if block.get("project"):
+        name = f"{name} · {block['project']}"
+    span = f"{_local(block['starts_at'])}–{_local(block['ends_at'])}"
+
+    options = [{
+        "key": "A", "label": "Right",
+        "payload": {
+            "kind": "split", "verdict": "right", "block_id": block["id"],
+            "venture": block["venture"], "work_type": block.get("work_type"),
+            "project": block.get("project"), "attention": block.get("attention") or "present",
+        },
+    }]
+    alternates = [v for v in _day_ventures(blocks) if v != block["venture"]][:2]
+    for venture in alternates:
+        options.append({
+            "key": chr(65 + len(options)), "label": f"Actually {venture}"[:MAX_LABEL],
+            "payload": {
+                "kind": "split", "verdict": "more", "block_id": block["id"],
+                "venture": venture, "attention": block.get("attention") or "present",
+            },
+        })
+    options.append({
+        "key": chr(65 + len(options)), "label": "Way off → reply",
+        "payload": {"kind": "split", "verdict": "way_off", "block_id": block["id"]},
+    })
+    return {
+        "qid": "split",
+        "text": f"{span} looks like {name} — right?",
+        "options": options[:MAX_OPTIONS],
+    }
+
+
+def compose_gap_question(blocks: list[dict], top_venture: str | None) -> dict | None:
+    """Ask about one untracked stretch: `"11:00–12:30 shows nothing. What was it?"`.
+
+    An untracked block is `venture IS NULL` with no `intent_title` either —
+    the analyst has neither evidence nor a calendar event for that stretch
+    (`analyst.blocks._untracked`). The first one in the day is asked about;
+    the rest wait for another ping.
+    """
+    untracked = [
+        b for b in blocks
+        if b.get("venture") is None and not b.get("intent_title")
+    ]
+    if not untracked:
+        return None
+    block = untracked[0]
+    span = f"{_local(block['starts_at'])}–{_local(block['ends_at'])}"
+    deep_work_label = f"Deep work — {top_venture}" if top_venture else "Deep work"
+
+    options = [
+        {"key": "A", "label": "Meeting / call not in my mail",
+         "payload": {"kind": "gap", "verdict": "meeting", "block_id": block["id"],
+                     "work_type": "client", "attention": "present"}},
+        {"key": "B", "label": deep_work_label[:MAX_LABEL],
+         "payload": {"kind": "gap", "verdict": "deep_work", "block_id": block["id"],
+                     "venture": top_venture, "work_type": "build", "attention": "present"}},
+        {"key": "C", "label": "Personal / life",
+         "payload": {"kind": "gap", "verdict": "personal_life", "block_id": block["id"],
+                     "venture": "family", "work_type": "life", "attention": "present"}},
+        {"key": "D", "label": "Other → reply",
+         "payload": {"kind": "gap", "verdict": "other", "block_id": block["id"]}},
+    ]
+    return {"qid": "gap", "text": f"{span} shows nothing. What was it?", "options": options}
+
+
+# --------------------------------------------------------------------------
+# gains — "what moved today?" (plan §4.1)
+# --------------------------------------------------------------------------
+#
+# Iblu measures backward; it never grades. This card only ever shows things
+# that have already happened — the validator below is what keeps it that way
+# even if a future composer tries to phrase one as a plan.
+
+GAIN_REJECT_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("a future tense ('will')", re.compile(r"\bwill\b", re.I)),
+    ("a future tense ('going to')", re.compile(r"\bgoing to\b", re.I)),
+    ("a future tense ('gonna')", re.compile(r"\bgonna\b", re.I)),
+    ("a future tense ('shall')", re.compile(r"\bshall\b", re.I)),
+    ("a future tense (contraction)", re.compile(r"\b(?:i|we|you|he|she|they)['’]ll\b", re.I)),
+    ("a future time reference", re.compile(r"\b(tomorrow|next week|next month|next quarter|next year|soon)\b", re.I)),
+    ("a plan", re.compile(r"\bplan(?:s|ned|ning)?\b", re.I)),
+    ("a plan (to-do)", re.compile(r"\bto-?do\b", re.I)),
+    ("a percentage", re.compile(r"\d+\s*%|\bpercent\b", re.I)),
+    ("a goal not yet reached", re.compile(
+        r"\b(in progress|still working|working on|trying to|aiming to|hoping to|hope to)\b", re.I)),
+    ("a goal not yet reached (goal/target)", re.compile(r"\b(goal|target)\b", re.I)),
+]
+
+
+def validate_gain_option(text: str) -> tuple[bool, str | None]:
+    """True when `text` describes something that has already happened.
+
+    Rejects a plan, a percentage, future tense, or a goal not yet reached
+    (plan §4.1) — the historical gains register shows exactly this drift, so
+    this is checked in its own function, independent of the LLM prompt rule
+    that asks for the same thing.
+    """
+    for reason, pattern in GAIN_REJECT_PATTERNS:
+        if pattern.search(text):
+            return False, reason
+    return True, None
+
+
+def compose_gains_question(evidence: dict[str, list[dict]] | None) -> dict | None:
+    """One option per kind of evidence that exists, plus the escape hatch.
+
+    `evidence` is `{"learned": [...], "progressed": [...], "experienced": [...]}`,
+    each item `{"label": str, "evidence_ids": list[str]}` — already-happened,
+    already-dated things, gathered by the caller (see `pings.runner`). No
+    evidence at all means no card: Iblu does not invent a gain to ask about.
+    """
+    evidence = evidence or {}
+    options: list[dict] = []
+    for gain_kind in ("learned", "progressed", "experienced"):
+        items = evidence.get(gain_kind) or []
+        if not items:
+            continue
+        item = items[0]
+        options.append({
+            "key": chr(65 + len(options)), "label": item["label"][:MAX_LABEL],
+            "payload": {
+                "kind": "gains", "verdict": gain_kind, "gain_kind": gain_kind,
+                "evidence_ids": [str(i) for i in item.get("evidence_ids", [])],
+            },
+        })
+    if not options:
+        return None
+    options.append({
+        "key": chr(65 + len(options)), "label": "Add one → reply",
+        "payload": {"kind": "gains", "verdict": "other"},
+    })
+    return {
+        "qid": "gains", "text": "What moved today?",
+        "options": options[:MAX_OPTIONS], "multi": True,
+    }
+
+
+# --------------------------------------------------------------------------
+# body / mind — numbers only, never an interpretation (plan §4.2)
+# --------------------------------------------------------------------------
+
+# label -> (body, mind) on the 1-5 scale. Deliberately just two points per
+# axis (2 and 4): a tired thumb can pick one of four buttons; anything finer
+# belongs in the reply override, not the card.
+BODY_MIND_OPTIONS: tuple[tuple[str, str, int, int], ...] = (
+    ("strong_excited", "strong · excited", 4, 4),
+    ("strong_tired", "strong · tired", 4, 2),
+    ("weak_excited", "weak · excited", 2, 4),
+    ("weak_exhausted", "weak · exhausted", 2, 2),
+)
+
+# "body 1 mind 3" (either order, optional punctuation) overrides with exact
+# values — this is the only free-text path into body/mind, so it is parsed
+# once, here, rather than re-derived by whoever reads the reply.
+BODY_MIND_REPLY_RE = re.compile(
+    r"body\D{0,4}([1-5]).{0,20}?mind\D{0,4}([1-5])"
+    r"|mind\D{0,4}([1-5]).{0,20}?body\D{0,4}([1-5])",
+    re.I | re.S,
+)
+
+
+def parse_body_mind_reply(text: str) -> tuple[int, int] | None:
+    """`"body 1 mind 3"` -> `(1, 3)`. `None` when the text doesn't match."""
+    m = BODY_MIND_REPLY_RE.search(text or "")
+    if not m:
+        return None
+    if m.group(1) is not None:
+        return int(m.group(1)), int(m.group(2))
+    return int(m.group(4)), int(m.group(3))
+
+
+def compose_body_mind_question() -> dict:
+    options = [
+        {"key": chr(65 + i), "label": label,
+         "payload": {"kind": "body_mind", "verdict": verdict, "body": body, "mind": mind}}
+        for i, (verdict, label, body, mind) in enumerate(BODY_MIND_OPTIONS)
+    ]
+    options.append({
+        "key": chr(65 + len(options)), "label": "Other → reply",
+        "payload": {"kind": "body_mind", "verdict": "other"},
+    })
+    return {"qid": "body_mind", "text": "Today — body / mind", "options": options}
+
+
+# --------------------------------------------------------------------------
 # fallback composer — deterministic, always available
 # --------------------------------------------------------------------------
 
@@ -178,8 +513,13 @@ def compose_fallback(
     events: list,
     covers_from: datetime,
     covers_to: datetime,
+    *,
+    kind: str = "midday",
+    blocks: list[dict] | None = None,
+    top_venture: str | None = None,
 ) -> QuestionSet:
-    """The same three templates, filled from counts rather than judgement."""
+    """The same templates, filled from counts and blocks rather than judgement."""
+    blocks = blocks or []
     questions: list[dict] = []
     clusters = _clusters(signals)
 
@@ -266,34 +606,18 @@ def compose_fallback(
             ],
         })
 
-    # split — how the window divided across ventures.
-    split = _venture_split(signals)
-    if len(split) >= 1:
-        total = sum(n for _, n in split) or 1
-        top = split[:2]
-        summary = " / ".join(f"{v} {round(100 * n / total)}%" for v, n in top)
-        options = [{"key": "A", "label": "Right",
-                    "payload": {"kind": "split", "verdict": "right",
-                                "venture": top[0][0] if top else None}}]
-        # "More blt" is a useless option when the window is already 100% blt:
-        # offer the runner-up, and when there is no runner-up, offer the honest
-        # escape hatch instead of a tautology.
-        alternatives = [v for v, _ in split[1:3]]
-        for venture in alternatives:
-            options.append({"key": chr(65 + len(options)),
-                            "label": f"More {venture}"[:MAX_LABEL],
-                            "payload": {"kind": "split", "verdict": "more", "venture": venture}})
-        if not alternatives:
-            options.append({"key": chr(65 + len(options)),
-                            "label": "Some was another venture → reply",
-                            "payload": {"kind": "split", "verdict": "more"}})
-        options.append({"key": chr(65 + len(options)), "label": "Way off → reply",
-                        "payload": {"kind": "split", "verdict": "way_off"}})
-        questions.append({
-            "qid": "split",
-            "text": f"Looks like {summary}. Right?",
-            "options": options[:MAX_OPTIONS],
-        })
+    # split & gap — block-based confirmation/correction (plan §3.3). Both read
+    # the analyst's reconstruction rather than re-deriving a split from raw
+    # signals; empty `blocks` (e.g. the analyst has not run yet, or a caller
+    # that only wants the old signal-based questions) means neither fires.
+    split_q = compose_split_question(blocks)
+    if split_q:
+        questions.append(split_q)
+
+    effective_top_venture = top_venture or _default_top_venture(blocks, signals)
+    gap_q = compose_gap_question(blocks, effective_top_venture)
+    if gap_q:
+        questions.append(gap_q)
 
     if not questions:
         # A genuinely empty window still deserves one honest question.
@@ -312,7 +636,12 @@ def compose_fallback(
             ],
         })
 
-    return QuestionSet(questions=questions[:MAX_QUESTIONS])
+    # enforce_tap_budget bounds this well inside MAX_QUESTIONS, so there is no
+    # need to pre-slice — doing so before budgeting could drop a `gap` or
+    # `split` in favour of an earlier `sink`/`displaced` the budget would not
+    # have kept anyway.
+    parsed = [Question.model_validate(q) for q in questions]
+    return QuestionSet(questions=enforce_tap_budget(kind, parsed))
 
 
 # --------------------------------------------------------------------------
@@ -327,13 +656,12 @@ Rules:
 - Name the SPECIFIC thread, person or event. "Womanizer permissions thread with \
 Bella — 7 messages since 09:10" is useful; "your messages" is worthless.
 - Write plain English a tired person understands at a glance. The qid values \
-("sink", "displaced", "split") are INTERNAL KEYS — never put them, or words \
+("sink", "displaced", "work_type") are INTERNAL KEYS — never put them, or words \
 like "attention sink", in the text he reads. Ask the thing itself:
     good: "Ante Cetinic contract thread — 3 msgs, 09:07-09:22. Took the most of \
 your morning. Was that yours to do?"
     bad:  "Ante Cetinic contract thread — 3 msgs. Biggest sink?"
     good: "You blocked 14:00-16:00 for Machina but nothing shows. What took it?"
-    good: "Morning looks like BLT 70% / Deadlift 30%. Right?"
 - Every question must be answerable by the options you give it. If the options \
 are about whether the work was his, the question has to ask that.
 - NAME things. Never write "a gmail thread", "some messages" or "a few emails" \
@@ -342,11 +670,12 @@ Giedre". An unnamed reference cannot be resolved six weeks later, so a vague \
 question is worse than no question.
 - Questions <=160 chars, option labels <=40 chars. No preamble, no pleasantries.
 - Ask only what the signals support. Never invent a meeting or a person.
+- """ + GAIN_SYSTEM_RULE + """
 - Output STRICT JSON matching the schema. No markdown, no commentary."""
 
-SCHEMA_HINT = """{"questions":[{"qid":"sink|displaced|split|work_type","text":"...", \
-"options":[{"key":"A","label":"...","payload":{"kind":"sink|displaced|split|work_type", \
-"verdict":"planned_mine|unplanned_mine|someone_else|one_off|did_it|other|right|more|way_off|classify", \
+SCHEMA_HINT = """{"questions":[{"qid":"sink|displaced|work_type","text":"...", \
+"options":[{"key":"A","label":"...","payload":{"kind":"sink|displaced|work_type", \
+"verdict":"planned_mine|unplanned_mine|someone_else|one_off|did_it|other|classify", \
 "venture":null,"work_type":null,"project":null,"signal_ids":[],"container":null,"event_id":null}}]}]}"""
 
 
@@ -388,12 +717,12 @@ Write at most 3 questions, each with the qid given in brackets:
   option label ("Sales / BD / pitch", not "sales"). verdict is "classify".
   This one matters most: venture can be inferred from an email domain later,
   work_type can never be recovered if it is not captured now.
-- [split] State the venture split you infer as a claim, and ask if it is right.
-  Options: Right / More <v1> / More <v2> / Way off → reply.
 
-Prefer [sink] + [work_type] about the SAME named thread, then [displaced] or
-[split] if the window supports one. Always set payload.venture and
-payload.project where the signals make them clear.
+Prefer [sink] + [work_type] about the SAME named thread, then [displaced] if
+the window supports one. Always set payload.venture and payload.project where
+the signals make them clear. Do not confirm or correct a reconstructed block
+or a venture split — that is done separately, from the analyst's own record
+of the day, not from your reading of these signals.
 
 Set payload.signal_ids to the ids you are referring to where you can.
 Signal ids, in order: {[s['id'] for s in signals][:80]}
@@ -410,10 +739,18 @@ Ask at most 3. Return only JSON of this shape:
     mission, mission_digest = db.load_mission()
     if mission.strip():
         logger.info("composer: mission sha=%s loaded", (mission_digest or "")[:12])
-        system = f"{mission}\n\n---\n\n{SYSTEM}"
     else:
         logger.warning("composer: mission EMPTY — continuing")
-        system = SYSTEM
+
+    # Plan §1.4/§4.6: priorities, baselines and gain rules, read through the
+    # governance store so this composer can never disagree with get_context
+    # or the weekly review about which priority is live. `store.governance`
+    # may not exist yet (another session builds it) or the DB may not be
+    # configured (tests, a laptop) — either way this degrades to mission-only.
+    governance_block = _governance_block()
+
+    parts = [p for p in (mission if mission.strip() else None, governance_block or None) if p]
+    system = "\n\n---\n\n".join(parts + [SYSTEM]) if parts else SYSTEM
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=60.0)
     # NOTE: no `temperature` — sampling parameters were removed on Sonnet 5 and
@@ -429,7 +766,49 @@ Ask at most 3. Return only JSON of this shape:
     text = "".join(b.text for b in response.content if b.type == "text").strip()
     if text.startswith("```"):
         text = text.split("```")[1].removeprefix("json").strip()
-    return QuestionSet.model_validate(json.loads(text))
+    parsed = QuestionSet.model_validate(json.loads(text))
+
+    # split/gap/gains/body_mind are never the LLM's to write (see the prompt
+    # above) — a model that drifts into one anyway is dropped here rather
+    # than trusted, the same way JARGON/VAGUE text is rejected by the schema.
+    allowed = {"sink", "displaced", "work_type"}
+    questions = [q for q in parsed.questions if q.qid in allowed]
+    if not questions:
+        raise ValueError("llm produced no sink/displaced/work_type question")
+    return QuestionSet(questions=questions)
+
+
+def _governance_block() -> str:
+    """Priorities + baselines + gain rules, or "" if unavailable.
+
+    `iblu_keeper.store.governance` is being built by another worker in
+    parallel (plan §1.4) — imported lazily so this composer keeps working
+    from disk states where it does not exist yet. A missing/unconfigured
+    database degrades the same way: mission-only, never a hard failure.
+    """
+    try:
+        from ..store import governance
+    except ImportError:
+        return ""
+
+    from .. import db
+
+    # Checked against THIS module's `settings` (substitutable per-test — see
+    # `test_composer_continues_without_a_mission`), not `db.is_configured()`:
+    # the latter reads the process-wide settings singleton directly and would
+    # ignore a test's stand-in, quietly hitting a real database from a unit
+    # test that never asked for one.
+    if not getattr(settings, "database_url", ""):
+        return ""
+    try:
+        with db.get_conn() as conn:
+            priorities = governance.current_priorities(conn)
+            baselines = governance.current_baselines(conn)
+            rules = governance.gain_rules(conn)
+        return governance.as_prompt_block(priorities, baselines, rules)
+    except Exception as exc:  # noqa: BLE001 - a governance outage is not fatal
+        logger.warning("compose: governance block unavailable (%s)", exc)
+        return ""
 
 
 def compose(
@@ -439,19 +818,67 @@ def compose(
     covers_to: datetime,
     ventures: list[dict],
     work_types: list[dict],
+    *,
+    kind: str = "midday",
+    blocks: list[dict] | None = None,
+    gain_evidence: dict[str, list[dict]] | None = None,
+    top_venture: str | None = None,
 ) -> tuple[QuestionSet, str]:
-    """Return `(questions, composer)` where composer is 'llm' or 'fallback'."""
+    """Return `(questions, composer)` where composer is 'llm' or 'fallback'.
+
+    `kind` decides the binding tap budget (plan §0): midday gets attention
+    questions only; evening (and 'test') additionally gets the deterministic
+    gains and body/mind cards. `blocks` is the day's current reconstruction
+    (`analyst.blocks.live_blocks`) for the split/gap questions; `gain_evidence`
+    is what `pings.runner` gathered for the gains card. Both default to
+    "nothing available" so a caller that only wants the old signal-based
+    questions (or a unit test) does not need to supply them.
+    """
+    blocks = blocks or []
+
     try:
-        questions = compose_llm(
+        attention = compose_llm(
             signals, events, covers_from, covers_to, ventures, work_types
         )
-        logger.info("compose: llm produced %d question(s)", len(questions.questions))
-        return questions, "llm"
+        composer = "llm"
+        logger.info("compose: llm produced %d question(s)", len(attention.questions))
     except (ValidationError, json.JSONDecodeError) as exc:
         logger.warning("compose: llm output rejected (%s) — using fallback", exc)
+        attention = None
     except Exception as exc:  # noqa: BLE001 - the API being down is not fatal
         logger.warning("compose: llm unavailable (%s) — using fallback", exc)
+        attention = None
 
-    questions = compose_fallback(signals, events, covers_from, covers_to)
-    logger.info("compose: fallback produced %d question(s)", len(questions.questions))
-    return questions, "fallback"
+    if attention is None:
+        composer = "fallback"
+        attention = compose_fallback(
+            signals, events, covers_from, covers_to,
+            kind=kind, blocks=blocks, top_venture=top_venture,
+        )
+        logger.info("compose: fallback produced %d question(s)", len(attention.questions))
+
+    # split & gap are always deterministic — confirming a structured record
+    # (a block) is not a judgement call the way naming a busy thread is.
+    # compose_fallback already adds them when it runs; the LLM never does
+    # (see its prompt), so they are added here only for the LLM path.
+    questions: list[Question] = list(attention.questions)
+    effective_top_venture = top_venture or _default_top_venture(blocks, signals)
+    if composer == "llm":
+        split_q = compose_split_question(blocks)
+        if split_q:
+            questions.append(Question.model_validate(split_q))
+        gap_q = compose_gap_question(blocks, effective_top_venture)
+        if gap_q:
+            questions.append(Question.model_validate(gap_q))
+
+    # gains and body/mind are evening-only cards (plan §4.1/§4.2) — never
+    # part of the midday budget, never LLM-composed (see compose_llm's
+    # prompt): they are either grounded in today's evidence or they are the
+    # fixed body/mind options, and neither benefits from an LLM's phrasing.
+    if kind in ("evening", "test"):
+        gains_q = compose_gains_question(gain_evidence)
+        if gains_q:
+            questions.append(Question.model_validate(gains_q))
+        questions.append(Question.model_validate(compose_body_mind_question()))
+
+    return QuestionSet(questions=enforce_tap_budget(kind, questions)), composer

@@ -1,9 +1,13 @@
 [Unit]
-Description=Post the iblu weekly attention review on Sunday evening
+Description=Post the iblu weekly attention review on Friday evening
 
 [Timer]
-# Sunday 18:00 Zagreb — after the week is done, before the next one starts.
-OnCalendar=Sun *-*-* 18:00:00 Europe/Zagreb
+# Friday 18:00 Zagreb — moved from Sunday (plan §1.7, 2026-09-13): the review
+# window is now Monday 00:00 -> Friday 18:00, so the numbers land while the
+# week is still fresh and there is still a working day left to act on the
+# "one removal" — a Sunday-night review landed on a weekend with nothing to
+# do about it.
+OnCalendar=Fri *-*-* 18:00:00 Europe/Zagreb
 # Catch up if the box was down: a review is still worth reading late.
 Persistent=true
 AccuracySec=5min

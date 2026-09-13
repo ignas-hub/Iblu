@@ -96,7 +96,23 @@ def test_schema_is_fully_migrated():
 
 @requires_db
 def test_migrate_is_idempotent():
-    assert db.migrate() == []  # already applied; a second run changes nothing
+    """A second run changes nothing — and a FIRST run must never happen here.
+
+    Found 2026-09-13: with `DATABASE_URL` set, this test called `db.migrate()`
+    unconditionally, so simply running `pytest` on the server APPLIED whatever
+    migration happened to be sitting untracked in the working tree. A test
+    suite that alters a live schema as a side effect is a trap: the schema
+    changes before anyone has read the migration, and nothing in the output
+    says so. If something is pending, that is a deployment decision — skip and
+    let a human run `python -m iblu_keeper.db migrate`.
+    """
+    pending = db.status()["pending"]
+    if pending:
+        pytest.skip(
+            f"migrations pending ({', '.join(pending)}) — a test must never "
+            f"apply them to a live database; run `python -m iblu_keeper.db migrate`"
+        )
+    assert db.migrate() == []
     assert db.status()["pending"] == []
 
 
@@ -105,7 +121,13 @@ def test_reference_data_seeded():
     with db.get_conn() as conn:
         ventures = {r["code"] for r in conn.execute("SELECT code FROM ventures").fetchall()}
         work_types = {r["code"] for r in conn.execute("SELECT code FROM work_types").fetchall()}
-    assert {"blt", "choco", "deadlift", "jakusi", "family", "personal"} == ventures
+    # A subset, not an equality: the mission says adding a venture is one row,
+    # not a migration, so ventures legitimately appear at runtime (gostellar was
+    # added 2026-09-13 when Ignas set its yearly priority). What migration 001
+    # seeded must still be there.
+    assert {"blt", "choco", "deadlift", "jakusi", "family", "personal"} <= ventures
+    # Work types are a closed taxonomy — a new one would change the meaning of
+    # every previous answer, so this one stays an equality.
     assert {"sales", "client", "delivery", "people", "finance", "build", "admin", "life"} == work_types
 
 

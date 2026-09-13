@@ -180,7 +180,10 @@ def test_human_diff_reads_like_a_sentence():
         (dict(counterpart="x@mail.deadlift.io"), ("deadlift", None)),
         (dict(subject="Opera weekly sync"), ("choco", None)),
         (dict(subject="Machina deploy"), ("deadlift", "machina")),
-        (dict(subject="Radovi — kupaonica"), ("jakusi", None)),
+        # 'radovi' is now also a seeded project alias (plan §1.5,
+        # PROJECT_KEYWORDS in venture_hints.py) — project resolves from day
+        # one, on top of the venture inference this test already pinned.
+        (dict(subject="Radovi — kupaonica"), ("jakusi", "radovi")),
         (dict(subject="totally unrelated"), ("blt", None)),
     ],
 )
@@ -290,3 +293,14 @@ def test_fallback_always_asks_what_kind_of_work_it_was():
     assert work_type_questions, "the fallback must still capture work_type"
     codes = {o.payload.work_type for o in work_type_questions[0].options}
     assert None not in codes and len(codes) >= 3
+
+
+def test_gostellar_is_recognised_by_name():
+    """Greta's agency has no known email domain yet, so the name is the only
+    hint there is — see venture_hints.SPACE_KEYWORDS."""
+    from iblu_keeper.collectors.venture_hints import infer
+
+    venture, _ = infer("ignas@blanklabel.team", subject="GoStellar — Alexan intro")
+    assert venture == "gostellar"
+    venture, _ = infer("ignas@blanklabel.team", subject="Kassari ads review")
+    assert venture == "gostellar"

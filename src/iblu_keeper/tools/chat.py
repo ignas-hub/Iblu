@@ -21,7 +21,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 
-from ..config import settings
+from ..config import resolve_account, settings
 from ..store import drafts
 
 logger = logging.getLogger("iblu_keeper.tools.chat")
@@ -206,9 +206,13 @@ class GoogleChatBackend(ChatBackend):
     def _ensure_self_id(self) -> str:
         if self._self_user_id is not None:
             return self._self_user_id
-        from ..google_auth import get_credentials
+        # NOTE: must resolve credentials for THIS backend's account, not the
+        # primary one — otherwise a non-primary backend (deadlift/choco) would
+        # compute the primary user's self-id, mislabel every message as
+        # "someone else's", and never recognise its own sent messages.
+        from ..google_auth import get_credentials_for
 
-        creds = get_credentials()
+        creds = get_credentials_for(self._account)
         if not creds.valid:
             from google.auth.transport.requests import Request  # type: ignore
 
@@ -695,18 +699,21 @@ def get_backend(account: str | None = None) -> ChatBackend:
 # --------------------------------------------------------------------------- #
 # Tool functions (wrapped by server.py)
 # --------------------------------------------------------------------------- #
-def list_conversations(query: str | None = None, limit: int = 20) -> list[dict]:
-    return get_backend().list_conversations(query, limit)
+def list_conversations(
+    query: str | None = None, limit: int = 20, account: str | None = None
+) -> list[dict]:
+    return get_backend(resolve_account(account)).list_conversations(query, limit)
 
 
 def get_messages(
-    conversation: str, limit: int = 20, page_token: str | None = None
+    conversation: str, limit: int = 20, page_token: str | None = None,
+    account: str | None = None,
 ) -> dict:
-    return get_backend().get_messages(conversation, limit, page_token)
+    return get_backend(resolve_account(account)).get_messages(conversation, limit, page_token)
 
 
-def send_message(conversation: str, text: str) -> dict:
-    result = get_backend().send_message(conversation, text)
+def send_message(conversation: str, text: str, account: str | None = None) -> dict:
+    result = get_backend(resolve_account(account)).send_message(conversation, text)
     if result.get("_mock"):
         logger.warning("MOCK chat send to %s — NOT delivered (DRY_RUN).", conversation)
     elif result.get("status") == "error":
@@ -721,9 +728,9 @@ def draft_message(conversation: str, text: str) -> dict:
     return drafts.add_draft("chat", {"conversation": conversation, "text": text})
 
 
-def list_unread(limit: int = 10) -> list[dict]:
-    return get_backend().list_unread(limit)
+def list_unread(limit: int = 10, account: str | None = None) -> list[dict]:
+    return get_backend(resolve_account(account)).list_unread(limit)
 
 
-def mark_read(conversation: str) -> dict:
-    return get_backend().mark_read(conversation)
+def mark_read(conversation: str, account: str | None = None) -> dict:
+    return get_backend(resolve_account(account)).mark_read(conversation)

@@ -206,7 +206,7 @@ def test_F_no_false_success_on_write_failure(monkeypatch):
     class FakeChatService:
         def spaces(self): return FakeSpaces()
 
-    monkeypatch.setattr(gmail_real, "_service", lambda: FakeGmailService())
+    monkeypatch.setattr(gmail_real, "_service", lambda account=None: FakeGmailService())
     monkeypatch.setattr(cal_real, "_service", lambda: FakeCalService())
 
     # gmail.send_email

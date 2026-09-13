@@ -213,16 +213,19 @@ def chat_list_conversations(
     query: Annotated[str | None, Field(default=None, description="Case-insensitive substring filter on space name or participants")] = None,
     limit: Annotated[int, Field(default=20, ge=1, le=100, description="Max items to return")] = 20,
     response_format: Annotated[str, Field(default="json", pattern="^(json|markdown)$", description="json (default) or markdown for voice-friendly output")] = "json",
+    account: Annotated[str | None, Field(default=None, description="Which Google Workspace to read: blt (default), deadlift, or choco")] = None,
 ):
     """List recent Chat conversations/spaces, most recently active first.
 
     Returns up to `limit` items (default 20, max 100). Filter by a person's
     name via `query`. Each item includes a `last_message_preview` snippet.
     Set `response_format='markdown'` for compact, voice-friendly output.
+    ``account`` — which Workspace to read: ``blt`` (default), ``deadlift``,
+    ``choco``.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    raw = chat_tools.list_conversations(query, limit)
+    raw = chat_tools.list_conversations(query, limit, account)
     return _maybe_markdown(raw, "chat_list", response_format)
 
 
@@ -235,16 +238,19 @@ def chat_get_messages(
     limit: Annotated[int, Field(default=20, ge=1, le=100)] = 20,
     page_token: Annotated[str | None, Field(default=None, description="Cursor from a previous response's next_page_token; omit for the first page")] = None,
     response_format: Annotated[str, Field(default="json", pattern="^(json|markdown)$", description="json (default) or markdown for voice-friendly output")] = "json",
+    account: Annotated[str | None, Field(default=None, description="Which Google Workspace to read: blt (default), deadlift, or choco")] = None,
 ):
     """Get message history for a conversation (use an id from chat_list_conversations).
 
     Returns ``{items, count, next_page_token}``; pass ``next_page_token`` from
     the response to ``page_token`` on the next call to fetch older messages.
     Set ``response_format='markdown'`` for compact, voice-friendly output.
+    ``account`` — which Workspace to read: ``blt`` (default), ``deadlift``,
+    ``choco``.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    raw = chat_tools.get_messages(conversation, limit, page_token)
+    raw = chat_tools.get_messages(conversation, limit, page_token, account)
     return _maybe_markdown(raw, "chat_messages", response_format)
 
 
@@ -255,9 +261,14 @@ def chat_get_messages(
 def chat_send_message(
     conversation: Annotated[str, Field(min_length=1, pattern=r"^spaces/.+", description="Target space, e.g. spaces/AAAAxxxxx")],
     text: Annotated[str, Field(min_length=1, max_length=4096, description="Message body")],
+    account: Annotated[str | None, Field(default=None, description="Which Google Workspace identity to send as: blt (default), deadlift, or choco")] = None,
 ) -> dict:
-    """Send a Chat message to a conversation."""
-    return chat_tools.send_message(conversation, text)
+    """Send a Chat message to a conversation.
+
+    ``account`` — which identity to send as: ``blt`` (default), ``deadlift``,
+    ``choco``.
+    """
+    return chat_tools.send_message(conversation, text, account)
 
 
 @mcp.tool(name="chat_draft_message", annotations={"title": "Draft Chat Message (local)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -279,16 +290,18 @@ def chat_draft_message(
 def chat_list_unread(
     limit: Annotated[int, Field(default=10, ge=1, le=50, description="Max unread spaces to return")] = 10,
     response_format: Annotated[str, Field(default="json", pattern="^(json|markdown)$", description="json (default) or markdown for voice-friendly output")] = "json",
+    account: Annotated[str | None, Field(default=None, description="Which Google Workspace to read: blt (default), deadlift, or choco")] = None,
 ):
     """List Chat conversations with new (unread) messages, most recent first.
 
     Returns up to `limit` items with the latest message preview, suitable for
     reading aloud. Each item includes `last_active_time` and `last_read_time`
-    so the caller can tell what's actually new.
+    so the caller can tell what's actually new. ``account`` — which Workspace
+    to read: ``blt`` (default), ``deadlift``, ``choco``.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    raw = chat_tools.list_unread(limit)
+    raw = chat_tools.list_unread(limit, account)
     return _maybe_markdown(raw, "chat_list", response_format)
 
 
@@ -298,9 +311,14 @@ def chat_list_unread(
 @with_retry("chat_mark_read")
 def chat_mark_read(
     conversation: Annotated[str, Field(min_length=1, pattern=r"^spaces/.+")],
+    account: Annotated[str | None, Field(default=None, description="Which Google Workspace the conversation is in: blt (default), deadlift, or choco")] = None,
 ) -> dict:
-    """Mark a Chat conversation as read up to now (sets lastReadTime=now)."""
-    return chat_tools.mark_read(conversation)
+    """Mark a Chat conversation as read up to now (sets lastReadTime=now).
+
+    ``account`` — which Workspace the conversation is in: ``blt`` (default),
+    ``deadlift``, ``choco``.
+    """
+    return chat_tools.mark_read(conversation, account)
 
 
 # --------------------------------------------------------------------------- #
@@ -315,16 +333,19 @@ def gmail_search(
     limit: Annotated[int, Field(default=20, ge=1, le=100)] = 20,
     page_token: Annotated[str | None, Field(default=None, description="Cursor from a previous response's next_page_token; omit for the first page")] = None,
     response_format: Annotated[str, Field(default="json", pattern="^(json|markdown)$", description="json (default) or markdown for voice-friendly output")] = "json",
+    account: Annotated[str | None, Field(default=None, description="Which mailbox to search: blt (default), deadlift, or choco")] = None,
 ):
     """Search Gmail using standard Gmail query syntax (e.g. 'from:bob is:unread').
 
     Returns ``{items, count, next_page_token}``. Pass ``next_page_token`` back
     in ``page_token`` to fetch the next page of older results. Set
     ``response_format='markdown'`` for compact, voice-friendly output.
+    ``account`` — which mailbox to search: ``blt`` (default), ``deadlift``,
+    ``choco``.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    raw = gmail_tools.search(query, limit, page_token)
+    raw = gmail_tools.search(query, limit, page_token, account)
     return _maybe_markdown(raw, "gmail_list", response_format)
 
 
@@ -334,12 +355,16 @@ def gmail_search(
 @with_retry("gmail_get_message")
 def gmail_get_message(
     id: Annotated[str, Field(min_length=1, description="Gmail message id (hex string)")],
+    account: Annotated[str | None, Field(default=None, description="Which mailbox the message is in: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Fetch a single email (headers + plain-text body) by message id.
 
+    ``account`` — which mailbox to read: ``blt`` (default), ``deadlift``,
+    ``choco``.
+
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    return gmail_tools.get_message(id)
+    return gmail_tools.get_message(id, account)
 
 
 @mcp.tool(name="gmail_draft_email", annotations={"title": "Draft Email", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -363,9 +388,14 @@ def gmail_send_email(
     to: Annotated[str, Field(min_length=3, max_length=320, pattern=r".+@.+\..+", description="Recipient email")],
     subject: Annotated[str, Field(min_length=1, max_length=998)],
     body: Annotated[str, Field(min_length=1)],
+    account: Annotated[str | None, Field(default=None, description="Which mailbox identity to send as: blt (default), deadlift, or choco")] = None,
 ) -> dict:
-    """Send an email immediately."""
-    return gmail_tools.send_email(to, subject, body)
+    """Send an email immediately.
+
+    ``account`` — which identity to send as: ``blt`` (default), ``deadlift``,
+    ``choco``.
+    """
+    return gmail_tools.send_email(to, subject, body, account)
 
 
 @mcp.tool(name="gmail_list_unread", annotations={"title": "List Unread Emails", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
@@ -377,6 +407,7 @@ def gmail_list_unread(
     query: Annotated[str | None, Field(default=None, max_length=500, description="Extra Gmail search filter appended to is:unread")] = None,
     page_token: Annotated[str | None, Field(default=None, description="Cursor from a previous response's next_page_token; omit for the first page")] = None,
     response_format: Annotated[str, Field(default="json", pattern="^(json|markdown)$", description="json (default) or markdown for voice-friendly output")] = "json",
+    account: Annotated[str | None, Field(default=None, description="Which mailbox to read: blt (default), deadlift, or choco")] = None,
 ):
     """List unread emails, newest first.
 
@@ -384,11 +415,12 @@ def gmail_list_unread(
     'in:inbox', 'from:boss@example.com'). Returns ``{items, count,
     next_page_token}``; pass the token back as ``page_token`` for older
     unread. Set ``response_format='markdown'`` for compact, voice-friendly
-    output.
+    output. ``account`` — which mailbox to read: ``blt`` (default),
+    ``deadlift``, ``choco``.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    raw = gmail_tools.list_unread(limit, query, page_token)
+    raw = gmail_tools.list_unread(limit, query, page_token, account)
     return _maybe_markdown(raw, "gmail_list", response_format)
 
 
@@ -398,9 +430,14 @@ def gmail_list_unread(
 @with_retry("gmail_mark_read")
 def gmail_mark_read(
     message_id: Annotated[str, Field(min_length=1)],
+    account: Annotated[str | None, Field(default=None, description="Which mailbox the message is in: blt (default), deadlift, or choco")] = None,
 ) -> dict:
-    """Mark a Gmail message as read (removes the UNREAD label)."""
-    return gmail_tools.mark_read(message_id)
+    """Mark a Gmail message as read (removes the UNREAD label).
+
+    ``account`` — which mailbox the message is in: ``blt`` (default),
+    ``deadlift``, ``choco``.
+    """
+    return gmail_tools.mark_read(message_id, account)
 
 
 @mcp.tool(name="gmail_mark_unread", annotations={"title": "Mark Email as Unread", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -409,12 +446,17 @@ def gmail_mark_read(
 @with_retry("gmail_mark_unread")
 def gmail_mark_unread(
     message_id: Annotated[str, Field(min_length=1)],
+    account: Annotated[str | None, Field(default=None, description="Which mailbox the message is in: blt (default), deadlift, or choco")] = None,
 ) -> dict:
-    """Mark a Gmail message as unread (adds the UNREAD label)."""
-    return gmail_tools.mark_unread(message_id)
+    """Mark a Gmail message as unread (adds the UNREAD label).
+
+    ``account`` — which mailbox the message is in: ``blt`` (default),
+    ``deadlift``, ``choco``.
+    """
+    return gmail_tools.mark_unread(message_id, account)
 
 
-@mcp.tool(name="gmail_reply", annotations={"title": "Reply to Email", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@mcp.tool(name="gmail_reply", annotations={"title": "Reply to Email", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("gmail_reply")
 @with_retry("gmail_reply")
@@ -422,6 +464,7 @@ def gmail_reply(
     message_id: Annotated[str, Field(min_length=1, description="Gmail message id you are replying to")],
     body: Annotated[str, Field(min_length=1, description="Reply body text")],
     send: Annotated[bool, Field(default=True, description="True=send immediately, False=save as draft")] = True,
+    account: Annotated[str | None, Field(default=None, description="Which mailbox identity to reply as: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Reply to a Gmail message, properly threaded.
 
@@ -429,8 +472,10 @@ def gmail_reply(
     addressed to the original sender (Reply-To if present, else From). If
     `send=True` (default) the reply is sent; otherwise saved as a draft.
     Use this when the user wants to "reply to" or "respond to" an email.
+    ``account`` — which mailbox to reply as: ``blt`` (default), ``deadlift``,
+    ``choco``.
     """
-    return gmail_tools.reply(message_id, body, send)
+    return gmail_tools.reply(message_id, body, send, account)
 
 
 @mcp.tool(name="gmail_list_attachments", annotations={"title": "List Email Attachments", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
@@ -439,12 +484,16 @@ def gmail_reply(
 @with_retry("gmail_list_attachments")
 def gmail_list_attachments(
     message_id: Annotated[str, Field(min_length=1)],
+    account: Annotated[str | None, Field(default=None, description="Which mailbox the message is in: blt (default), deadlift, or choco")] = None,
 ) -> list[dict]:
     """List the attachments of a Gmail message (id, filename, mime_type, size).
 
+    ``account`` — which mailbox the message is in: ``blt`` (default),
+    ``deadlift``, ``choco``.
+
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    return gmail_tools.list_attachments(message_id)
+    return gmail_tools.list_attachments(message_id, account)
 
 
 @mcp.tool(name="gmail_read_attachment", annotations={"title": "Read Email Attachment", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
@@ -454,16 +503,19 @@ def gmail_list_attachments(
 def gmail_read_attachment(
     message_id: Annotated[str, Field(min_length=1)],
     attachment_id: Annotated[str, Field(min_length=1)],
-    max_chars: Annotated[int, Field(default=12000, ge=100, le=200_000)] = 12000
+    max_chars: Annotated[int, Field(default=12000, ge=100, le=200_000)] = 12000,
+    account: Annotated[str | None, Field(default=None, description="Which mailbox the message is in: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Download a Gmail attachment and return its text content.
 
     Supports PDF, DOCX, and plain-text MIME types. Use this when the user
     asks to "read", "open", "summarize", or "check" an email attachment.
+    ``account`` — which mailbox the message is in: ``blt`` (default),
+    ``deadlift``, ``choco``.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    return gmail_tools.read_attachment(message_id, attachment_id, max_chars)
+    return gmail_tools.read_attachment(message_id, attachment_id, max_chars, account)
 
 
 @mcp.tool(name="gdoc_read", annotations={"title": "Read Google Doc / Sheet / Slides", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
@@ -473,16 +525,18 @@ def gmail_read_attachment(
 def gdoc_read(
     url_or_id: Annotated[str, Field(min_length=1, description="Sharing URL or raw Drive file id")],
     max_chars: Annotated[int, Field(default=20000, ge=100, le=200_000)] = 20000,
+    account: Annotated[str | None, Field(default=None, description="Which Google Drive to read from: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Fetch a Google Doc, Sheet, or Slides file as plain text.
 
     Accepts either a sharing URL (https://docs.google.com/document/d/<ID>/...)
     or a raw file ID. Use this when an email contains a Google Docs/Sheets
-    link the user wants to read or summarize.
+    link the user wants to read or summarize. ``account`` — which Drive to
+    read from: ``blt`` (default), ``deadlift``, ``choco``.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    return gmail_tools.read_gdoc(url_or_id, max_chars)
+    return gmail_tools.read_gdoc(url_or_id, max_chars, account)
 
 
 # --------------------------------------------------------------------------- #
@@ -578,17 +632,19 @@ def drive_list_folder(
     query: Annotated[str | None, Field(default=None, max_length=200, description="Filter by name (substring match). Useful for finding a folder by name when you don't have its id.")] = None,
     limit: Annotated[int, Field(default=20, ge=1, le=100)] = 20,
     page_token: Annotated[str | None, Field(default=None, description="Cursor from a previous response's next_page_token; omit for the first page")] = None,
+    account: Annotated[str | None, Field(default=None, description="Which Google Drive to search: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """List files/folders in a Drive folder, or search by name across Drive.
 
     Returns ``{items, count, next_page_token}``; each item includes id, name,
     mime_type, is_folder, modified_time, url. Sorted by most-recently modified
-    first.
+    first. ``account`` — which Drive to search: ``blt`` (default),
+    ``deadlift``, ``choco``.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     from .tools import drive as drive_tools
-    return drive_tools.drive_list_folder(folder_id_or_url, query, limit, page_token)
+    return drive_tools.drive_list_folder(folder_id_or_url, query, limit, page_token, account)
 
 
 @mcp.tool(name="drive_save_gmail_attachment", annotations={"title": "Save Email Attachment to Drive", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -695,11 +751,16 @@ def get_context(window: str = "1d") -> dict:
     Returns, in order: ``mission`` (the full text of docs/MISSION.md — what
     IBLU exists to do, and the principles that constrain it), ``mission_sha``,
     ``mission_stale`` (true when the file on disk has changed since the runtime
-    copy was seeded; null when the file could not be read), ``brief`` (the
-    compacted memory brief, may be empty), and ``summary`` (the same payload as
-    ``context_get_summary`` for the given window).
+    copy was seeded; null when the file could not be read), ``priorities`` (the
+    current yearly priority per venture), ``baselines`` (where each venture
+    stood on 2026-09-13), ``gain_rules`` (how Ignas wants progress stated),
+    ``brief`` (the compacted memory brief, may be empty), and ``summary`` (the
+    same payload as ``context_get_summary`` for the given window).
 
-    Read the mission first and judge everything else against it.
+    Read mission, priorities and baselines; measure backward from the
+    baselines; judge everything else against the priorities. Progress is stated
+    as dated evidence of what now exists — never as distance from a goal, never
+    against another person, never as a plan dressed up as a gain.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
@@ -977,17 +1038,22 @@ def get_infra_status() -> dict:
 def server_health() -> dict:
     """Verify the MCP server is live and authenticated to Google as Ignas.
 
-    Returns `mode` ("live" or "mock"), `dry_run`, `misconfigured_live`, and an
-    `auth` block ({ok, account, error}). Call this FIRST whenever a result
-    looks stale, mocked, wrong, or contains `_mock: true` — if `mode` is
-    "mock" or `auth.ok` is false, the server has lost authentication; tell
-    Ignas in plain language and stop. If `mode` is "live" and `auth.ok` is
-    true, the data you just received is genuinely from the live account.
+    Returns `mode` ("live" or "mock"), `dry_run`, `misconfigured_live`, an
+    `auth` block ({ok, account, error}) for the PRIMARY account (blt), and an
+    `accounts` block reporting the same shape for EVERY configured alias
+    (currently blt, deadlift, choco) — each entry also has
+    `token_file_exists` so a not-yet-authorized alias is distinguishable from
+    a broken one. Call this FIRST whenever a result looks stale, mocked,
+    wrong, or contains `_mock: true` — if `mode` is "mock" or `auth.ok` is
+    false, the server has lost authentication; tell Ignas in plain language
+    and stop. If `mode` is "live" and `auth.ok` is true, the data you just
+    received is genuinely from the live account. A failing secondary account
+    in `accounts` never means the primary account's data is untrustworthy.
 
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     from . import db, readstate_worker
-    from .google_auth import auth_status
+    from .google_auth import auth_status, auth_status_by_account
 
     return {
         "mode": "mock" if settings.use_mock else "live",
@@ -995,6 +1061,7 @@ def server_health() -> dict:
         "misconfigured_live": settings.misconfigured_live,
         "server_time": now_iso(),
         "auth": auth_status(),
+        "accounts": auth_status_by_account(),
         "readstate_worker": readstate_worker.snapshot(),
         "database": db.healthcheck(),
     }

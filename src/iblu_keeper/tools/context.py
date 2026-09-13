@@ -26,6 +26,7 @@ from psycopg.types.json import Jsonb
 
 from .. import db
 from ..config import settings
+from ..store import governance
 
 logger = logging.getLogger("iblu_keeper.context")
 
@@ -192,7 +193,17 @@ def log_entry(
                 )
 
     logger.info("context.log_entry: wrote %s entry %s", type, row["id"])
-    return {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
+    out = {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
+
+    # The entry is already written. This only ever adds a line of advice — a
+    # warning that could block would make IBLU a grader, and it measures
+    # instead. See store/gap_check.py.
+    from ..store.gap_check import check as _gap_check
+
+    warning = _gap_check(type, content, tag_list)
+    if warning:
+        out["gap_warning"] = warning
+    return out
 
 
 def log_conversation(
@@ -369,9 +380,15 @@ def get_summary(window: str = "1d") -> dict:
 def get_context(window: str = "1d") -> dict:
     """Everything an LLM needs before it decides anything: mission first.
 
+    Read mission, priorities and baselines; measure backward from the
+    baselines; judge everything else against the priorities.
+
     Order matters. The mission is what every other field is judged against, so
     it comes first and is never omitted — a summary read without it is just
-    activity data.
+    activity data. Priorities and baselines follow immediately, ahead of the
+    brief and the summary, because they are the standard the rest of the
+    payload is measured against, not more activity data themselves (plan
+    §1.4).
 
     `mission_stale` compares docs/MISSION.md on disk with the runtime copy in
     the database: True when they differ, False when they match, and None when
@@ -394,12 +411,18 @@ def get_context(window: str = "1d") -> dict:
         row = conn.execute(
             "SELECT content FROM context_brief WHERE id = 1"
         ).fetchone()
+        priorities = governance.current_priorities(conn)
+        baselines = governance.current_baselines(conn)
+        rules = governance.gain_rules(conn)
     brief = (row["content"] if row else "") or ""
 
     return {
         "mission": mission,
         "mission_sha": sha,
         "mission_stale": stale,
+        "priorities": priorities,
+        "baselines": baselines,
+        "gain_rules": rules,
         "brief": brief,
         "summary": get_summary(window),
     }

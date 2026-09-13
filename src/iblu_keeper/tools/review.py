@@ -40,6 +40,17 @@ def _window(window: str) -> tuple[datetime, datetime]:
     return now - _parse_window(window), now
 
 
+# A thread gone quiet for this long by the end of the window is read as
+# "likely closed" for the Gains section (plan §1.7's "progressed" evidence) —
+# not because two quiet days proves it, but because the alternative (treating
+# every recurring thread as still open forever) would mean nothing ever
+# counts as a completed step, which is exactly the Gap-style goalpost this
+# system exists to avoid. Long enough to not catch an overnight pause,
+# nowhere near long enough to be mistaken for a claim of certainty — it is
+# reported as "likely", never as "closed".
+LIKELY_CLOSED_QUIET = timedelta(days=2)
+
+
 def _share(counts: dict[str, int]) -> list[dict]:
     """Counts to sorted share-of-total, so the caller never divides by zero."""
     total = sum(counts.values())
@@ -51,12 +62,24 @@ def _share(counts: dict[str, int]) -> list[dict]:
     ]
 
 
-def review(window: str = "7d") -> dict:
-    """Attention over `window`, as counts and shares. No LLM, no estimates."""
+def review(
+    window: str = "7d",
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> dict:
+    """Attention over `window`, as counts and shares. No LLM, no estimates.
+
+    `since`/`until` let a caller hand in an explicit range (the weekly review
+    uses Monday 00:00 -> Friday 18:00 local, which is not a fixed duration and
+    so cannot be expressed as a "7d"-style `window` string) while keeping
+    `window` as the label recorded in the output and read by `context_review`.
+    """
     if settings.use_mock:
         return dict(_MOCK)
 
-    since, until = _window(window)
+    if since is None or until is None:
+        since, until = _window(window)
 
     with db.get_conn() as conn:
         rows = conn.execute(
@@ -87,6 +110,11 @@ def review(window: str = "7d") -> dict:
         # work_type comes from what Ignas TAPPED, not from what was inferred —
         # signals.work_type is almost always null, and guessing here would
         # manufacture a number he never confirmed.
+        # The same week in minutes, when the day has been reconstructed.
+        # None until the analyst has run over this window — a caller must fall
+        # back to counts rather than print a confident zero.
+        minutes = minutes_from_blocks(conn, since, until)
+
         tapped = conn.execute(
             """
             SELECT work_type, venture, project, count(*) AS n
@@ -179,6 +207,13 @@ def review(window: str = "7d") -> dict:
     observed_days = len({r["occurred_at"].date() for r in rows})
     window_days = max(1, round((until - since).total_seconds() / 86400))
 
+    # Untracked share: the fraction of the window with no evidence at all.
+    # Reported as its own number (never folded into `by_venture`, where a gap
+    # would silently vanish into whichever venture happens to be largest) so
+    # the Truth section can say plainly how much of the week is unknown
+    # rather than implying full coverage.
+    untracked_share_pct = round(100 * (window_days - observed_days) / window_days)
+
     return {
         "window": window,
         "since": since.isoformat(),
@@ -192,6 +227,16 @@ def review(window: str = "7d") -> dict:
                 "signals are unknown, not idle."
             ),
         },
+        "untracked": {
+            "share_pct": untracked_share_pct,
+            "basis": "days",
+            "note": (
+                "Share of the window's days with no signal at all — unknown, "
+                "not idle. Superseded by the minutes figure once the day has "
+                "been reconstructed; see `minutes`."
+            ),
+        },
+        "minutes": minutes,
         "by_venture": _share(by_venture),
         "by_source": _share(by_source),
         "by_work_type": _share({r["work_type"]: r["n"] for r in tapped}),
@@ -292,3 +337,361 @@ def as_markdown(data: dict) -> str:
         )
 
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Gains — measured backward from the window's start (plan §1.7, context §7)
+# --------------------------------------------------------------------------
+
+# Session 8 (built separately, may or may not exist yet) taps the evening
+# "what moved today?" card straight into context_entries tagged 'gain', with
+# meta.kind in {'learned','progressed','experienced'}. Reading them here if
+# present costs nothing and loses nothing if absent — the computed evidence
+# below covers the same three kinds independently, from data that already
+# exists today.
+_GAIN_KINDS = ("learned", "progressed", "experienced")
+
+
+
+def minutes_from_blocks(conn, since: datetime, until: datetime) -> dict | None:
+    """The week in minutes, from the reconstructed day (plan §3.4).
+
+    Signal counts answer "what got his attention"; blocks answer "for how
+    long". Both are in the review because they fail differently: counts
+    over-weight a chatty thread, minutes over-weight a long quiet one.
+
+    Returns None when no day in the window has been reconstructed yet — a
+    caller must then fall back to counts rather than print a confident zero.
+
+    Every number here is split `fact` / `inferred`, because a minute Ignas
+    confirmed and a minute IBLU guessed are not the same evidence and must
+    never be added together silently.
+    """
+    rows = conn.execute(
+        """
+        SELECT venture, work_type, attention, confidence, intent_title,
+               EXTRACT(EPOCH FROM (ends_at - starts_at)) / 60 AS minutes
+          FROM blocks
+         WHERE superseded_by IS NULL
+           AND starts_at >= %s AND starts_at < %s
+        """,
+        (since, until),
+    ).fetchall()
+    if not rows:
+        return None
+
+    # EXTRACT() comes back as Decimal; mixing it with float minutes raises.
+    total = float(sum(float(r["minutes"]) for r in rows))
+    by_venture: dict[str, float] = {}
+    by_work_type: dict[str, float] = {}
+    by_attention: dict[str, float] = {}
+    by_confidence: dict[str, float] = {}
+    untracked = 0.0
+
+    for r in rows:
+        m = float(r["minutes"])
+        by_attention[r["attention"]] = by_attention.get(r["attention"], 0) + m
+        by_confidence[r["confidence"]] = by_confidence.get(r["confidence"], 0) + m
+        if r["venture"]:
+            by_venture[r["venture"]] = by_venture.get(r["venture"], 0) + m
+        else:
+            # No venture and no intent is genuinely unaccounted time. An
+            # unaccounted minute is unknown, never idle, and never quietly
+            # folded into whichever venture happens to be largest.
+            untracked += m
+        if r["work_type"]:
+            by_work_type[r["work_type"]] = by_work_type.get(r["work_type"], 0) + m
+
+    def _pct(x: float) -> int:
+        return round(100 * x / total) if total else 0
+
+    def _split(d: dict[str, float]) -> list[dict]:
+        return [
+            {"key": k, "minutes": round(v), "share_pct": _pct(v)}
+            for k, v in sorted(d.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+
+    return {
+        "total_minutes": round(total),
+        "by_venture": _split(by_venture),
+        "by_work_type": _split(by_work_type),
+        "by_attention": _split(by_attention),
+        "by_confidence": _split(by_confidence),
+        "untracked": {"minutes": round(untracked), "share_pct": _pct(untracked)},
+        "displaced": {
+            "minutes": round(by_attention.get("displaced", 0)),
+            "share_pct": _pct(by_attention.get("displaced", 0)),
+        },
+        "note": (
+            "Minutes come from the reconstructed day, not a clock. 'ambiguous' "
+            "is unknown, not idle, and 'inferred' minutes were never confirmed "
+            "by Ignas."
+        ),
+    }
+
+def gains(truth: dict) -> dict:
+    """What exists now that didn't at the start of `truth`'s window.
+
+    Three kinds, all dated, all backward-looking:
+      * **learned**    — a decision or correction logged in the window.
+      * **progressed** — a `blocks` row confirmed `confidence='fact'`, or a
+        thread touched >=3x that has since gone quiet (§ `LIKELY_CLOSED_QUIET`
+        — reported as "likely closed", never as a certainty).
+      * **experienced** — family/personal time the reconstructed day marked
+        `attention='present'`: actually lived, not merely scheduled.
+
+    Takes `truth` (the output of `review()`) rather than a window string so
+    the two can never disagree about what "this week" means, and so the
+    thread heuristic reuses `truth["recurring"]` instead of re-deriving
+    thread clustering from signals a second time.
+    """
+    if settings.use_mock:
+        return dict(_MOCK, learned=[], progressed=[], experienced=[])
+
+    since = datetime.fromisoformat(truth["since"])
+    until = datetime.fromisoformat(truth["until"])
+    since_date, until_date = since.date(), until.date()
+
+    learned: list[dict] = []
+    progressed: list[dict] = []
+    experienced: list[dict] = []
+    buckets = {"learned": learned, "progressed": progressed, "experienced": experienced}
+
+    with db.get_conn() as conn:
+        # Session 8's tapped gains, if the table already has any.
+        tapped = conn.execute(
+            """
+            SELECT content, meta, occurred_at, created_at, venture
+              FROM context_entries
+             WHERE 'gain' = ANY(tags) AND created_at >= %s AND created_at < %s
+               AND superseded_by IS NULL
+               AND NOT ('test' = ANY(tags))
+             ORDER BY created_at
+            """,
+            (since, until),
+        ).fetchall()
+        for row in tapped:
+            kind = (row["meta"] or {}).get("kind")
+            if kind in _GAIN_KINDS:
+                buckets[kind].append({
+                    "date": (row["occurred_at"] or row["created_at"]).date().isoformat(),
+                    "text": row["content"][:200],
+                    "venture": row["venture"],
+                    "source": "tapped",
+                })
+
+        # learned — decisions and corrections logged in the window.
+        decisions = conn.execute(
+            """
+            SELECT content, occurred_at, created_at, venture
+              FROM context_entries
+             WHERE type IN ('decision', 'correction')
+               AND created_at >= %s AND created_at < %s
+               -- A priority, a baseline and the gain rules are the measuring
+               -- stick. Counting them as progress would mean the week Ignas
+               -- wrote down what he wants scores as his best week ever.
+               AND (source_ref IS NULL OR source_ref !~ '^(priority|baseline|gain):')
+               -- A superseded decision was replaced, not achieved. Without
+               -- this a single revised priority appears three times.
+               AND superseded_by IS NULL
+               -- Acceptance probes and scratch entries are not his week.
+               AND NOT ('test' = ANY(tags))
+             ORDER BY created_at
+            """,
+            (since, until),
+        ).fetchall()
+        for row in decisions:
+            learned.append({
+                "date": (row["occurred_at"] or row["created_at"]).date().isoformat(),
+                "text": row["content"][:200],
+                "venture": row["venture"],
+                "source": "decision",
+            })
+
+        # progressed — confirmed (confidence='fact') blocks written this window.
+        fact_blocks = conn.execute(
+            """
+            SELECT local_date, venture, reasoning
+              FROM blocks
+             WHERE confidence = 'fact' AND superseded_by IS NULL
+               AND local_date >= %s AND local_date < %s
+             ORDER BY local_date
+            """,
+            (since_date, until_date),
+        ).fetchall()
+        for row in fact_blocks:
+            progressed.append({
+                "date": row["local_date"].isoformat(),
+                "text": row["reasoning"] or "confirmed block",
+                "venture": row["venture"],
+                "source": "block:fact",
+            })
+
+        # experienced — family/personal time the reconstruction marked lived.
+        lived = conn.execute(
+            """
+            SELECT local_date, venture, reasoning
+              FROM blocks
+             WHERE venture IN ('family', 'personal') AND attention = 'present'
+               AND superseded_by IS NULL
+               AND local_date >= %s AND local_date < %s
+             ORDER BY local_date
+            """,
+            (since_date, until_date),
+        ).fetchall()
+        for row in lived:
+            experienced.append({
+                "date": row["local_date"].isoformat(),
+                "text": row["reasoning"] or "present",
+                "venture": row["venture"],
+                "source": "block:present",
+            })
+
+    # progressed, continued — threads touched >=3x that went quiet before the
+    # window closed. `truth["recurring"]` already carries `last` per thread,
+    # so this reuses the clustering `review()` already did instead of hitting
+    # `signals` again.
+    for thread in truth.get("recurring", []):
+        last = datetime.fromisoformat(thread["last"])
+        if until - last >= LIKELY_CLOSED_QUIET:
+            progressed.append({
+                "date": last.date().isoformat(),
+                "text": f"{thread['name']} ({thread['signals']}x) — likely closed, quiet since",
+                "venture": thread.get("venture"),
+                "source": "thread:likely_closed",
+            })
+
+    return {"learned": learned, "progressed": progressed, "experienced": experienced}
+
+
+# Mission stage 2 / plan §1.7: "attention per stage (share of the week in
+# stages 1-3 vs 6-8)". 4-5 (trial, implement) are deliberately left out of
+# both buckets — they are the middle of the ladder, neither "just looked at
+# it" nor "running without him" — and reported as 'other' rather than folded
+# into whichever bucket happens to be more flattering.
+_EARLY_STAGES = {"research", "initiate", "build"}
+_LATE_STAGES = {"deliver", "maintain", "autonomous"}
+
+
+def stage_truth(since: datetime, until: datetime) -> dict | None:
+    """Attention per stage and projects stuck >=30 days — only if the stage
+    registry already exists (plan §1.5/§1.6; `iblu_keeper.store.projects` is
+    built by another worker in parallel and may not exist yet, or may not yet
+    define these names).
+
+    Importing the NAMES directly (not just the module) means either "the
+    module doesn't exist" or "the module exists but doesn't have this name
+    yet" raises the same `ImportError` — one guard covers both, and the Truth
+    section simply omits these lines rather than failing.
+    """
+    if settings.use_mock:
+        return None
+    try:
+        from ..store.projects import list_projects, resolve, stuck
+    except ImportError:
+        return None
+    try:
+        with db.get_conn() as conn:
+            # Attention per stage needs each `me` signal's free-text project
+            # resolved to a registered project's CURRENT stage — signals
+            # never store a stage themselves, only projects do.
+            rows = conn.execute(
+                """
+                SELECT project FROM signals
+                 WHERE occurred_at >= %s AND occurred_at < %s
+                   AND actor = 'me' AND project IS NOT NULL
+                """,
+                (since, until),
+            ).fetchall()
+            stage_by_code = {p["code"]: p["stage"] for p in list_projects(conn, active=None)}
+
+            counts = {"early (stages 1-3)": 0, "late (stages 6-8)": 0, "other": 0}
+            for row in rows:
+                code = resolve(conn, row["project"])
+                stage = stage_by_code.get(code) if code else None
+                if stage in _EARLY_STAGES:
+                    counts["early (stages 1-3)"] += 1
+                elif stage in _LATE_STAGES:
+                    counts["late (stages 6-8)"] += 1
+                else:
+                    counts["other"] += 1
+
+            stuck_rows = stuck(conn, today=until.date())
+
+        total = sum(counts.values())
+        by_stage = (
+            [{"key": k, "share_pct": round(100 * n / total)} for k, n in counts.items() if n]
+            if total else []
+        )
+        return {
+            "by_stage": by_stage,
+            "stuck": [{"name": r["name"], "code": r["code"]} for r in stuck_rows],
+        }
+    except Exception:
+        # The module exists but something in it failed (e.g. its own table
+        # not migrated on this box yet) — the rest of the review must not go
+        # down with it.
+        logger.warning("review: stage_truth unavailable", exc_info=True)
+        return None
+
+
+def _nameable_person(thread: dict) -> str | None:
+    """A counterpart only counts as a person if it names one.
+
+    A Chat space's counterpart is the space itself, so the naive read produced
+    "hand the Email Writer thread to Email Writer". An external DM partner who
+    is not in Google Contacts stays `users/<id>`, which is no better. In both
+    cases there is no one to hand it to, and the honest step is to automate it.
+    """
+    person = (thread.get("counterpart") or "").strip()
+    if not person:
+        return None
+    if person.startswith("users/"):
+        return None
+    if person.casefold() == (thread.get("name") or "").strip().casefold():
+        return None
+    return person
+
+
+def one_removal(truth: dict) -> dict:
+    """Exactly one project and one concrete step toward `autonomous` (plan
+    §1.6/§1.7): the person to hand it to, or the automation to build.
+
+    Drawn from the delegation candidates the review already computes —
+    threads touched >=3x (mission stage 2: "what he touched three times that
+    should be someone else's"), preferring ones he did not start. Never a
+    list: the first candidate wins, or none is named at all when the evidence
+    doesn't support one.
+    """
+    if truth.get("status") == "mock":
+        return {"available": False, "reason": "mock mode"}
+
+    recurring = truth.get("recurring") or []
+    candidates = [t for t in recurring if t.get("started_by") != "me"] or recurring
+    if not candidates:
+        return {
+            "available": False,
+            # "insufficient", never "not enough" — the latter is Gap-grading
+            # language (see `review_language.validate_language`) even though
+            # this sentence is only about the evidence, not about Ignas.
+            "reason": "insufficient evidence this week to name one",
+        }
+
+    thread = candidates[0]
+    person = _nameable_person(thread)
+    if person:
+        return {
+            "available": True,
+            "kind": "person",
+            "project": thread["name"],
+            "step": f"hand the {thread['name']} thread to {person}",
+        }
+    return {
+        "available": True,
+        "kind": "automation",
+        "project": thread["name"],
+        "step": (
+            f"automate the {thread['name']} thread — touched "
+            f"{thread['signals']}x this week with no single owner"
+        ),
+    }

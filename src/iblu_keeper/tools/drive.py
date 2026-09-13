@@ -17,7 +17,7 @@ import io
 import logging
 import re
 
-from ..config import settings
+from ..config import resolve_account, settings
 
 
 logger = logging.getLogger("iblu_keeper.tools.drive")
@@ -38,16 +38,16 @@ def _file_id(url_or_id: str) -> str:
     return url_or_id.strip()
 
 
-def _docs():
+def _docs(account: str | None = None):
     from ..google_auth import build_service
 
-    return build_service("docs", "v1")
+    return build_service("docs", "v1", account=account)
 
 
-def _drive():
+def _drive(account: str | None = None):
     from ..google_auth import build_service
 
-    return build_service("drive", "v3")
+    return build_service("drive", "v3", account=account)
 
 
 def _viewable_url(file_id: str, mime_type: str = "") -> str:
@@ -251,17 +251,20 @@ def drive_list_folder(
     query: str | None = None,
     limit: int = 20,
     page_token: str | None = None,
+    account: str | None = None,
 ) -> dict:
     """List files/folders inside a Drive folder (or matching a query).
 
     Without ``folder_id``, searches the user's whole Drive by name via
     ``query`` (e.g. ``"Contracts"`` to find a folder by name). With
-    ``folder_id``, lists immediate children of that folder.
+    ``folder_id``, lists immediate children of that folder. ``account`` —
+    which Drive to search: ``blt`` (default), ``deadlift``, ``choco``.
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return {"items": [], "count": 0, "next_page_token": None}
 
-    drive = _drive()
+    drive = _drive(account)
     filters = ["trashed = false"]
     if folder_id_or_url:
         fid = _file_id(folder_id_or_url)

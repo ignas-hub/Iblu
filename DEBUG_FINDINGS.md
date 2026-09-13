@@ -90,3 +90,56 @@ GOOGLE_OAUTH_TOKEN_FILE=/nope python -c "import sys;sys.path.insert(0,'src');\
 from iblu_keeper.tools import gmail; gmail.search('x')"   # -> CredentialsUnavailable
 pytest -q   # 12 passing, incl. no-silent-mock + mock-tagging tests
 ```
+
+---
+
+## `pytest` applied a migration to the live database (2026-09-13)
+
+`tests/test_migrations.py::test_migrate_is_idempotent` called `db.migrate()`
+unconditionally whenever `DATABASE_URL` was set. On this box it always is, so
+running the test suite while an unapplied migration sat in the working tree
+**applied it to the live schema** — before anyone had reviewed the file, with
+nothing in the pytest output saying it had happened. It was noticed only
+because two sessions were writing migrations at once and one saw the other's
+version string appear in `schema_migrations`.
+
+Two things made it dangerous rather than merely surprising:
+
+1. The suite is run constantly, including by subagents that were explicitly
+   told not to touch the database. They obeyed; `pytest` did not.
+2. A migration in the tree is a *draft* until it is reviewed. Applying it early
+   means a half-written `ALTER` can reach a real table.
+
+Fixed by making the test skip when anything is pending, with a message saying
+to run `python -m iblu_keeper.db migrate` deliberately. Applying schema changes
+stays a human decision.
+
+**Rule for anything added later:** a test may read the live database; it may
+never change its shape. If a test needs a table that does not exist, it skips.
+
+---
+
+## A non-primary Chat backend resolved the wrong "me" (2026-09-13, caught before it mattered)
+
+`GoogleChatBackend._ensure_self_id` called `get_credentials()` — which always
+returns the **primary** account — rather than `get_credentials_for(self._account)`.
+So a Deadlift or Choco Chat backend would have computed Ignas's blanklabel.team
+user id as its own, and then:
+
+- never recognised its own sent messages, so nothing would be collected as
+  `actor='me'` from those Workspaces, and
+- labelled his own messages as someone else's, turning his own work into
+  inbound demand in the review.
+
+This is exactly the failure mode `_creds_by_alias` was keyed to prevent one
+level up; the Chat backend reached past it to the un-keyed helper.
+
+**No data was corrupted.** Checked at the time of the fix: `signals` held 37
+Chat rows, all `ignas@blanklabel.team`, none from the other two Workspaces —
+the collectors had not yet produced a Chat signal for them. Found and fixed
+before the first real multi-account Chat traffic.
+
+The general lesson, which is the same one as the calendar baseline: **anything
+that answers "who am I" must take the account as an argument.** A default-valued
+identity helper is safe in a single-account system and silently wrong the day a
+second account appears.

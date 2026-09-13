@@ -2,6 +2,13 @@
 
 Mission: docs/MISSION.md — read before anything else; every change in this repo serves it.
 
+Yearly priorities and baselines live in `context_entries` (tags `priority` /
+`baseline`, one per venture). Read them before any Stage 3 work:
+
+```
+docker exec iblu-db psql -U iblu -d iblu_keeper -c "SELECT DISTINCT ON (venture) venture, left(content,120) FROM context_entries WHERE type='decision' AND 'priority' = ANY(tags) AND superseded_by IS NULL ORDER BY venture, created_at DESC;"
+```
+
 > **Read this first.** This is the single entry point for the current state of
 > IBLU. It is kept in the repo so it travels with the code. Snapshots below are
 > dated; when in doubt, trust the **live sources** listed here over any pasted

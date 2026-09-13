@@ -8,6 +8,7 @@ that knows about all four, and the only place that writes a `pings` row.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -115,6 +116,90 @@ def _taxonomy(conn: psycopg.Connection) -> tuple[list[dict], list[dict]]:
     return ventures, work_types
 
 
+def _day_blocks(conn: psycopg.Connection, day) -> list[dict]:
+    """The day's current reconstruction, for the split/gap cards (plan §3.3).
+
+    The analyst runs on its own timer (`iblu-analyst.timer`), not on every
+    ping tick, so this may legitimately be empty — before it has run for
+    today, or if it never runs (mock/dev). Either way split/gap simply do
+    not fire rather than guessing; nothing here invents a block.
+    """
+    try:
+        from ..analyst.blocks import live_blocks
+
+        return live_blocks(conn, day)
+    except Exception as exc:  # noqa: BLE001 - a stale block set beats no ping
+        logger.warning("pings: blocks unavailable for %s (%s)", day, exc)
+        return []
+
+
+def _gain_evidence(conn: psycopg.Connection, day) -> dict[str, list[dict]]:
+    """Evidence for the gains card (plan §4.1) — dated, already-happened only.
+
+    One option per kind, at most: **learned** (a decision/correction logged
+    today), **progressed** (a `fact` block today on a project belonging to a
+    venture with a current yearly priority — plan §1.4's `current_priorities`,
+    read lazily since `store.governance` is being built in parallel),
+    **experienced** (a `present` block today on `family` or `personal`).
+    """
+    evidence: dict[str, list[dict]] = {"learned": [], "progressed": [], "experienced": []}
+
+    learned = conn.execute(
+        "SELECT id, content FROM context_entries "
+        "WHERE type IN ('decision', 'correction') AND occurred_at::date = %s "
+        "AND superseded_by IS NULL ORDER BY occurred_at DESC LIMIT 1",
+        (day,),
+    ).fetchone()
+    if learned:
+        evidence["learned"].append({
+            "label": f"Learned: {learned['content']}",
+            "evidence_ids": [str(learned["id"])],
+        })
+
+    priority_ventures: list[str] = []
+    try:
+        from ..store import governance
+
+        priority_ventures = [p["venture"] for p in governance.current_priorities(conn) if p.get("venture")]
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001 - "progressed" still works, just unfiltered
+        logger.warning("pings: current_priorities unavailable (%s)", exc)
+
+    progressed_sql = (
+        "SELECT id, venture, project FROM blocks "
+        "WHERE local_date = %s AND confidence = 'fact' AND superseded_by IS NULL "
+        "AND venture IS NOT NULL"
+    )
+    progressed_args: tuple = (day,)
+    if priority_ventures:
+        progressed_sql += " AND venture = ANY(%s)"
+        progressed_args = (day, priority_ventures)
+    progressed = conn.execute(
+        progressed_sql + " ORDER BY starts_at DESC LIMIT 1", progressed_args
+    ).fetchone()
+    if progressed:
+        what = progressed.get("project") or progressed["venture"]
+        evidence["progressed"].append({
+            "label": f"Progressed: {what}",
+            "evidence_ids": [str(progressed["id"])],
+        })
+
+    experienced = conn.execute(
+        "SELECT id, venture FROM blocks "
+        "WHERE local_date = %s AND attention = 'present' AND superseded_by IS NULL "
+        "AND venture IN ('family', 'personal') ORDER BY starts_at DESC LIMIT 1",
+        (day,),
+    ).fetchone()
+    if experienced:
+        evidence["experienced"].append({
+            "label": f"Experienced: time with {experienced['venture']}",
+            "evidence_ids": [str(experienced["id"])],
+        })
+
+    return evidence
+
+
 def run_one(kind: str, *, dry: bool = False, force: bool = False) -> str:
     """Consider (and maybe send) one ping. Returns a short status for the log."""
     tz = _tz()
@@ -157,8 +242,16 @@ def run_one(kind: str, *, dry: bool = False, force: bool = False) -> str:
 
         signals = _window_signals(conn, covers_from, covers_to)
         ventures, work_types = _taxonomy(conn)
+        day_blocks = _day_blocks(conn, day)
+        gain_evidence = _gain_evidence(conn, day) if kind in ("evening", "test") else None
+        top_venture = next(iter(Counter(
+            b["venture"] for b in day_blocks if b.get("venture")
+        ).most_common(1)), (None,))[0]
+
         questions, composer = compose(
-            signals, events, covers_from, covers_to, ventures, work_types
+            signals, events, covers_from, covers_to, ventures, work_types,
+            kind=kind, blocks=day_blocks, gain_evidence=gain_evidence,
+            top_venture=top_venture,
         )
 
         if dry:

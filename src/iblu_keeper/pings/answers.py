@@ -19,15 +19,90 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from ..config import settings
+from .compose import parse_body_mind_reply
 from .tokens import InvalidToken, read_token
 
 logger = logging.getLogger("iblu_keeper.pings.answers")
 
 REPLY_LOOKBACK = timedelta(hours=48)
 
+# Verdicts that mean "I don't know what this was" — the honest answer is a
+# free-text reply, not a guess, so no block correction is written for them.
+_NO_CORRECTION_VERDICTS = {"other", "way_off"}
+
+_BLOCK_FIELDS = (
+    "id, local_date, starts_at, ends_at, venture, work_type, project, "
+    "attention, confidence, evidence, superseded_by"
+)
+
 
 class UnknownPing(Exception):
     """Valid signature, but the ping or question no longer exists."""
+
+
+# --------------------------------------------------------------------------
+# block corrections — split & gap (plan §3.3)
+# --------------------------------------------------------------------------
+#
+# A tap never rewrites the block it is about. It writes a NEW `blocks` row
+# with confidence='fact', source='ping', and points the block being corrected
+# at it via `superseded_by` — the same supersede-not-overwrite pattern
+# `analyst.blocks` itself uses for a rebuild, and the one this module already
+# uses for `context_entries` below. A second tap on the same question walks
+# to whichever block is live now (the first tap's correction) and supersedes
+# THAT one, so the chain is never broken and nothing is ever double-corrected.
+
+
+def _resolve_live_block(conn: psycopg.Connection, block_id: int) -> dict | None:
+    """Follow `superseded_by` to the block that is live now."""
+    row = conn.execute(
+        f"SELECT {_BLOCK_FIELDS} FROM blocks WHERE id = %s", (block_id,)
+    ).fetchone()
+    seen: set[int] = set()
+    while row is not None and row["superseded_by"] is not None and row["id"] not in seen:
+        seen.add(row["id"])
+        row = conn.execute(
+            f"SELECT {_BLOCK_FIELDS} FROM blocks WHERE id = %s", (row["superseded_by"],)
+        ).fetchone()
+    return row
+
+
+def _write_block_correction(
+    conn: psycopg.Connection,
+    block_id: int,
+    *,
+    venture: str | None,
+    work_type: str | None,
+    project: str | None,
+    attention: str,
+) -> int | None:
+    """Write the fact block a tap confirms/corrects. Returns its id, or None
+    if the block it was meant to correct no longer exists at all."""
+    current = _resolve_live_block(conn, block_id)
+    if current is None:
+        logger.warning("answers: block %s not found — no correction written", block_id)
+        return None
+
+    new_id = conn.execute(
+        """
+        INSERT INTO blocks
+            (local_date, starts_at, ends_at, venture, work_type, project,
+             attention, confidence, evidence, reasoning, source)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'fact', %s, %s, 'ping')
+        RETURNING id
+        """,
+        (
+            current["local_date"], current["starts_at"], current["ends_at"],
+            venture, work_type, project, attention,
+            Jsonb(current["evidence"]), "confirmed by ping tap",
+        ),
+    ).fetchone()["id"]
+
+    conn.execute(
+        "UPDATE blocks SET superseded_by = %s WHERE id = %s",
+        (new_id, current["id"]),
+    )
+    return new_id
 
 
 def _backfill_from_signals(conn, payload: dict) -> tuple[str | None, str | None, str]:
@@ -105,7 +180,18 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
 
     question, option = _find_option(ping["questions"], qid, key)
     payload = option.get("payload") or {}
-    source_ref = f"ping:{ping_id}:{qid}"
+    kind = payload.get("kind")
+
+    # gains (§4.1) is not a supersede chain: each option is its own gain, so
+    # each gets its own source_ref — tapping "progressed" must never
+    # supersede an earlier "learned" tap on the same card. Everything else
+    # (including a retap of the SAME gain option, which is a correction of
+    # that one gain) keeps the one-source_ref-per-question shape below.
+    if kind == "gains":
+        source_ref = f"ping:{ping_id}:gains:{payload.get('gain_kind') or key}"
+    else:
+        source_ref = f"ping:{ping_id}:{qid}"
+
     venture, project, venture_source = _backfill_from_signals(conn, payload)
 
     # Show the date on both ends when the window crosses midnight, so a stored
@@ -115,6 +201,21 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
     else:
         span = f"{ping['covers_from']:%d %b %H:%M}–{ping['covers_to']:%d %b %H:%M}"
     content = f"{ping['local_date']} {span} · {question.get('text')} → {option.get('label')}"
+
+    tags = ["ping", ping["kind"]]
+    meta_extra: dict = {}
+    if kind == "gains":
+        tags.append("gain")
+        meta_extra["kind"] = payload.get("gain_kind")
+        meta_extra["evidence_ids"] = payload.get("evidence_ids") or []
+    elif kind == "body_mind":
+        # Plan §4.2, hard rule: the numbers and nothing else. No inferred
+        # mood word goes anywhere near this row.
+        tags.append("health")
+        meta_extra["body"] = payload.get("body")
+        meta_extra["mind"] = payload.get("mind")
+    elif kind in ("split", "gap"):
+        tags.append(kind)
 
     new_id = conn.execute(
         """
@@ -126,7 +227,7 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
         """,
         (
             content,
-            ["ping", ping["kind"]],
+            tags,
             venture,
             payload.get("work_type"),
             project,
@@ -141,11 +242,14 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
                 "venture_source": venture_source,
                 "covers_from": ping["covers_from"].isoformat(),
                 "covers_to": ping["covers_to"].isoformat(),
+                **meta_extra,
             }),
         ),
     ).fetchone()["id"]
 
     # Re-answering the same question supersedes the previous answer (D9).
+    # For gains this only ever matches a retap of the SAME option, because
+    # source_ref is keyed by gain_kind above — different gains never collide.
     superseded = conn.execute(
         "UPDATE context_entries SET superseded_by = %s "
         "WHERE source_ref = %s AND id <> %s AND superseded_by IS NULL "
@@ -153,15 +257,31 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
         (new_id, source_ref, new_id),
     ).fetchall()
 
+    # split / gap (§3.3): the tap also confirms or corrects a `blocks` row —
+    # a NEW 'fact' row, never an UPDATE of the one it corrects. "Other" and
+    # "way off" mean he doesn't know either, so nothing is written; that is
+    # what the free-text reply is for.
+    block_id = None
+    if kind in ("split", "gap") and payload.get("block_id") is not None \
+            and payload.get("verdict") not in _NO_CORRECTION_VERDICTS:
+        block_id = _write_block_correction(
+            conn, int(payload["block_id"]),
+            venture=payload.get("venture"),
+            work_type=payload.get("work_type"),
+            project=payload.get("project"),
+            attention=payload.get("attention") or "present",
+        )
+
     conn.execute(
         "UPDATE pings SET status = 'answered' WHERE id = %s AND status <> 'answered'",
         (ping_id,),
     )
 
     logger.info(
-        "answers: ping %s question %s answered %s%s",
+        "answers: ping %s question %s answered %s%s%s",
         ping_id, qid, key,
         f" (superseded {len(superseded)})" if superseded else "",
+        f" (block {block_id})" if block_id else "",
     )
     return {
         "entry_id": str(new_id),
@@ -169,7 +289,28 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
         "label": option.get("label", ""),
         "question": question.get("text", ""),
         "superseded": len(superseded),
+        "block_id": block_id,
     }
+
+
+def _classify_reply(ping_kind: str, text: str) -> tuple[list[str], dict, bool]:
+    """What a free-text reply in a ping's thread means.
+
+    Returns `(extra_tags, meta_extra, overrides_body_mind)`. Only an evening
+    (or 'test') ping carries the gains/body-mind cards, so only those kinds
+    are even considered for either: a `"body 1 mind 3"` reply (either order)
+    overrides the body/mind card's numbers exactly (plan §4.2); anything else
+    in that thread is a gain logged by reply (plan §4.1 — "replies in the
+    card's thread are gain entries too"). A midday reply is unclassified, as
+    before.
+    """
+    if ping_kind in ("evening", "test"):
+        parsed = parse_body_mind_reply(text)
+        if parsed is not None:
+            body, mind = parsed
+            return ["health", "reply"], {"body": body, "mind": mind}, True
+        return ["gain", "reply"], {}, False
+    return ["reply"], {}, False
 
 
 def read_thread_replies(conn: psycopg.Connection, *, dry: bool = False) -> int:
@@ -234,6 +375,8 @@ def read_thread_replies(conn: psycopg.Connection, *, dry: bool = False) -> int:
             inserted += 1
             continue
 
+        extra_tags, meta_extra, overrides_body_mind = _classify_reply(ping["kind"], text)
+
         # RETURNING so the count reflects rows actually written, not messages
         # seen: the watermark overlap re-reads the same message every tick.
         written = conn.execute(
@@ -247,14 +390,25 @@ def read_thread_replies(conn: psycopg.Connection, *, dry: bool = False) -> int:
             """,
             (
                 text,
-                ["ping", ping["kind"], "reply"],
+                ["ping", ping["kind"], *extra_tags],
                 message["name"],
                 created,
-                Jsonb({"ping_id": ping["id"], "answered_via": "reply"}),
+                Jsonb({"ping_id": ping["id"], "answered_via": "reply", **meta_extra}),
             ),
         ).fetchone()
         if written is not None:
             inserted += 1
+            if overrides_body_mind:
+                # The card is "1 card, 1 tap" (plan §4.2) — a reply overriding
+                # it supersedes whatever answered body_mind before, tap or
+                # reply, the same supersede-on-retap pattern as everywhere
+                # else (D9), scoped by the qid's own source_ref rather than
+                # this row's (which is the message id, for de-duplication).
+                conn.execute(
+                    "UPDATE context_entries SET superseded_by = %s "
+                    "WHERE source_ref = %s AND id <> %s AND superseded_by IS NULL",
+                    (written["id"], f"ping:{ping['id']}:body_mind", written["id"]),
+                )
 
     if not dry:
         set_state(conn, "secretary_replies", watermark=newest, error=None)

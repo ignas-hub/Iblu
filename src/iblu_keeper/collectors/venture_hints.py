@@ -35,12 +35,42 @@ SPACE_KEYWORDS: dict[str, str] = {
     "machina": "deadlift",
     "jakusi": "jakusi",
     "radovi": "jakusi",
+    # GoStellar/Kassari — Greta's agency. Added 2026-09-13 with the venture.
+    # Her email domain is not known to IBLU yet, so the name is all there is;
+    # once the domain is known it belongs in DOMAINS above, which is stronger.
+    "gostellar": "gostellar",
+    "kassari": "gostellar",
 }
 
 # Lower-cased keyword -> project (free text).
 KEYWORD_PROJECTS: dict[str, str] = {
     "machina": "machina",
 }
+
+
+def _project_keywords() -> dict[str, str]:
+    """Lower-cased keyword -> `projects.code`, derived from the seeded
+    registry (`store.projects.SEED_PROJECTS`): every project's own code plus
+    its aliases. A single source of truth for "names this project is known
+    by" rather than a second hand-maintained list that drifts from the seed.
+
+    Deliberately a *lower-priority* companion to `KEYWORD_PROJECTS` above:
+    it is only consulted once the hand-curated table has had its say (see
+    `infer()`), so nothing here can outrank an existing, deliberate mapping.
+    """
+    from ..store import projects as _registry
+
+    keywords: dict[str, str] = {}
+    for p in _registry.SEED_PROJECTS:
+        keywords.setdefault(p["code"], p["code"])
+        for alias in p.get("aliases", ()):
+            keywords.setdefault(alias.lower(), p["code"])
+    return keywords
+
+
+# Built once at import time from the seed registry (plan §1.5). Ignas
+# extends aliases in store/projects.py; this map picks them up automatically.
+PROJECT_KEYWORDS: dict[str, str] = _project_keywords()
 
 # Fallback when nothing else matches: whose mailbox produced the signal.
 DEFAULT_BY_ACCOUNT: dict[str, str] = {
@@ -97,6 +127,16 @@ def infer(
         for keyword, proj in KEYWORD_PROJECTS.items():
             if keyword in lowered:
                 project = proj
+                break
+
+    # 3.5 — the seeded registry's own codes/aliases, lowest keyword priority
+    # of all: it only fires once nothing above has an opinion, and among its
+    # own entries the longest (most specific) keyword wins, so e.g. "leo
+    # days" beats a shorter, more generic alias sharing a prefix.
+    if project is None:
+        for keyword in sorted(PROJECT_KEYWORDS, key=len, reverse=True):
+            if keyword in lowered:
+                project = PROJECT_KEYWORDS[keyword]
                 break
 
     # 4 — fall back to whose account this came from.

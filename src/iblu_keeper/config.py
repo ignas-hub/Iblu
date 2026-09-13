@@ -318,3 +318,28 @@ def get_settings() -> Settings:
 
 # Convenient module-level singleton.
 settings = get_settings()
+
+
+class UnknownAccountError(ValueError):
+    """Raised when a tool's ``account`` parameter names an unconfigured alias."""
+
+
+def resolve_account(account: str | None) -> str | None:
+    """Validate a tool's ``account`` parameter against ``settings.account_aliases``.
+
+    `None` (the default everywhere) means the primary account and is returned
+    unchanged — this keeps every existing call site byte-for-byte unchanged.
+    A known alias is returned lower-cased. An unknown alias raises
+    `UnknownAccountError` naming every valid alias, so the message is written
+    once here rather than repeated at each of the tool call sites in
+    `tools/` and `server.py` that accept an `account` parameter.
+    """
+    if account is None:
+        return None
+    normalized = account.strip().lower()
+    valid = settings.account_aliases
+    if normalized not in valid:
+        raise UnknownAccountError(
+            f"Unknown account {account!r}. Valid accounts: {', '.join(valid)}."
+        )
+    return normalized
