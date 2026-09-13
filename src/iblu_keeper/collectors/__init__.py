@@ -123,22 +123,30 @@ def insert_signal(conn: psycopg.Connection, row: dict) -> bool:
     return result is not None
 
 
-def _registry() -> list[tuple[str, Callable, bool]]:
+def _registry() -> list[tuple[str, Callable, str]]:
     """Imported lazily so `import collectors` never pulls in Google clients.
 
-    All three collectors are multi-account aware: the Chat backend is cached
-    per account (each resolves its own self-id) and `calendar_seen` is
-    namespaced by account (migration 004), so one Workspace's baseline can
-    never answer for another's.
+    Each entry is `(name, fn, scope)`. `scope` says what `run_all` iterates
+    the collector over:
+      * "google" — every configured Google account (`settings.configured_accounts`).
+        The Chat backend is cached per account (each resolves its own self-id)
+        and `calendar_seen` is namespaced by account (migration 004), so one
+        Workspace's baseline can never answer for another's.
+      * "slack"  — every configured Slack workspace (`settings.configured_slack`),
+        a wholly separate list from the Google accounts above (Blank Label and
+        Deadlift are Slack workspaces, not `google_accounts` aliases).
+      * "primary" — runs once, against the primary Google account only.
     """
     from .calendar_changes import collect as calendar_collect
     from .chat_sent import collect as chat_collect
     from .gmail_sent import collect as gmail_collect
+    from .slack_sent import collect as slack_collect
 
     return [
-        ("gmail_sent", gmail_collect, True),
-        ("chat_sent", chat_collect, True),
-        ("calendar_changes", calendar_collect, True),
+        ("gmail_sent", gmail_collect, "google"),
+        ("chat_sent", chat_collect, "google"),
+        ("calendar_changes", calendar_collect, "google"),
+        ("slack_sent", slack_collect, "slack"),
     ]
 
 
@@ -158,17 +166,32 @@ def run_all(conn: psycopg.Connection, *, dry: bool = False) -> dict[str, int | s
         settings.account(settings.primary_alias)
     ]
     primary = settings.primary_alias
+    slack_workspaces = settings.configured_slack()
 
     results: dict[str, int | str] = {}
-    for name, fn, multi in _registry():
-        targets = accounts if multi else [settings.account(primary)]
-        for account in targets:
-            alias = account["alias"]
-            key = name if (not multi or alias == primary) else f"{name}:{alias}"
+    for name, fn, scope in _registry():
+        if scope == "google":
+            targets = accounts
+        elif scope == "slack":
+            targets = slack_workspaces
+        else:
+            targets = [settings.account(primary)]
+
+        for target in targets:
+            alias = target["alias"]
+            if scope == "slack":
+                # No "primary" Slack workspace — every alias is namespaced,
+                # exactly like a non-primary Google account.
+                key = f"{name}:{alias}"
+            else:
+                key = name if (scope == "primary" or alias == primary) else f"{name}:{alias}"
             try:
-                results[key] = (
-                    fn(conn, dry=dry, account=account) if multi else fn(conn, dry=dry)
-                )
+                if scope == "google":
+                    results[key] = fn(conn, dry=dry, account=target)
+                elif scope == "slack":
+                    results[key] = fn(conn, dry=dry, workspace=target)
+                else:
+                    results[key] = fn(conn, dry=dry)
             except Exception as exc:  # one account's outage is not the job's
                 logger.exception("collector %s failed", key)
                 results[key] = f"error: {exc}"

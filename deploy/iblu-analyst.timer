@@ -1,0 +1,16 @@
+[Unit]
+Description=Reconstruct the day into blocks on weekday evenings
+
+[Timer]
+# 17:00 — most of the day has happened, and the evening ping (17:00-18:30) can
+# ask about a day that has already been reconstructed. 20:15 catches everything
+# that arrived after 17:00; the later run supersedes the earlier one.
+OnCalendar=Mon..Fri *-*-* 17:00:00 Europe/Zagreb
+OnCalendar=Mon..Fri *-*-* 20:15:00 Europe/Zagreb
+# A missed day is rebuilt on demand (--date), not hours late at boot.
+Persistent=false
+AccuracySec=5min
+Unit=iblu-analyst.service
+
+[Install]
+WantedBy=timers.target

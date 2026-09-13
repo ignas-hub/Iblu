@@ -872,6 +872,17 @@ def calendar(
       - ``move``      — ``event_id`` plus ``minutes`` (may be negative) or an
         absolute ``start``; the duration is preserved either way.
       - ``delete``    — ``event_id``.
+      - ``day``       — the **reconstructed** day: where his attention actually
+        went, rebuilt from recorded signals (``start`` = the date, default
+        today). Each block reports ``attention``: ``present`` (the evidence
+        agrees with what the calendar said), ``displaced`` (an intent existed
+        and he was somewhere else), ``ambiguous`` (an intent existed and
+        produced nothing). Unobserved time produces no block at all — read a
+        gap as unknown, never as idle, and never present this as hours worked.
+      - ``reconstruct`` — rebuild that day from signals and mirror it onto the
+        Secretary calendar. Runs automatically on weekday evenings; call it
+        when he wants the day rebuilt now. Rebuilding supersedes the previous
+        version, it never deletes it.
 
     Times are ISO (``2026-09-15T14:00``) in Ignas's configured timezone. Prefer
     ``find_slot`` over guessing when he asks for time to be booked.

@@ -163,3 +163,27 @@ def test_get_summary_shape(live_ctx):
     out = ctx.get_summary("1d")
     assert set(out) >= {"window", "since", "signals", "pings", "work_log"}
     assert set(out["signals"]) == {"total", "by_source", "by_venture"}
+
+
+# --- migration 005: blocks ------------------------------------------------
+
+
+def test_migration_005_creates_blocks_and_admits_slack():
+    sql = (db.MIGRATIONS_DIR / "005_blocks.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS blocks " in sql
+    # Slack joins the existing three sources rather than replacing them.
+    for source in ("gmail", "chat", "calendar", "slack"):
+        assert f"'{source}'" in sql
+
+
+def test_blocks_attention_is_three_valued():
+    """'ambiguous' must stay a legal value: silence is never presence, and a
+    two-valued column would force every unobserved stretch into a lie."""
+    sql = (db.MIGRATIONS_DIR / "005_blocks.sql").read_text()
+    assert "attention IN ('present','displaced','ambiguous')" in sql
+
+
+def test_blocks_supersede_rather_than_delete():
+    sql = (db.MIGRATIONS_DIR / "005_blocks.sql").read_text()
+    assert "superseded_by" in sql
+    assert "ON DELETE CASCADE" not in sql

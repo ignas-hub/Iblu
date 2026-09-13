@@ -29,7 +29,11 @@ logger = logging.getLogger("iblu_keeper.calendar_manage")
 
 _MOCK = {"status": "mock"}
 
-ACTIONS = ("list", "find_slot", "create", "update", "move", "delete")
+ACTIONS = (
+    "list", "find_slot", "create", "update", "move", "delete",
+    # The reconstructed day, not the intended one.
+    "day", "reconstruct",
+)
 
 
 class CalendarError(ValueError):
@@ -468,9 +472,11 @@ def manage(
     description: str | None = None,
     location: str | None = None,
 ) -> dict:
-    """Dispatch across the five calendar-management actions: list, find_slot,
-    update, move, delete. One tool with an `action` param — see the module
-    docstring for why this isn't five separate MCP tools.
+    """Dispatch across the calendar actions: list, find_slot, create, update,
+    move, delete — plus `day` and `reconstruct`, which read and rebuild the day
+    that actually happened rather than the one that was planned. One tool with
+    an `action` param — see the module docstring for why this isn't eight
+    separate MCP tools.
     """
     if settings.use_mock:
         return dict(_MOCK)
@@ -525,6 +531,91 @@ def manage(
             raise CalendarError("delete requires event_id")
         return delete_event(event_id, calendar_id=calendar_id)
 
+    if action == "day":
+        return day_blocks(start=start)
+
+    if action == "reconstruct":
+        return reconstruct_day(start=start, days=days)
+
     raise CalendarError(
         f"unknown action {action!r} — expected one of {', '.join(ACTIONS)}"
     )
+
+
+# --- action: day / reconstruct ----------------------------------------------
+#
+# The two verbs that read and write the *reconstructed* day rather than the
+# intended one. They live here because from a caller's point of view they are
+# calendar questions — "what did the day actually look like" — and because the
+# alternative is another permanent permission click (module docstring).
+
+
+def _local_date(value: str | None) -> date:
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(settings.iblu_timezone)
+    if not value:
+        return datetime.now(tz).date()
+    return _parse_datetime(value, tz).date()
+
+
+def day_blocks(start: str | None = None) -> dict:
+    """The reconstructed day: where his attention actually went, block by block."""
+    from .. import db
+    from ..analyst.blocks import live_blocks
+
+    if not db.is_configured():
+        return {"error": "no database configured — nothing has been reconstructed"}
+
+    on = _local_date(start)
+    tz = _tz()
+    with db.get_conn() as conn:
+        rows = live_blocks(conn, on)
+
+    blocks = [
+        {
+            "start": r["starts_at"].astimezone(tz).strftime("%H:%M"),
+            "end": r["ends_at"].astimezone(tz).strftime("%H:%M"),
+            "minutes": int((r["ends_at"] - r["starts_at"]).total_seconds() // 60),
+            "venture": r["venture"],
+            "work_type": r["work_type"],
+            "project": r["project"],
+            "attention": r["attention"],
+            "confidence": r["confidence"],
+            "reasoning": r["reasoning"],
+            "evidence_count": len(r["evidence"] or []),
+        }
+        for r in rows
+    ]
+    minutes = {k: 0 for k in ("present", "displaced", "ambiguous")}
+    for b in blocks:
+        minutes[b["attention"]] += b["minutes"]
+
+    return {
+        "date": on.isoformat(),
+        "count": len(blocks),
+        "minutes_by_attention": minutes,
+        "blocks": blocks,
+        # Said every time, because a reconstruction invites being read as a
+        # timesheet and it is not one.
+        "note": (
+            "Reconstructed from recorded signals, not a clock. Unobserved time "
+            "produces no block at all — it is unknown, never idle."
+        ),
+    }
+
+
+def reconstruct_day(start: str | None = None, days: int = 1, mirror: bool = True) -> dict:
+    """Rebuild the day (or the last `days` days) from signals, and mirror it."""
+    from .. import db
+    from ..analyst.blocks import reconstruct
+
+    if not db.is_configured():
+        return {"error": "no database configured — nothing to reconstruct from"}
+
+    on = _local_date(start)
+    results = []
+    with db.get_conn() as conn:
+        for n in reversed(range(max(1, days))):
+            results.append(reconstruct(conn, on - timedelta(days=n), mirror=mirror))
+    return {"days": len(results), "results": results}

@@ -360,3 +360,55 @@ Two consequences:
 - The mirror must be a **separate calendar, never the BLT primary**. It will
   contain Choco and Deadlift work, and a shared primary would expose one
   client's activity to another's colleagues. `SECRETARY_CALENDAR_ID` names it.
+
+### 16. `blocks` — the reconstructed day, and the three rules it encodes
+
+Built 2026-09-13. `python -m iblu_keeper.jobs.analyst` clusters a day's signals
+into blocks and mirrors them onto `SECRETARY_CALENDAR_ID`. Timer: weekdays
+17:00 and 20:15 Europe/Zagreb (the later run supersedes the earlier one, so the
+evening's signals are not lost).
+
+Three things in there are deliberate and must survive any rewrite:
+
+**Silence produces no block.** An unobserved hour is unknown, not idle. The
+only time IBLU emits a block with no evidence is where the *calendar* claimed
+the time and nothing happened — that block is `ambiguous`, and it is named
+after the event it failed to account for ("? Womanizer alignment"), because
+"unattributed" says nothing a human can act on.
+
+**An intent's venture comes from the event, never from whose calendar it is.**
+`venture_hints.infer` falls back to "whose mailbox was this", so calling it
+with the account would give every event on Ignas's calendar `venture='blt'` —
+making a flight, a dentist appointment and a client call all claim BLT's time,
+and making `displaced` fire at random. `load_intents` passes `account=""` on
+purpose. The consequence is the right one: an intent with no venture of its own
+can never cause displacement. A flight is not a claim on his attention; a
+client meeting is.
+
+**Evidence belongs to the slice it happened in.** A cluster cut at an intent
+boundary must split its signals, not hand the whole cluster's signals to each
+half — the first version did, and a 15-minute block claimed the 32 messages of
+the three hours around it. `build()` selects by timestamp; the reasoning line
+is written *after* merging so its minutes are the surviving block's own.
+
+Rebuilding a day never deletes: old blocks get `superseded_by`, and `_clear()`
+removes only mirror events whose id IBLU itself recorded in
+`blocks.calendar_event_id` — so a human's own entry on that calendar, or a row
+whose event was already deleted by hand, can never turn into a wrong deletion.
+
+### 17. Slack is collected with a USER token, not a bot token
+
+Slack exposes `search.messages` only to a user token (`xoxp-`) — a bot token
+cannot search at all, and no app install substitutes for it. So IBLU
+authenticates as Ignas in each workspace. One scope: `search:read`.
+
+`after:` is date-granular, so the query searches from the day *before* the
+watermark and filters precisely in Python; `UNIQUE(source, source_ref)` makes
+the overlap free. The search result already carries the channel's id, name and
+type, so no `conversations.info` call per message — and therefore no
+`channels:read`/`users:read` scope.
+
+Venture attribution is inverted relative to the other collectors: a keyword hit
+is `inferred`, but the **workspace itself** is `fact` (`SLACK_VENTURE_<ALIAS>`).
+Deadlift's Slack *is* Deadlift; that is stronger evidence than a word in a
+message.

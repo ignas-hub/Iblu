@@ -63,6 +63,7 @@ def _summary(results: dict) -> str:
         "gmail_sent": "gmail",
         "chat_sent": "chat",
         "calendar_changes": "cal",
+        "slack_sent": "slack",
     }
     parts = []
     for name, value in results.items():

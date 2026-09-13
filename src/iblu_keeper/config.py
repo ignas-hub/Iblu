@@ -155,6 +155,47 @@ class Settings:
                 out.append(acct)
         return out
 
+    # --- Slack workspaces (week 3) ---
+    #
+    # Slack scopes `search.messages` to a USER token (xoxp-) — a bot token
+    # cannot see it at all — so each workspace needs its own signed-in user,
+    # not an app install. One token (+ display label + venture default) per
+    # workspace, keyed by alias, same shape as the Google multi-account setup
+    # above but deliberately a separate list: Blank Label and Deadlift are
+    # both Slack workspaces yet neither is a `google_accounts` alias.
+    slack_workspaces: str = field(
+        default_factory=lambda: os.getenv("SLACK_WORKSPACES", "")
+    )
+
+    @property
+    def slack_aliases(self) -> tuple[str, ...]:
+        return tuple(
+            a.strip().lower() for a in self.slack_workspaces.split(",") if a.strip()
+        )
+
+    def slack_workspace(self, alias: str) -> dict[str, str]:
+        """Per-workspace Slack settings: token, display label, venture default.
+
+        `venture` is the workspace's own fallback (e.g. the Deadlift workspace
+        IS Deadlift) — used only when `venture_hints.infer` finds no stronger
+        signal in the channel/message itself.
+        """
+        alias = alias.lower()
+        return {
+            "alias": alias,
+            "token": os.getenv(f"SLACK_TOKEN_{alias.upper()}", ""),
+            "label": os.getenv(f"SLACK_LABEL_{alias.upper()}", alias),
+            "venture": os.getenv(f"SLACK_VENTURE_{alias.upper()}", ""),
+        }
+
+    def configured_slack(self) -> list[dict[str, str]]:
+        """Only workspaces whose user token is actually set."""
+        return [
+            ws
+            for alias in self.slack_aliases
+            if (ws := self.slack_workspace(alias))["token"]
+        ]
+
     # --- Phase 2: recording v1 (docs/plans/2026-09-14-recording-v1.md) ---
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
 

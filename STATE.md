@@ -185,11 +185,29 @@ thread are read on the next tick.
   ping — renders a plain page, and every token failure mode is
   indistinguishable from the outside.
 
+**The reconstructed day (`blocks`, built 2026-09-13):** `python -m
+iblu_keeper.jobs.analyst` clusters each day's signals into blocks, judges each
+one against the intent calendar (`present` / `displaced` / `ambiguous`) and
+mirrors the result onto `SECRETARY_CALENDAR_ID` — one calendar on
+blanklabel.team covering every venture. `deploy/iblu-analyst.timer` runs it
+weekdays at 17:00 and 20:15; the later run supersedes the earlier one. Read it
+from Claude with `calendar(action='day')`, rebuild with
+`calendar(action='reconstruct')`. Three rules are load-bearing and documented in
+HANDOFF §16: silence produces no block, an intent's venture comes from the event
+rather than from whose calendar it is, and evidence belongs to the slice it
+happened in.
+
+**Slack (built 2026-09-13):** `slack_sent` collects what Ignas wrote in the BLT
+and Deadlift workspaces via `search.messages`, which requires a **user** token
+(`xoxp-`) and the single scope `search:read` — see HANDOFF §17. The collector
+registry now carries a `scope` (`google` / `slack` / `primary`) instead of a
+boolean, because Slack workspaces are a separate list from Google accounts.
+
 **Known open items:** external DM partners who are not in Google Contacts
 cannot be named by the People API, so their `counterpart` stays `users/<id>`
-(1 space today). Phase 3 (goals/priorities) not started. Week-2 backlog is in
-the plan §12 — `blocks`, the Secretary calendar, the mobile web app, the
-analyst pass, multi-account, weekly/monthly quiz.
+(1 space today). Phase 3 (goals/priorities) not started. Remaining week-2 backlog (plan §12): the mobile web app,
+the analyst pass that fills `signals.summary`, the monthly review,
+`context_compact`, and the Chrome / shell / BT / Screen Time collectors.
 
 ---
 
