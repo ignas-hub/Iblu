@@ -114,6 +114,19 @@ Europe/Zagreb, `Persistent=true` so a missed week still arrives. Below 10
 signals it says the week was too quiet to conclude from rather than dressing
 noise as insight.
 
+**Multi-account (week 2, code ready):** `GOOGLE_ACCOUNTS=blt,choco,deadlift`
+plus `GOOGLE_ACCOUNT_<ALIAS>_CLIENT_ID/_SECRET/_EMAIL`; one token file per alias
+(`data/token.<alias>.json`), authorized with
+`python scripts/connect_google.py --account choco`. Each Workspace needs its own
+Cloud project + Internal OAuth client — IBLU's consent screen is Internal to
+blanklabel.team, so the other accounts cannot authorise it. `build_service(...,
+account=...)` selects the identity, credentials are cached per alias (never
+globally, so one account can never hand back another's token), and `gmail_sent`
+runs once per account with its own watermark. `chat_sent` and
+`calendar_changes` still run against the primary only — the Chat backend
+resolves one self-id per process and a second calendar would need its own
+`calendar_seen` namespace.
+
 **Recent themes (see git log for detail):** real-time Chat unread via Workspace
 Events + Pub/Sub, Drive/Docs edit tools, freshness/anti-replay envelope
 (`fetched_at` + `request_id`), mock-mode safety (no silent fake data — see

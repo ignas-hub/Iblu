@@ -100,6 +100,61 @@ class Settings:
         default_factory=lambda: os.getenv("INFRA_HUB_TIMEZONE", "UTC")
     )
 
+    # --- Multi-account (week 2) ---
+    #
+    # Each Google Workspace needs its OWN OAuth client: IBLU's consent screen is
+    # "Internal" to blanklabel.team, so ignacio@chocoagency.com and
+    # admin@deadlift.io cannot authorise it. One Cloud project + Internal client
+    # per domain, one token file per alias.
+    google_accounts: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_ACCOUNTS", "blt")
+    )
+
+    @property
+    def account_aliases(self) -> tuple[str, ...]:
+        return tuple(
+            a.strip().lower() for a in self.google_accounts.split(",") if a.strip()
+        )
+
+    def account(self, alias: str) -> dict[str, str]:
+        """Per-account OAuth settings, falling back to the primary account.
+
+        The default alias keeps using GOOGLE_OAUTH_* so the original account
+        needs no migration and no re-consent.
+        """
+        alias = alias.lower()
+        prefix = f"GOOGLE_ACCOUNT_{alias.upper()}"
+        if alias == self.primary_alias:
+            return {
+                "alias": alias,
+                "email": self.google_user_email,
+                "client_id": self.google_oauth_client_id,
+                "client_secret": self.google_oauth_client_secret,
+                "token_file": self.google_oauth_token_file,
+            }
+        return {
+            "alias": alias,
+            "email": os.getenv(f"{prefix}_EMAIL", ""),
+            "client_id": os.getenv(f"{prefix}_CLIENT_ID", ""),
+            "client_secret": os.getenv(f"{prefix}_CLIENT_SECRET", ""),
+            "token_file": os.getenv(
+                f"{prefix}_TOKEN_FILE", f"data/token.{alias}.json"
+            ),
+        }
+
+    @property
+    def primary_alias(self) -> str:
+        return self.account_aliases[0] if self.account_aliases else "blt"
+
+    def configured_accounts(self) -> list[dict[str, str]]:
+        """Only accounts with a client id, a secret and a saved token."""
+        out = []
+        for alias in self.account_aliases:
+            acct = self.account(alias)
+            if acct["client_id"] and acct["client_secret"] and os.path.exists(acct["token_file"]):
+                out.append(acct)
+        return out
+
     # --- Phase 2: recording v1 (docs/plans/2026-09-14-recording-v1.md) ---
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
 

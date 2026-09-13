@@ -25,10 +25,10 @@ NAME = "gmail_sent"
 MAX_PER_RUN = 100
 
 
-def _service():
+def _service(account: str | None = None):
     from ..google_auth import build_service
 
-    return build_service("gmail", "v1")
+    return build_service("gmail", "v1", account=account)
 
 
 def _headers(message: dict) -> dict[str, str]:
@@ -106,15 +106,24 @@ def _thread_context(svc, thread_id: str, me: str, my_ts: datetime) -> tuple[str 
     return ask, initiator, len(messages)
 
 
-def collect(conn: psycopg.Connection, *, dry: bool = False) -> int:
-    """Insert a signal for every message I sent since the watermark."""
-    me = settings.google_user_email
-    since = default_since(get_watermark(conn, NAME))
-    svc = _service()
+def collect(
+    conn: psycopg.Connection, *, dry: bool = False, account: dict | None = None
+) -> int:
+    """Insert a signal for every message I sent since the watermark.
+
+    `account` selects the Google account; omitting it uses the primary one.
+    The watermark is per account, so one mailbox falling behind cannot cause
+    another's messages to be skipped.
+    """
+    alias = (account or {}).get("alias") or settings.primary_alias
+    me = (account or {}).get("email") or settings.google_user_email
+    state_key = NAME if alias == settings.primary_alias else f"{NAME}:{alias}"
+    since = default_since(get_watermark(conn, state_key))
+    svc = _service(None if alias == settings.primary_alias else alias)
 
     # Gmail's `after:` takes whole seconds since the epoch.
     query = f"in:sent after:{int(since.timestamp())}"
-    logger.info("%s: querying %r", NAME, query)
+    logger.info("%s[%s]: querying %r", NAME, alias, query)
 
     listing = (
         svc.users()
@@ -125,7 +134,7 @@ def collect(conn: psycopg.Connection, *, dry: bool = False) -> int:
     ids = [m["id"] for m in listing.get("messages", []) or []]
     if not ids:
         if not dry:
-            set_state(conn, NAME, watermark=datetime.now(timezone.utc), error=None)
+            set_state(conn, state_key, watermark=datetime.now(timezone.utc), error=None)
         logger.info("%s: nothing new", NAME)
         return 0
 
@@ -208,9 +217,9 @@ def collect(conn: psycopg.Connection, *, dry: bool = False) -> int:
             inserted += 1
 
     if not dry:
-        set_state(conn, NAME, watermark=newest, error=None)
+        set_state(conn, state_key, watermark=newest, error=None)
     logger.info(
-        "%s: %d new signal(s) from %d message(s) (%d not written by me)",
-        NAME, inserted, len(ids), skipped_not_mine,
+        "%s[%s]: %d new signal(s) from %d message(s) (%d not written by me)",
+        NAME, alias, inserted, len(ids), skipped_not_mine,
     )
     return inserted

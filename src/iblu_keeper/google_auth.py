@@ -82,30 +82,43 @@ def _client_config() -> dict:
     }
 
 
-def _save_token(creds) -> None:
-    path = settings.google_oauth_token_file
+def _save_token(creds, path: str | None = None) -> None:
+    path = path or settings.google_oauth_token_file
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(creds.to_json())
     os.chmod(path, 0o600)
 
 
-def _load_credentials():
-    """Load saved OAuth user credentials, refreshing if expired."""
+def _load_credentials(alias: str | None = None):
+    """Load saved OAuth user credentials for one account, refreshing if expired.
+
+    `alias` selects the Google account. Each Workspace needs its own OAuth
+    client — IBLU's consent screen is Internal to blanklabel.team, so the Choco
+    and Deadlift accounts cannot authorise it — hence one client id/secret and
+    one token file per alias. Omitting `alias` uses the primary account, which
+    keeps the original single-account path byte-for-byte unchanged.
+    """
     from google.auth.transport.requests import Request  # type: ignore
     from google.oauth2.credentials import Credentials  # type: ignore
 
-    if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
+    account = settings.account(alias or settings.primary_alias)
+    client_id = account["client_id"]
+    client_secret = account["client_secret"]
+    path = account["token_file"]
+
+    if not client_id or not client_secret:
         raise CredentialsUnavailable(
-            "OAuth client not configured "
-            "(set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET)."
+            f"OAuth client not configured for account {account['alias']!r} "
+            f"(set GOOGLE_ACCOUNT_{account['alias'].upper()}_CLIENT_ID and "
+            f"_CLIENT_SECRET, or GOOGLE_OAUTH_* for the primary account)."
         )
 
-    path = settings.google_oauth_token_file
     if not os.path.exists(path):
         raise CredentialsUnavailable(
-            f"No saved Google token at {path}. "
-            "Run `python scripts/connect_google.py` once to authorize your account."
+            f"No saved Google token at {path} for account {account['alias']!r}. "
+            f"Run `python scripts/connect_google.py --account {account['alias']}` "
+            "once to authorize it."
         )
 
     with open(path, "r", encoding="utf-8") as fh:
@@ -116,10 +129,8 @@ def _load_credentials():
     # tied to the client_id, not the secret), without re-running consent. Using
     # setdefault here previously caused stale-secret `invalid_client` refresh
     # failures after a secret rotation.
-    if settings.google_oauth_client_id:
-        info["client_id"] = settings.google_oauth_client_id
-    if settings.google_oauth_client_secret:
-        info["client_secret"] = settings.google_oauth_client_secret
+    info["client_id"] = client_id
+    info["client_secret"] = client_secret
     info.setdefault("token_uri", "https://oauth2.googleapis.com/token")
 
     creds = Credentials.from_authorized_user_info(info, list(SCOPES))
@@ -130,16 +141,18 @@ def _load_credentials():
             except Exception as exc:  # noqa: BLE001
                 logger.error("Google token refresh FAILED: %s", exc)
                 raise CredentialsUnavailable(
-                    f"Google token refresh failed: {exc}. If the OAuth client "
-                    "secret was rotated, update GOOGLE_OAUTH_CLIENT_SECRET in "
-                    ".env; otherwise re-run `python scripts/connect_google.py`."
+                    f"Google token refresh failed for {account['alias']!r}: "
+                    f"{exc}. If the OAuth client secret was rotated, update it "
+                    "in .env; otherwise re-run "
+                    f"`python scripts/connect_google.py --account {account['alias']}`."
                 ) from exc
-            logger.info("Google token refreshed successfully.")
-            _save_token(creds)
+            logger.info("Google token refreshed for %s.", account["alias"])
+            _save_token(creds, path)
         else:
             raise CredentialsUnavailable(
-                "Saved Google token is invalid and cannot be refreshed. "
-                "Re-run `python scripts/connect_google.py`."
+                f"Saved Google token for {account['alias']!r} is invalid and "
+                "cannot be refreshed. Re-run "
+                f"`python scripts/connect_google.py --account {account['alias']}`."
             )
     return creds
 
@@ -171,16 +184,41 @@ def get_credentials(scopes: Sequence[str] | None = None):  # noqa: ARG001
     carries the granted scopes. Raises CredentialsUnavailable when not yet
     authorized; callers in dry-run mode should never reach this.
     """
-    global _cached_creds
+    return get_credentials_for(None, scopes)
+
+
+# One cached credential per account alias. Keyed rather than global, so a second
+# account cannot quietly hand back the first account's token — which would
+# attribute one person's mail to another.
+_creds_by_alias: dict[str, object] = {}
+
+
+def get_credentials_for(alias: str | None, scopes: Sequence[str] | None = None):
+    """Credentials for one account. `None` means the primary account."""
+    key = (alias or settings.primary_alias).lower()
     with _lock:
-        if _cached_creds is None or not getattr(_cached_creds, "valid", False):
-            _cached_creds = _load_credentials()
-        return _cached_creds
+        cached = _creds_by_alias.get(key)
+        if cached is None or not getattr(cached, "valid", False):
+            cached = _load_credentials(key)
+            _creds_by_alias[key] = cached
+            global _cached_creds
+            if key == settings.primary_alias:
+                _cached_creds = cached
+        return cached
 
 
-def build_service(api: str, version: str, scopes: Sequence[str] | None = None):
-    """Build an authenticated googleapiclient service (e.g. ('gmail', 'v1'))."""
+def build_service(
+    api: str,
+    version: str,
+    scopes: Sequence[str] | None = None,
+    account: str | None = None,
+):
+    """Build an authenticated googleapiclient service (e.g. ('gmail', 'v1')).
+
+    `account` selects which Google account to act as; omitting it uses the
+    primary one, so every existing caller is unaffected.
+    """
     from googleapiclient.discovery import build  # type: ignore
 
-    creds = get_credentials(scopes)
+    creds = get_credentials_for(account, scopes)
     return build(api, version, credentials=creds, cache_discovery=False)

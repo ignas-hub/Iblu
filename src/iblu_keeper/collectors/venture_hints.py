@@ -45,6 +45,8 @@ KEYWORD_PROJECTS: dict[str, str] = {
 # Fallback when nothing else matches: whose mailbox produced the signal.
 DEFAULT_BY_ACCOUNT: dict[str, str] = {
     "ignas@blanklabel.team": "blt",
+    "ignacio@chocoagency.com": "choco",
+    "admin@deadlift.io": "deadlift",
 }
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@([\w-]+\.[\w.-]+)")

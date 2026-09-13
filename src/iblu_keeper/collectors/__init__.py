@@ -123,16 +123,23 @@ def insert_signal(conn: psycopg.Connection, row: dict) -> bool:
     return result is not None
 
 
-def _registry() -> list[tuple[str, Callable]]:
-    """Imported lazily so `import collectors` never pulls in Google clients."""
+def _registry() -> list[tuple[str, Callable, bool]]:
+    """Imported lazily so `import collectors` never pulls in Google clients.
+
+    The flag says whether the collector is multi-account aware. Chat and
+    calendar are not yet: the Chat backend resolves one self-id per process,
+    and a second calendar would need its own `calendar_seen` namespace. Running
+    them once, against the primary account, is correct — running them blindly
+    per account would attribute another Workspace's events to Ignas.
+    """
     from .calendar_changes import collect as calendar_collect
     from .chat_sent import collect as chat_collect
     from .gmail_sent import collect as gmail_collect
 
     return [
-        ("gmail_sent", gmail_collect),
-        ("chat_sent", chat_collect),
-        ("calendar_changes", calendar_collect),
+        ("gmail_sent", gmail_collect, True),
+        ("chat_sent", chat_collect, False),
+        ("calendar_changes", calendar_collect, False),
     ]
 
 
@@ -148,16 +155,27 @@ def run_all(conn: psycopg.Connection, *, dry: bool = False) -> dict[str, int | s
             "rows into a real database"
         )
 
+    accounts = settings.configured_accounts() or [
+        settings.account(settings.primary_alias)
+    ]
+    primary = settings.primary_alias
+
     results: dict[str, int | str] = {}
-    for name, fn in _registry():
-        try:
-            results[name] = fn(conn, dry=dry)
-        except Exception as exc:  # one collector's outage is not the job's
-            logger.exception("collector %s failed", name)
-            results[name] = f"error: {exc}"
-            if not dry:
-                try:
-                    set_state(conn, name, error=str(exc)[:500])
-                except Exception:  # pragma: no cover - state write is best effort
-                    logger.exception("collector %s: could not record last_error", name)
+    for name, fn, multi in _registry():
+        targets = accounts if multi else [settings.account(primary)]
+        for account in targets:
+            alias = account["alias"]
+            key = name if (not multi or alias == primary) else f"{name}:{alias}"
+            try:
+                results[key] = (
+                    fn(conn, dry=dry, account=account) if multi else fn(conn, dry=dry)
+                )
+            except Exception as exc:  # one account's outage is not the job's
+                logger.exception("collector %s failed", key)
+                results[key] = f"error: {exc}"
+                if not dry:
+                    try:
+                        set_state(conn, key, error=str(exc)[:500])
+                    except Exception:  # pragma: no cover
+                        logger.exception("collector %s: could not record last_error", key)
     return results
