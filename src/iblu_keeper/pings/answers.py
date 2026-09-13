@@ -165,10 +165,39 @@ def _find_option(questions, qid: str, key: str) -> tuple[dict, dict]:
     raise UnknownPing(f"question {qid!r} option {key!r} is not on this ping")
 
 
+# Advisory-lock namespace for tap writes. Arbitrary; only has to be unique
+# within IBLU (the analyst's per-day rebuild lock uses a different one).
+_TAP_LOCK_NAMESPACE = 8172
+
+
+def _tap_lock_key(ping_id: int, qid: str) -> int:
+    """A stable 32-bit key for one question of one ping.
+
+    `hash()` is salted per process, so two concurrent /q requests in different
+    workers would take different locks and serialise nothing.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(f"{ping_id}:{qid}".encode()).digest()
+    return int.from_bytes(digest[:4], "big") % 2_147_483_647
+
+
 def record_tap(conn: psycopg.Connection, token: str) -> dict:
     """Verify a tap token and write the answer. Returns what to show the user."""
     data = read_token(token, settings.ping_signing_secret)
     ping_id, qid, key = data["ping_id"], data["qid"], data["key"]
+
+    # One writer at a time per (ping, question). `/q` opens its own connection
+    # per request and the tap page's own error tells him to "try again", so a
+    # genuine double-tap is ordinary. Without this, two requests can each run
+    # their supersede-UPDATE before the other's INSERT is visible under READ
+    # COMMITTED, leaving two rows with `superseded_by IS NULL` answering the
+    # same question — the one thing the supersede chain exists to prevent.
+    # Released with the transaction.
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(%s, %s)",
+        (_TAP_LOCK_NAMESPACE, _tap_lock_key(ping_id, qid)),
+    )
 
     ping = conn.execute(
         "SELECT id, kind, local_date, covers_from, covers_to, questions "

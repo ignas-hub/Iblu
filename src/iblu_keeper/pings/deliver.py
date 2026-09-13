@@ -8,6 +8,8 @@ it needs no service-account key, which was kept out of this project on purpose.
 
 from __future__ import annotations
 
+import re
+
 import logging
 
 import requests
@@ -30,6 +32,33 @@ TITLES = {
 class DeliveryError(RuntimeError):
     """The webhook refused the card. The ping row is marked failed and retried."""
 
+
+
+def _scrub(exc: Exception) -> str:
+    """An exception message with anything URL-shaped removed.
+
+    `requests` embeds the failing request in a connection error, and the
+    Secretary webhook carries its key in the query string. That message was
+    being logged AND persisted into `pings.meta`, so one DNS hiccup put the
+    webhook secret in two durable places.
+
+    Three passes, because the first version only caught one shape and missed
+    the real one: urllib3 reports the PATH, not the absolute URL
+    ("Max retries exceeded with url: /v1/spaces/A/messages?key=..."). Redact
+    absolute URLs, anything introduced as `url: `, and — as a backstop that
+    does not depend on either shape — the value of any obviously secret
+    parameter wherever it appears.
+    """
+    text = str(exc)
+    text = re.sub(r"https?://\S+", "<url redacted>", text)
+    text = re.sub(r"(url:\s*)\S+", r"\1<redacted>", text, flags=re.I)
+    text = re.sub(
+        r"\b(key|token|auth|secret|signature|password|access_token)=[^&\s\)\]]+",
+        r"\1=<redacted>",
+        text,
+        flags=re.I,
+    )
+    return text
 
 def preflight_tap_route() -> None:
     """Refuse to send a card whose buttons would 404.
@@ -121,7 +150,7 @@ def send(
     try:
         response = requests.post(url, json=body, timeout=TIMEOUT)
     except requests.RequestException as exc:
-        raise DeliveryError(f"webhook unreachable: {exc}") from exc
+        raise DeliveryError(f"webhook unreachable: {_scrub(exc)}") from exc
 
     if response.status_code >= 400:
         # Never log the URL: it carries the webhook key and token.

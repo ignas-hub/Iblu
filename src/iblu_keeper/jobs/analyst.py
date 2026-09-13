@@ -63,8 +63,13 @@ def run(on: date | None = None, days: int = 1, dry: bool = False, mirror: bool =
     with db.get_conn() as conn:
         for day in targets:
             try:
-                summary = reconstruct(conn, day, dry=dry, mirror=mirror)
-            except Exception as exc:  # one bad day must not lose the others
+                # A savepoint per day, for the same reason as the collectors:
+                # a database error on day 3 of a --days 5 backfill would
+                # otherwise poison the transaction and roll back days 1 and 2
+                # on the final commit, having reported them as written.
+                with conn.transaction():
+                    summary = reconstruct(conn, day, dry=dry, mirror=mirror)
+            except Exception:  # one bad day must not lose the others
                 logger.exception("analyst: %s failed", day)
                 failures += 1
                 continue

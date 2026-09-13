@@ -133,6 +133,22 @@ def _day_blocks(conn: psycopg.Connection, day) -> list[dict]:
         return []
 
 
+def _local_day_bounds(day):
+    """The UTC instants bracketing a Zagreb calendar day.
+
+    `blocks.local_date` is already a local date, so block queries are fine.
+    `context_entries.occurred_at` is a TIMESTAMPTZ, and `::date` truncates in
+    the session timezone — UTC here — which put anything logged between
+    midnight and 02:00 local on the previous day.
+    """
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(settings.iblu_timezone)
+    start = datetime.combine(day, datetime.min.time(), tzinfo=tz)
+    return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
+
+
 def _gain_evidence(conn: psycopg.Connection, day) -> dict[str, list[dict]]:
     """Evidence for the gains card (plan §4.1) — dated, already-happened only.
 
@@ -146,7 +162,12 @@ def _gain_evidence(conn: psycopg.Connection, day) -> dict[str, list[dict]]:
 
     learned = conn.execute(
         "SELECT id, content FROM context_entries "
-        "WHERE type IN ('decision', 'correction') AND occurred_at::date = %s "
+        "WHERE type IN ('decision', 'correction') "
+        # `occurred_at::date` truncates in the SESSION timezone, which is UTC,
+        # while `day` is a Zagreb date. Anything logged between midnight and
+        # 02:00 local falls on the previous UTC date and vanished from that
+        # evening's gains. Compare against an explicit local-day range instead.
+        "AND occurred_at >= %s AND occurred_at < %s "
         "AND superseded_by IS NULL "
         # A priority, a baseline and the gain rules are the measuring stick,
         # not progress against it. Without this the evening card offered
@@ -154,7 +175,7 @@ def _gain_evidence(conn: psycopg.Connection, day) -> dict[str, list[dict]]:
         "AND (source_ref IS NULL OR source_ref !~ '^(priority|baseline|gain):') "
         "AND NOT ('test' = ANY(tags)) "
         "ORDER BY occurred_at DESC LIMIT 1",
-        (day,),
+        _local_day_bounds(day),
     ).fetchone()
     if learned:
         evidence["learned"].append({
@@ -279,10 +300,28 @@ def run_one(kind: str, *, dry: bool = False, force: bool = False) -> str:
                  covers_to, status, questions, composer, meta)
             VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s)
             ON CONFLICT (kind, local_date) WHERE kind IN ('midday','evening')
-            DO UPDATE SET questions = EXCLUDED.questions,
-                          composer = EXCLUDED.composer,
+            -- The question snapshot is only replaced if the previous attempt
+            -- never actually reached Chat. A webhook POST can time out client
+            -- side AFTER the card was delivered; the ping is then marked
+            -- 'failed' and retried, and overwriting `questions` in place would
+            -- silently repoint the tap tokens on the card already on his phone.
+            -- Option keys are drawn from a tiny vocabulary (A-E) and qids
+            -- repeat daily, so a stale tap would usually resolve to SOME
+            -- option in the new snapshot — the wrong one, recorded as if he
+            -- had chosen it. Keeping the delivered snapshot means a stale tap
+            -- still means exactly what he saw.
+            DO UPDATE SET questions = CASE
+                              WHEN pings.chat_message_ref IS NULL
+                              THEN EXCLUDED.questions
+                              ELSE pings.questions
+                          END,
+                          composer  = CASE
+                              WHEN pings.chat_message_ref IS NULL
+                              THEN EXCLUDED.composer
+                              ELSE pings.composer
+                          END,
                           covers_to = EXCLUDED.covers_to,
-                          status = 'pending' 
+                          status    = 'pending'
             RETURNING id
             """,
             (

@@ -55,6 +55,10 @@ WORKDAY_END = time(20, 0)
 # worth asking him about.
 MIN_UNTRACKED = timedelta(minutes=30)
 
+# Advisory-lock namespace for per-day rebuilds. Any constant works; this one is
+# arbitrary and only has to be unique within IBLU.
+_LOCK_NAMESPACE = 8171
+
 
 def _tz() -> ZoneInfo:
     return ZoneInfo(settings.iblu_timezone)
@@ -485,9 +489,20 @@ def _supersede(conn, on: date, previous_ids: list[int], new_ids: list[int]) -> N
     """
     if not previous_ids:
         return
+    if new_ids:
+        conn.execute(
+            "UPDATE blocks SET superseded_by = %s WHERE id = ANY(%s)",
+            (new_ids[0], previous_ids),
+        )
+        return
+    # Nothing replaced them — every minute of the day is now covered by blocks
+    # Ignas confirmed, so the rebuild produced no rows at all. The old guesses
+    # must still retire: `superseded_by = NULL` is "still live", so the previous
+    # version left them standing, overlapping the confirmed blocks and
+    # double-counting the day. A row pointing at itself is retired without
+    # claiming a replacement that does not exist.
     conn.execute(
-        "UPDATE blocks SET superseded_by = %s WHERE id = ANY(%s)",
-        (new_ids[0] if new_ids else None, previous_ids),
+        "UPDATE blocks SET superseded_by = id WHERE id = ANY(%s)", (previous_ids,)
     )
 
 
@@ -515,6 +530,16 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
         )
 
     start, end = day_bounds(on)
+
+    # One rebuild of a given day at a time. The timer fires at 17:00 and 20:15
+    # and a manual run can overlap either; two concurrent rebuilds would each
+    # read the same `previous`, each insert a full day, and each supersede only
+    # the rows the other had already replaced — leaving TWO live generations,
+    # double minutes, and duplicate mirror events. The lock is per-day and
+    # released with the transaction.
+    conn.execute("SELECT pg_advisory_xact_lock(%s, %s)",
+                 (_LOCK_NAMESPACE, on.toordinal()))
+
     signals = load_signals(conn, start, end)
     try:
         intents = load_intents(start, end)
@@ -528,7 +553,10 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
     confirmed = [b for b in live_blocks(conn, on) if b["confidence"] == "fact"]
     workday = workday_bounds(on)
     rows = build(cluster_signals(signals), intents, workday=workday)
-    rows = _carve_out(rows, [(b["starts_at"], b["ends_at"]) for b in confirmed])
+    rows = _clip_to_day(rows, (start, end))
+    rows = _carve_out(
+        rows, [(b["starts_at"], b["ends_at"]) for b in confirmed], signals
+    )
 
     # The arithmetic is done; now the judgement. A failing judge is a no-op —
     # the computed day stands and `llm=False` says so.
@@ -666,15 +694,29 @@ def workday_bounds(on: date, tz: ZoneInfo | None = None) -> tuple[datetime, date
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 
-def _carve_out(rows: list[dict], keep: list[tuple[datetime, datetime]]) -> list[dict]:
+def _carve_out(
+    rows: list[dict],
+    keep: list[tuple[datetime, datetime]],
+    signals: list[dict] | None = None,
+) -> list[dict]:
     """Remove the spans already answered for from a freshly built day.
 
     A block Ignas confirmed is the truth for its span; the reconstruction is
     only allowed to describe what is left. A remainder shorter than the floor
     is dropped rather than emitted as a sliver.
+
+    Every surviving piece has its evidence and its reasoning **re-derived** for
+    its own new span. The first version copied both onto each piece unchanged,
+    which reintroduced one step later exactly the bug `build()` exists to avoid:
+    a 20-minute remainder of a 60-minute block reading "60 min · 3 gmail" and
+    claiming a signal that fell inside the confirmed span that was just cut out.
     """
     if not keep:
         return rows
+
+    at_by_id = {s["id"]: s["occurred_at"] for s in (signals or [])}
+    src_by_id = {s["id"]: s.get("source") or "" for s in (signals or [])}
+
     out: list[dict] = []
     for row in rows:
         for start, end in _subtract((row["starts_at"], row["ends_at"]), keep):
@@ -682,6 +724,44 @@ def _carve_out(rows: list[dict], keep: list[tuple[datetime, datetime]]) -> list[
                 continue
             piece = dict(row)
             piece["starts_at"], piece["ends_at"] = start, end
-            piece["evidence"] = [] if piece.get("untracked") else piece["evidence"]
+            if piece.get("untracked") or not at_by_id:
+                piece["evidence"] = []
+            else:
+                piece["evidence"] = [
+                    sid for sid in (row["evidence"] or [])
+                    if sid in at_by_id and start <= at_by_id[sid] < end
+                ]
+            piece["_sources"] = _count_sources(
+                [src_by_id.get(sid, "") for sid in piece["evidence"]]
+            )
+            piece["_intent_title"] = row.get("intent_title")
+            piece["_untracked"] = bool(row.get("untracked"))
+            piece["reasoning"] = _reasoning(piece)
+            piece.pop("_sources", None)
+            piece.pop("_intent_title", None)
+            piece.pop("_untracked", None)
             out.append(piece)
+    return out
+
+
+def _clip_to_day(rows: list[dict], bounds: tuple[datetime, datetime]) -> list[dict]:
+    """Keep every block inside the local day it will be filed under.
+
+    `cluster_signals` widens a cluster by `TAIL` with no idea where midnight is,
+    so a signal at 23:58 produced a block running to 00:15 — stored under
+    *yesterday*, invisible to tomorrow's rebuild, and free to overlap whatever
+    tomorrow produces for the same minutes. `local_date` is a single column; a
+    block must not straddle it.
+    """
+    day_start, day_end = bounds
+    out = []
+    for row in rows:
+        start = max(row["starts_at"], day_start)
+        end = min(row["ends_at"], day_end)
+        if end - start < FLOOR:
+            continue
+        if (start, end) != (row["starts_at"], row["ends_at"]):
+            row = dict(row)
+            row["starts_at"], row["ends_at"] = start, end
+        out.append(row)
     return out

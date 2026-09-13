@@ -186,18 +186,31 @@ def run_all(conn: psycopg.Connection, *, dry: bool = False) -> dict[str, int | s
             else:
                 key = name if (scope == "primary" or alias == primary) else f"{name}:{alias}"
             try:
-                if scope == "google":
-                    results[key] = fn(conn, dry=dry, account=target)
-                elif scope == "slack":
-                    results[key] = fn(conn, dry=dry, workspace=target)
-                else:
-                    results[key] = fn(conn, dry=dry)
+                # Each collector runs in its own SAVEPOINT. Without one, a
+                # database-level error (a bad venture code violating the
+                # foreign key, say) poisons the shared transaction: every later
+                # statement raises InFailedSqlTransaction, including the
+                # set_state that tries to record the failure, and the final
+                # commit silently rolls back EVERY signal the earlier
+                # collectors had already inserted — while the tick's log line
+                # still reports them as collected. "A failing collector never
+                # stops the others" was true only for Python-level errors.
+                with conn.transaction():
+                    if scope == "google":
+                        results[key] = fn(conn, dry=dry, account=target)
+                    elif scope == "slack":
+                        results[key] = fn(conn, dry=dry, workspace=target)
+                    else:
+                        results[key] = fn(conn, dry=dry)
             except Exception as exc:  # one account's outage is not the job's
                 logger.exception("collector %s failed", key)
                 results[key] = f"error: {exc}"
                 if not dry:
                     try:
-                        set_state(conn, key, error=str(exc)[:500])
+                        # The savepoint rolled back, so the connection is usable
+                        # again and this record actually lands.
+                        with conn.transaction():
+                            set_state(conn, key, error=str(exc)[:500])
                     except Exception:  # pragma: no cover
                         logger.exception("collector %s: could not record last_error", key)
     return results

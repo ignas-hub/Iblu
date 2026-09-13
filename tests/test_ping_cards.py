@@ -300,9 +300,15 @@ class FakeConn:
         self.context_entries: list[dict] = []
         self._next_ce_id = 1
         self._next_block_id = max(self.blocks, default=0) + 1
+        self.locks: list[tuple] = []
 
     def execute(self, sql: str, params: tuple = ()):
         s = " ".join(sql.split())
+
+        if s.startswith("SELECT pg_advisory_xact_lock"):
+            # Serialising concurrent taps is Postgres's job; here it is a no-op.
+            self.locks.append(params)
+            return _Result([])
 
         if s.startswith("SELECT id, kind, local_date, covers_from, covers_to, questions"):
             (ping_id,) = params
@@ -563,9 +569,12 @@ def test_a_long_label_is_trimmed_to_a_word_not_a_character():
     broken on a phone rather than shortened."""
     from iblu_keeper.pings.compose import MAX_LABEL, Option
 
-    label = Option(key="A", label="Learned: the Secretary calendar covers every venture",
-                   payload={"kind": "gains", "verdict": "learned",
-                            "gain_kind": "learned"}).label
+    # Deliberately not a `gains` option: a truncated gain is refused outright
+    # (see test_a_truncated_gain_option_is_refused_by_the_schema), so this
+    # exercises the trimming itself on a kind where trimming is allowed.
+    label = Option(key="A",
+                   label="The Secretary calendar now covers every venture at once",
+                   payload={"kind": "sink", "verdict": "planned_mine"}).label
     assert len(label) <= MAX_LABEL
     assert label.endswith("…")
     assert not label[:-1].endswith(" ")
@@ -596,3 +605,40 @@ def test_the_gains_card_never_invents_a_gain():
 
     card = compose_gains_question(None)
     assert all(o["payload"]["verdict"] == "other" for o in card["options"])
+
+
+# --- the truncation bypass (found in review, 2026-09-13) -------------------
+
+
+def test_a_gain_is_validated_before_it_is_truncated():
+    """The 40-char label cut the disqualifying word off before the validator
+    saw it, so a plan passed the gate and would have reached his phone."""
+    evidence = {"learned": [{
+        "label": "Learned: Signed with three new clients this quarter, will "
+                 "announce the partnership expansion plan next month",
+        "evidence_ids": ["1"],
+    }], "progressed": [], "experienced": []}
+    card = compose.compose_gains_question(evidence)
+    assert [o["label"] for o in card["options"]] == ["Add one → reply"], (
+        "a future-tense option survived truncation"
+    )
+
+
+def test_a_truncated_gain_option_is_refused_by_the_schema():
+    """The LLM path builds Options directly, so the schema needs the same
+    guard: a sentence with its ending removed cannot be checked."""
+    with pytest.raises(Exception, match="truncated"):
+        compose.Option(
+            key="A",
+            label="Learned: signed three new clients this quarter and also "
+                  "will announce something later",
+            payload={"kind": "gains", "verdict": "learned", "gain_kind": "learned"},
+        )
+
+
+def test_a_short_genuine_gain_still_passes():
+    o = compose.Option(
+        key="A", label="Closed the Womanizer thread",
+        payload={"kind": "gains", "verdict": "learned", "gain_kind": "learned"},
+    )
+    assert o.label == "Closed the Womanizer thread"

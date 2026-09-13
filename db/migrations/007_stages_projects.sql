@@ -31,7 +31,7 @@
 -- time (store/projects.py:resolve()); a name nothing here recognises is kept
 -- as-is and surfaced by `unregistered()` rather than silently dropped.
 
-CREATE TABLE stages (
+CREATE TABLE IF NOT EXISTS stages (
     code    TEXT PRIMARY KEY,
     label   TEXT NOT NULL,
     ordinal SMALLINT NOT NULL UNIQUE
@@ -44,9 +44,10 @@ INSERT INTO stages (code, label, ordinal) VALUES
     ('implement',  'Implementing fully',                            5),
     ('deliver',    'Making sure it delivers value now',             6),
     ('maintain',   'Maintaining',                                   7),
-    ('autonomous', 'Delivers value in the long run without Ignas',  8);
+    ('autonomous', 'Delivers value in the long run without Ignas',  8)
+ON CONFLICT (code) DO NOTHING;
 
-CREATE TABLE projects (
+CREATE TABLE IF NOT EXISTS projects (
     code             TEXT PRIMARY KEY,
     venture          TEXT NOT NULL REFERENCES ventures(code),
     name             TEXT NOT NULL,
@@ -66,7 +67,7 @@ CREATE INDEX projects_venture_active_idx ON projects (venture, active);
 -- a sequential scan of the whole registry per signal.
 CREATE INDEX projects_aliases_idx ON projects USING GIN (aliases);
 
-CREATE TABLE project_stage_history (
+CREATE TABLE IF NOT EXISTS project_stage_history (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project    TEXT NOT NULL REFERENCES projects(code),
     from_stage TEXT REFERENCES stages(code),      -- NULL only if a project could be created mid-history; not currently possible

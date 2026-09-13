@@ -128,6 +128,19 @@ class Option(BaseModel):
         # reply") records no claim of its own, so it is exempt — the claim it
         # eventually carries is validated on the reply, not on the button.
         if self.payload.kind == "gains" and self.payload.verdict != "other":
+            # A truncated gain cannot be checked. `_short` is a field validator
+            # and runs BEFORE this one, so by the time we get here the label is
+            # already cut to 40 characters — and the disqualifying word is very
+            # often the one past the cut ("Signed three clients, WILL announce
+            # the plan next month"). Rather than validate a sentence with its
+            # ending removed, refuse it: a gain that does not fit on a phone
+            # button was never a good option anyway, and refusing drops the set
+            # to the deterministic fallback instead of sending a plan as a gain.
+            if self.label.endswith("…"):
+                raise ValueError(
+                    "gains option was truncated, so it cannot be validated: "
+                    f"{self.label!r}"
+                )
             ok, reason = validate_gain_option(self.label)
             if not ok:
                 raise ValueError(
@@ -455,6 +468,16 @@ def compose_gains_question(evidence: dict[str, list[dict]] | None) -> dict | Non
         if not items:
             continue
         item = items[0]
+        # Validate the FULL text, then truncate. The other way round, the
+        # 40-character label cut the disqualifying word off before the
+        # validator ever saw it: "Learned: Signed three clients, will announce
+        # the plan next month" became "Learned: Signed three clients, will a…"
+        # in one case and, for a longer prefix, lost "will" entirely — so a
+        # plan passed the gate and reached his phone as a gain.
+        ok, why = validate_gain_option(item["label"])
+        if not ok:
+            logger.info("compose: gains option rejected (%s)", why)
+            continue
         options.append({
             "key": chr(65 + len(options)), "label": item["label"][:MAX_LABEL],
             "payload": {

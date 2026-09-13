@@ -250,6 +250,15 @@ LLM_KINDS = (
 )
 
 
+def _local_day_bounds(on: date):
+    """The UTC instants bracketing a local calendar day."""
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(settings.iblu_timezone)
+    start = datetime.combine(on, datetime.min.time(), tzinfo=tz)
+    return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
+
+
 def _snapshot(conn, on: date) -> str:
     from zoneinfo import ZoneInfo
 
@@ -268,10 +277,13 @@ def _snapshot(conn, on: date) -> str:
         SELECT source, account, occurred_at, counterpart, subject, venture,
                venture_confidence, work_type
           FROM signals
-         WHERE occurred_at::date = %s AND actor = 'me'
+         -- A local-day range, not `occurred_at::date`: the session timezone is
+         -- UTC, so truncating there files anything after midnight Zagreb under
+         -- the previous day.
+         WHERE occurred_at >= %s AND occurred_at < %s AND actor = 'me'
          ORDER BY occurred_at LIMIT 60
         """,
-        (on,),
+        _local_day_bounds(on),
     ).fetchall()
     collectors = conn.execute(
         "SELECT name, watermark, last_run_at, last_error FROM collector_state"

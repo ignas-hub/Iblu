@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -417,6 +418,17 @@ def compose_review(window: str | None = None) -> tuple[str, dict]:
     # somehow still fails (a venture/thread/counterpart name colliding with a
     # rule, say), the hard rule is "never send text that failed" — so this
     # withholds the composed text entirely rather than sending it anyway.
+    # Appended BEFORE the gate. It used to be added after, which meant this
+    # one fragment was structurally exempt from the check that exists to
+    # guarantee "the caller never sends text this rejects". Its current wording
+    # happens to pass; a future rewording would not have been caught.
+    signals = data.get("coverage", {}).get("signals", 0)
+    if signals < MIN_SIGNALS:
+        text += (
+            f"\n\n_Only {signals} signals this week — too little to draw a "
+            "conclusion from. Reported so the gap is visible, not hidden._"
+        )
+
     final_violations = validate_language(text)
     if final_violations:
         logger.error(
@@ -433,13 +445,6 @@ def compose_review(window: str | None = None) -> tuple[str, dict]:
             "its wording tripped the gate."
         )
 
-    signals = data.get("coverage", {}).get("signals", 0)
-    if signals < MIN_SIGNALS:
-        text += (
-            f"\n\n_Only {signals} signals this week — too little to draw a "
-            "conclusion from. Reported so the gap is visible, not hidden._"
-        )
-
     data["gains"] = gains_data
     data["removal"] = removal
     return text, data
@@ -454,7 +459,11 @@ def send(text: str) -> str:
     try:
         response = requests.post(url, json={"text": text}, timeout=TIMEOUT)
     except requests.RequestException as exc:
-        raise RuntimeError(f"webhook unreachable: {exc}") from exc
+        # Same trap, same webhook, so the same scrubber — not a second regex
+        # that can drift out of step with it.
+        from ..pings.deliver import _scrub
+
+        raise RuntimeError(f"webhook unreachable: {_scrub(exc)}") from exc
     if response.status_code >= 400:
         # Never log the URL — it carries the webhook key and token.
         raise RuntimeError(f"webhook returned {response.status_code}: {response.text[:200]}")

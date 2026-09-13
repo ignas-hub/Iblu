@@ -551,3 +551,79 @@ minutes of Saturday admin, and it found that `analyst_blocks` had owned a
 `collector_state` row since migration 005 and never written to it, so "has the
 analyst run?" had no answer. Both are fixed; see migration 009 for why the test
 signal was excluded rather than deleted.
+
+### 22. What the 2026-09-13 code review found
+
+Two reviewers over the analyst/review layer and the pings/data-integrity layer.
+Eleven findings, all real, all fixed the same evening. Four are worth carrying
+forward as rules rather than as fixes.
+
+**One collector's database error used to roll back the whole tick.** Every
+collector ran inside one shared transaction. `run_all` caught each exception and
+carried on — which works for a Python error, but a Postgres error (a bad venture
+code violating the foreign key, say) poisons the transaction: every later
+statement raises `InFailedSqlTransaction`, *including* the `set_state` that
+tries to record the failure, and the final `commit()` silently rolls back every
+signal the earlier collectors had already inserted, while the tick's log line
+still reports them as collected. "A failing collector never stops the others"
+was true only for Python-level errors. Each collector now runs in its own
+`SAVEPOINT` (`with conn.transaction():`), and so does each day of a multi-day
+analyst backfill.
+
+> **Rule: any loop that must survive one iteration failing needs a savepoint,
+> not just a `try`.** A shared connection makes `except` a lie at the database
+> level.
+
+**The gains validator was defeated by its own truncation.** Labels are cut to
+40 characters by a Pydantic *field* validator, which runs before the *model*
+validator that checks whether the text is a plan. So "Signed three clients,
+**will** announce the plan next month" became a 40-character prefix with the
+disqualifying word chopped off, passed the gate, and would have reached his
+phone as a gain. Two fixes: validate the full text before truncating, and
+refuse any gains option that arrives already truncated — a sentence with its
+ending removed cannot be checked, and a gain that does not fit on a button was
+never a good option.
+
+> **Rule: validate before you truncate.** Anywhere else this pattern appears,
+> assume the same bug.
+
+**The webhook key could reach the log and the database.** `requests` embeds the
+failing request in a connection error, and `SECRETARY_WEBHOOK_URL` carries its
+key in the query string. That message was logged *and* persisted into
+`pings.meta`, so one DNS hiccup put the secret in two durable places. The
+status-code branch had always been careful; the connection-error branch was
+not. `pings.deliver._scrub` now redacts absolute URLs, anything introduced as
+`url: `, and the value of any obviously secret parameter — three passes,
+because the first version only caught absolute URLs and urllib3 actually
+reports the *path*.
+
+> **Rule: never interpolate an exception from an HTTP client into a message
+> that is stored or logged without scrubbing it.**
+
+**`occurred_at::date` truncates in the session timezone, which is UTC.**
+Compared against a Zagreb date, anything logged between midnight and 02:00
+local landed on the previous day and vanished from that evening's gains. Both
+occurrences now compare against an explicit local-day range.
+
+The rest, fixed without needing a rule: `_carve_out` copied reasoning and
+evidence onto both halves of a split block (reintroducing the exact bug
+`build()` exists to avoid, one step later); `_supersede` left old blocks live
+when a rebuild produced no rows; `reconstruct` had no lock, so the 17:00 and
+20:15 runs could overlap into two live generations; a 23:58 signal produced a
+block ending at 00:15 filed under the wrong `local_date`; `mirror._clear`
+treated a 503 as "already gone" and orphaned the event permanently; `review()`
+ignored its own `until` bound; `minutes_from_blocks` counted a block that
+straddled the window edge in full; the judge's free-text `reasoning` was the one
+thing IBLU writes back that skipped the language gate — and email subjects are
+interpolated into that prompt; the weekly review appended its low-signal
+disclaimer *after* the final gate; migration 007 was not re-runnable.
+
+**And one finding about the tests themselves.** `tests/test_ping_cards.py`'s
+`FakeConn` matched on the first words of each statement and then applied its own
+hand-written supersede logic — so if the real SQL lost `AND superseded_by IS
+NULL`, every one of those tests would still have passed. The tap path had never
+run against a real database. `tests/test_tap_roundtrip.py` now does, inside a
+transaction that rolls back.
+
+> **Rule: a fake that reimplements the logic under test proves nothing.** When
+> the behaviour *is* the SQL, test the SQL.

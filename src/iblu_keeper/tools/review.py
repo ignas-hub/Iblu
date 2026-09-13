@@ -86,9 +86,10 @@ def review(
         rows = conn.execute(
             "SELECT id, source, occurred_at, counterpart, container, subject, "
             "       initiator, venture, work_type, project, actor "
-            "FROM signals WHERE occurred_at >= %s AND actor = 'me' "
+            "FROM signals WHERE occurred_at >= %s AND occurred_at < %s "
+            "  AND actor = 'me' AND excluded_reason IS NULL "
             "ORDER BY occurred_at",
-            (since,),
+            (since, until),
         ).fetchall()
 
         # Inbound demand: things that landed on a group Ignas works (the Choco
@@ -98,14 +99,16 @@ def review(
         # mission forbids.
         demand = conn.execute(
             "SELECT venture, counterpart, count(*) AS n FROM signals "
-            "WHERE occurred_at >= %s AND actor = 'other' "
+            "WHERE occurred_at >= %s AND occurred_at < %s AND actor = 'other' "
+            "  AND excluded_reason IS NULL "
             "GROUP BY venture, counterpart ORDER BY n DESC LIMIT 10",
-            (since,),
+            (since, until),
         ).fetchall()
         demand_total = conn.execute(
             "SELECT count(*) AS n FROM signals "
-            "WHERE occurred_at >= %s AND actor = 'other'",
-            (since,),
+            "WHERE occurred_at >= %s AND occurred_at < %s AND actor = 'other' "
+            "  AND excluded_reason IS NULL",
+            (since, until),
         ).fetchone()["n"]
 
         # work_type comes from what Ignas TAPPED, not from what was inferred —
@@ -123,20 +126,22 @@ def review(
             WHERE source IN ('ping', 'chat_reply')
               AND superseded_by IS NULL
               AND COALESCE(occurred_at, created_at) >= %s
+              AND COALESCE(occurred_at, created_at) < %s
               AND work_type IS NOT NULL
             GROUP BY work_type, venture, project
             """,
-            (since,),
+            (since, until),
         ).fetchall()
 
         pings = conn.execute(
             """
             SELECT local_date, kind, status
             FROM pings
-            WHERE window_start >= %s AND kind IN ('midday', 'evening')
+            WHERE window_start >= %s AND window_start < %s
+              AND kind IN ('midday', 'evening')
             ORDER BY local_date, kind
             """,
-            (since,),
+            (since, until),
         ).fetchall()
 
     by_venture: dict[str, int] = {}
@@ -213,7 +218,13 @@ def review(
     # would silently vanish into whichever venture happens to be largest) so
     # the Truth section can say plainly how much of the week is unknown
     # rather than implying full coverage.
-    untracked_share_pct = round(100 * (window_days - observed_days) / window_days)
+    # Clamped: with an unbounded query `observed_days` could exceed
+    # `window_days` and drive this negative. The bounds are fixed now, but a
+    # share of a window is between 0 and 100 by definition and should not
+    # depend on a query elsewhere staying correct.
+    untracked_share_pct = max(
+        0, min(100, round(100 * (window_days - observed_days) / window_days))
+    )
 
     return {
         "window": window,
@@ -368,15 +379,21 @@ def minutes_from_blocks(conn, since: datetime, until: datetime) -> dict | None:
     confirmed and a minute IBLU guessed are not the same evidence and must
     never be added together silently.
     """
+    # Overlap, not containment, and the minutes are CLIPPED to the window.
+    # Selecting on `starts_at` alone counted a block that began at 17:45 and ran
+    # to 20:00 in full against a window that ended at 18:00, and dropped a block
+    # that started on Sunday night and ran into Monday entirely.
     rows = conn.execute(
         """
         SELECT venture, work_type, attention, confidence, intent_title,
-               EXTRACT(EPOCH FROM (ends_at - starts_at)) / 60 AS minutes
+               EXTRACT(EPOCH FROM (
+                   LEAST(ends_at, %s) - GREATEST(starts_at, %s)
+               )) / 60 AS minutes
           FROM blocks
          WHERE superseded_by IS NULL
-           AND starts_at >= %s AND starts_at < %s
+           AND starts_at < %s AND ends_at > %s
         """,
-        (since, until),
+        (until, since, until, since),
     ).fetchall()
     if not rows:
         return None

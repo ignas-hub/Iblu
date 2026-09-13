@@ -93,17 +93,37 @@ def _clear(conn, service, calendar_id: str, on: date) -> int:
 
     removed = 0
     for row in rows:
+        event_id = row["calendar_event_id"]
+        gone = False
         try:
-            service.events().delete(
-                calendarId=calendar_id, eventId=row["calendar_event_id"]
-            ).execute()
+            service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
             removed += 1
+            gone = True
         except Exception as exc:
-            # Already deleted by hand is the normal case, not an error.
-            logger.info("mirror: could not delete %s (%s)", row["calendar_event_id"], exc)
-        conn.execute(
-            "UPDATE blocks SET calendar_event_id = NULL WHERE id = %s", (row["id"],)
-        )
+            # "Already deleted by hand" and "Google returned a 503" look the
+            # same from here, and they are opposites. Forgetting the id after a
+            # transient failure strands the event forever: the next run's query
+            # only ever looks at ids it still has, so nothing can find it again.
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            gone = status in (404, 410)
+            if gone:
+                logger.info("mirror: %s was already gone", event_id)
+            else:
+                logger.warning("mirror: could not delete %s (%s)", event_id, exc)
+                from ..store import observations as obs
+
+                obs.record_safe(
+                    source="analyst", kind="mirror_event_not_deleted", severity="warn",
+                    summary="a Secretary calendar event could not be removed; "
+                            "its id is kept so the next run can retry",
+                    detail=str(exc)[:500],
+                    evidence={"event_id": event_id, "block_id": row["id"]},
+                    fp=obs.fingerprint("analyst", "mirror_event_not_deleted", event_id),
+                )
+        if gone:
+            conn.execute(
+                "UPDATE blocks SET calendar_event_id = NULL WHERE id = %s", (row["id"],)
+            )
     return removed
 
 

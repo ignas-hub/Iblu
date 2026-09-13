@@ -362,3 +362,63 @@ def test_carving_drops_slivers_rather_than_emitting_them():
 def test_carving_nothing_changes_nothing():
     blocks = B.build(B.cluster_signals([signal(1, at(9, 0))]), [], workday=workday())
     assert B._carve_out(blocks, []) == blocks
+
+
+# --- carving must re-derive, not copy (review finding, 2026-09-13) ---------
+
+
+def test_carving_re_derives_evidence_for_each_surviving_piece():
+    """The first version copied evidence onto both halves, so a 20-minute
+    remainder still claimed a signal that fell inside the span just cut out."""
+    rows = [signal(n, at(9, 0) + timedelta(minutes=15 * n)) for n in range(4)]  # 09:00..09:45
+    blocks = B.build(B.cluster_signals(rows), [])
+    carved = B._carve_out(blocks, [(at(9, 15), at(9, 30))], rows)
+    for piece in carved:
+        for sid in piece["evidence"]:
+            when = rows[sid]["occurred_at"]
+            assert piece["starts_at"] <= when < piece["ends_at"], (
+                f"signal {sid} at {when} claimed by {piece['starts_at']}-{piece['ends_at']}"
+            )
+
+
+def test_carving_re_derives_the_reasoning_minutes():
+    """A 20-minute remainder must not read '60 min'."""
+    rows = [signal(n, at(9, 0) + timedelta(minutes=10 * n)) for n in range(6)]
+    blocks = B.build(B.cluster_signals(rows), [])
+    carved = B._carve_out(blocks, [(at(9, 30), at(9, 45))], rows)
+    for piece in carved:
+        minutes = int((piece["ends_at"] - piece["starts_at"]).total_seconds() // 60)
+        assert piece["reasoning"].startswith(f"{minutes} min ·"), piece["reasoning"]
+
+
+def test_carving_without_the_signals_claims_no_evidence_rather_than_the_wrong_evidence():
+    blocks = B.build(B.cluster_signals([signal(1, at(9, 0))]), [])
+    carved = B._carve_out(blocks, [(at(9, 5), at(9, 10))])
+    assert all(p["evidence"] == [] for p in carved)
+
+
+# --- a block may not straddle the day it is filed under -------------------
+
+
+def test_a_late_signal_does_not_push_a_block_into_tomorrow():
+    """`cluster_signals` widens by TAIL with no idea where midnight is, so a
+    23:58 signal produced a block ending 00:15 — stored under yesterday,
+    invisible to tomorrow's rebuild, free to overlap it."""
+    day_end = at(0, 0) + timedelta(days=1)
+    blocks = B.build(B.cluster_signals([signal(1, at(23, 58))]), [])
+    assert max(b["ends_at"] for b in blocks) > day_end, "fixture no longer spills"
+
+    clipped = B._clip_to_day(blocks, (at(0, 0), day_end))
+    assert all(b["ends_at"] <= day_end for b in clipped)
+    assert all(b["starts_at"] >= at(0, 0) for b in clipped)
+
+
+def test_clipping_drops_a_remainder_below_the_floor_rather_than_emitting_it():
+    blocks = B.build(B.cluster_signals([signal(1, at(23, 58))]), [])
+    clipped = B._clip_to_day(blocks, (at(0, 0), at(23, 50)))
+    assert all(b["ends_at"] - b["starts_at"] >= B.FLOOR for b in clipped)
+
+
+def test_clipping_leaves_an_ordinary_block_untouched():
+    blocks = B.build(B.cluster_signals([signal(1, at(9, 0))]), [])
+    assert B._clip_to_day(blocks, (at(0, 0), at(0, 0) + timedelta(days=1))) == blocks

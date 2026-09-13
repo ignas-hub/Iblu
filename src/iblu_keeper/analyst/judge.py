@@ -160,6 +160,19 @@ Evidence behind them:
     return apply_patch(rows, json.loads(text), ventures, work_types, projects)
 
 
+def _rejected_language(text: str) -> bool:
+    """True when the judge's line breaks the rules every IBLU output follows."""
+    try:
+        from ..jobs.review_language import validate_language
+
+        violations = validate_language(text)
+    except Exception:  # noqa: BLE001 — never let the gate break the judge
+        return False
+    if violations:
+        logger.info("judge: reasoning rejected by the language gate: %s", violations)
+    return bool(violations)
+
+
 def apply_patch(
     rows: list[dict],
     payload: dict,
@@ -202,6 +215,16 @@ def apply_patch(
                 raise ValueError(f"judge invented project {patch['project']!r}")
             block["project"] = patch["project"]
         if patch.get("reasoning"):
+            # `reasoning` is the one free-text field the judge controls, and it
+            # is rendered onto the Secretary calendar. Two reasons it goes
+            # through the same gate as everything else IBLU writes back:
+            # praise or a comparison here would violate "a tracker that
+            # flatters is worse than none", and the prompt interpolates raw
+            # email subjects, so an inbound subject line is an untrusted input
+            # with a path to this string. A rejected line simply keeps the
+            # computed one.
+            if _rejected_language(str(patch["reasoning"])):
+                continue
             # The duration is arithmetic and stays IBLU's; the judge supplies
             # only the "why". Letting it rewrite the whole line lost the
             # minutes, which is the one number a glance at the card needs.
