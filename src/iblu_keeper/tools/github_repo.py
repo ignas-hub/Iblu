@@ -21,6 +21,7 @@ import io
 import logging
 import tarfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import requests
@@ -104,9 +105,65 @@ def _get(path: str, **params: Any) -> Any:
     raise last or GitHubError("GitHub request failed")
 
 
+# Bare name -> full name, resolved against every repository the tokens can see
+# and cached, so `repo_name='email-writer'` finds BlankTracker/email-writer
+# without the caller knowing which owner it belongs to.
+_NAME_CACHE: tuple[float, dict[str, list[str]]] | None = None
+NAME_CACHE_TTL = 600
+
+
+def _name_index() -> dict[str, list[str]]:
+    global _NAME_CACHE
+    if _NAME_CACHE and time.time() - _NAME_CACHE[0] < NAME_CACHE_TTL:
+        return _NAME_CACHE[1]
+    index: dict[str, list[str]] = {}
+    try:
+        for r in list_repos()["repos"]:
+            index.setdefault(r["name"].split("/", 1)[1].lower(), []).append(r["name"])
+    except GitHubError as exc:
+        logger.warning("could not index repository names: %s", exc)
+        return {}
+    _NAME_CACHE = (time.time(), index)
+    return index
+
+
 def _full_name(repo_name: str) -> str:
-    """'machina' -> 'ignas-hub/machina'; 'org/thing' passes through."""
-    return repo_name if "/" in repo_name else f"{settings.github_owner}/{repo_name}"
+    """'email-writer' -> 'BlankTracker/email-writer'; 'org/thing' passes through.
+
+    A bare name is resolved against every repository the configured tokens can
+    see — the point of the tool is that Ignas names a project without having to
+    remember which account or organisation owns it.
+    """
+    if "/" in repo_name:
+        return repo_name
+
+    candidates = _name_index().get(repo_name.lower(), [])
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        raise GitHubError(
+            f"{repo_name!r} is ambiguous — name the owner: {', '.join(candidates)}"
+        )
+    # Unknown: fall back to the default owner so the 404 message can explain.
+    return f"{settings.github_owner}/{repo_name}"
+
+
+def _repo_is_visible(full: str) -> bool:
+    """True when the repository itself is readable — used to tell a missing
+    FILE apart from a repository we have no token for. Blaming token scope for
+    a typo in a path sends the reader off fixing the wrong thing."""
+    return full.lower() in {
+        name.lower() for names in _name_index().values() for name in names
+    }
+
+
+def _path_error(full: str, path: str, exc: "GitHubError") -> "GitHubError":
+    if "not found" in str(exc) and _repo_is_visible(full):
+        return GitHubError(
+            f"{path!r} does not exist in {full} — the repository is readable, "
+            "so this is a wrong path rather than a permissions problem"
+        )
+    return exc
 
 
 def list_repos(limit: int = 100) -> dict:
@@ -152,7 +209,10 @@ def list_dir(repo_name: str, path: str | None = None, ref: str | None = None) ->
 
     full = _full_name(repo_name)
     params = {"ref": ref} if ref else {}
-    data = _get(f"/repos/{full}/contents/{(path or '').strip('/')}", **params)
+    try:
+        data = _get(f"/repos/{full}/contents/{(path or '').strip('/')}", **params)
+    except GitHubError as exc:
+        raise _path_error(full, path or ".", exc) from exc
     if isinstance(data, dict):
         raise GitHubError(f"{path} is a file, not a directory — use action='read'")
 
@@ -187,7 +247,10 @@ def read_file(
         raise GitHubError(f"refusing to read {name} — credential-shaped filename")
 
     params = {"ref": ref} if ref else {}
-    data = _get(f"/repos/{full}/contents/{path.strip('/')}", **params)
+    try:
+        data = _get(f"/repos/{full}/contents/{path.strip('/')}", **params)
+    except GitHubError as exc:
+        raise _path_error(full, path, exc) from exc
     if isinstance(data, list):
         raise GitHubError(f"{path} is a directory — use action='list'")
     if data.get("size", 0) > MAX_FILE_BYTES:
@@ -317,15 +380,24 @@ def search(repo_name: str | None, query: str, ref: str | None = None) -> dict:
     scanned = 0
     truncated = False
 
-    for full in targets:
+    # Fetch the tarballs concurrently. Sequentially, eleven repositories took
+    # 17s on a cold cache — long enough to feel broken in a voice session.
+    def _fetch(full: str) -> tuple[str, list[tuple[str, str]] | None]:
+        try:
+            return full, _repo_text(full, ref if repo_name else None)
+        except GitHubError as exc:
+            logger.warning("search: skipping %s: %s", full, exc)
+            return full, None
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(targets)))) as pool:
+        fetched = list(pool.map(_fetch, targets))
+
+    for full, files in fetched:
+        if files is None:
+            continue
         if len(matches) >= MAX_MATCHES:
             truncated = True
             break
-        try:
-            files = _repo_text(full, ref if repo_name else None)
-        except GitHubError as exc:
-            logger.warning("search: skipping %s: %s", full, exc)
-            continue
 
         for path, text in files:
             scanned += 1
