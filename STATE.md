@@ -62,7 +62,11 @@ fine-grained read-only token (`GITHUB_TOKEN`). Credential-shaped filenames are
 refused from both; local paths cannot escape the repo root. A fine-grained
 PAT is scoped to ONE resource owner, so each GitHub organisation needs its own
 token: set `GITHUB_TOKEN`, `GITHUB_TOKEN_2`, ... and IBLU tries each until one
-can see the repository. GitHub's /search/code endpoint returns nothing for
+can see the repository — today three: `ignas-hub` (personal),
+`BlankTracker` and `deadlift-machina`, 12 repositories in total. A bare name
+like `machina` or `email-writer` is resolved against every visible owner, so the
+caller never needs to know which account holds a project. GitHub's /search/code
+endpoint returns nothing for
 fine-grained tokens, so search downloads each repo as a single tarball and greps
 it locally, cached 5 min — 3s cold across all repos, instant warm. Permission policy (set 2026-09-13): only
 `gmail_send_email` and `chat_send_message` ask; the other 35 are auto-allow,
