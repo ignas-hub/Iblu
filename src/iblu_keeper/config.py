@@ -192,6 +192,14 @@ class Settings:
         default_factory=lambda: os.getenv("IBLU_LLM_MODEL", "claude-sonnet-5")
     )
 
+    # The mirror calendar that will hold reconstructed `blocks` — one calendar
+    # on blanklabel.team covering EVERY venture (HANDOFF.md §15). Deliberately
+    # not the primary: it will contain Choco and Deadlift work, and a shared
+    # primary would expose one client's activity to another's colleagues.
+    secretary_calendar_id: str = field(
+        default_factory=lambda: os.getenv("SECRETARY_CALENDAR_ID", "")
+    )
+
     # Secretary Chat space: webhook posts the card, space id reads the replies.
     secretary_webhook_url: str = field(
         default_factory=lambda: os.getenv("SECRETARY_WEBHOOK_URL", "")

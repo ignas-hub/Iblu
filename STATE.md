@@ -125,9 +125,16 @@ globally, so one account can never hand back another's token), and `gmail_sent`
 runs once per account with its own watermark. All three Workspaces are live: `blt` (ignas@blanklabel.team),
 `deadlift` (admin@deadlift.io) and `choco` (**ignacio@chocoagency.com** — note
 that admin@chocoagency.com also exists and is NOT the tracked account).
-`gmail_sent` counts every address the mailbox may send as, minus Google Group
-deliveries. `chat_sent` and `calendar_changes` still run against the primary
-only — the Chat backend
+All three collectors now run per account: `gmail_sent` counts every address
+the mailbox may send as (minus Google Group deliveries), `chat_sent` uses a Chat
+backend cached per account so each resolves its own self-id, and
+`calendar_changes` namespaces its baseline by account (migration 004) because
+two Workspaces can each have a calendar called 'primary'. Calendar *writes*
+stay primary-only by design — the Secretary mirror is one calendar on BLT
+covering every venture (HANDOFF.md §15), configured as `SECRETARY_CALENDAR_ID`
+and verified writable. Note the OAuth token carries `calendar.events`, so IBLU
+can read and write events on any calendar Ignas owns but CANNOT read calendar
+metadata or ACLs (`calendars.get` returns 403) — sharing must be checked by hand — the Chat backend
 resolves one self-id per process and a second calendar would need its own
 `calendar_seen` namespace.
 
