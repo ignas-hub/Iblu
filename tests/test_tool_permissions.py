@@ -1,16 +1,25 @@
-"""Connect-time permission defaults for every MCP tool.
+"""Tool annotation policy.
 
-Claude.ai derives its permission prompt from the MCP annotations: a tool
-marked `destructiveHint` or `openWorldHint` is asked about every time;
-everything else is auto-allowed.
+IMPORTANT — what this does NOT do. Verified 2026-09-13: claude.ai does **not**
+derive its per-tool Allow/Ask setting from these annotations. Five tools with
+byte-identical annotations show different states in the connector UI, split
+purely by when each was first registered — tools present when the connector was
+last configured are Allow, tools that appeared afterwards default to Ask. The
+permission is a preference stored client-side per connector; no annotation,
+`_meta` field or server capability overrides it.
+
+What the annotations DO control is the grouping in that UI: the 16 tools with
+`readOnlyHint: true` are exactly the "Read-only tools (16)" group, which is why
+getting them right still matters — a correct group makes the group-level
+"always allow" control usable in one action instead of tool by tool.
 
 Ignas's policy, stated 2026-09-13: **only sending a message to another human
-asks.** Everything else — including reads, drafts, Drive and Docs writes, and
-memory writes — is auto-allow, because a prompt on every call makes the
-assistant unusable by voice, which is its primary mode.
+should ask.** Everything else — reads, drafts, Drive and Docs writes, memory
+writes — should be allowed, because a prompt on every call makes the assistant
+unusable by voice, which is its primary mode.
 
-This test is the policy. A new tool that would silently introduce a prompt, or
-silently remove one from a send, fails here.
+This test keeps the annotations honest so the grouping stays correct and the
+intent is recorded. It cannot enforce the client's behaviour.
 """
 
 from __future__ import annotations
@@ -62,7 +71,7 @@ def test_every_tool_declares_all_four_annotations():
     assert not missing, f"tools with incomplete annotations: {missing}"
 
 
-def test_only_sending_to_a_human_asks():
+def test_only_sending_to_a_human_is_marked_as_needing_confirmation():
     asking = {name for name, flags in _tools().items() if _asks(flags)}
     assert asking == MUST_ASK, (
         f"permission policy drift.\n"

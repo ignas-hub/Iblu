@@ -272,3 +272,35 @@ describe the June state; these supersede it where they conflict.
     test file broke it and a test wrote a real row into the live database.
     `Settings` is a frozen dataclass: substitute the module-level `settings`
     object, never patch its attributes.
+
+### 12. Adding a tool costs Ignas a click — prefer a parameter
+
+Verified 2026-09-13. claude.ai does **not** derive its per-tool Allow/Ask
+setting from MCP annotations. Five tools with byte-identical annotations showed
+different states in the connector UI, split purely by when each was first
+registered: tools present when the connector was last configured were Allow,
+tools that appeared afterwards defaulted to Ask.
+
+This is by design, not a bug. The MCP spec says clients "MUST consider tool
+annotations to be untrusted unless they come from trusted servers", and
+Anthropic's permission docs state that MCP toolsets "default to always_ask …
+so that new tools added to an MCP server do not execute without approval".
+There is no server-side override — no annotation, no `_meta`, no capability.
+
+Consequences for this repo:
+
+1. **Every new `@mcp.tool` costs Ignas a manual click**, forever, in a UI he
+   has to find. A permission prompt mid-drive is exactly the friction the
+   mission forbids, so the cost is real, not cosmetic.
+2. **Prefer extending an existing tool with a parameter** over registering a
+   new one. `context_review` should have been `context_get_summary(view=
+   'review')` — it would have shipped already-allowed. Register a genuinely
+   new tool only when the capability does not belong on any existing one.
+3. **Annotations still matter** — they drive the *grouping* in that UI. The 16
+   tools with `readOnlyHint: true` are exactly the "Read-only tools (16)"
+   group, which is what makes the group-level "always allow" control usable in
+   one action instead of tool by tool. `tests/test_tool_permissions.py` keeps
+   them honest; it cannot enforce client behaviour and says so.
+4. **When a new tool is unavoidable, say so in the handover**, with the words
+   "you will need to set this to Always allow in Settings > Connectors", rather
+   than claiming a restart or reconnect will apply it. It will not.

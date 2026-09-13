@@ -57,7 +57,11 @@ and `data/drafts.jsonl`.
 
 **Tools currently exposed (37).** Permission policy (set 2026-09-13): only
 `gmail_send_email` and `chat_send_message` ask; the other 35 are auto-allow,
-including `gmail_reply`. Enforced by `tests/test_tool_permissions.py`. Phase 2 added `context_log` and
+including `gmail_reply`. Enforced by `tests/test_tool_permissions.py` — which keeps the annotations
+honest but CANNOT set the client's behaviour: claude.ai stores Allow/Ask per
+tool per connector, and a tool added after the connector was last configured
+always defaults to Ask. Prefer a new parameter on an existing tool over a new
+`@mcp.tool`; see HANDOFF.md §12. Phase 2 added `context_log` and
 `context_search`; `context_get_summary` and `context_log_conversation` are no
 longer stubs and now read/write Postgres. In mock mode (`DRY_RUN=true`) all four
 return `{"status": "mock"}` and never touch the database.
