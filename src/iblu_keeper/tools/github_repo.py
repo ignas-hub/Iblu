@@ -17,7 +17,10 @@ declining to read a stray `.env` out of a repo is cheap insurance.
 from __future__ import annotations
 
 import base64
+import io
 import logging
+import tarfile
+import time
 from typing import Any
 
 import requests
@@ -40,47 +43,65 @@ class GitHubError(Exception):
 
 
 def configured() -> bool:
-    return bool(settings.github_token)
+    return bool(settings.github_tokens)
 
 
-def _headers() -> dict[str, str]:
-    if not settings.github_token:
-        raise GitHubError(
-            "GITHUB_TOKEN is not set — IBLU can only read repositories on this "
-            "box. Add a fine-grained read-only token to .env to reach the rest."
-        )
+def _headers(token: str) -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {settings.github_token}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
 
-def _get(path: str, **params: Any) -> Any:
+def _request(token: str, path: str, **params: Any):
     url = path if path.startswith("http") else f"{API}{path}"
     try:
-        response = requests.get(url, headers=_headers(), params=params, timeout=TIMEOUT)
+        return requests.get(url, headers=_headers(token), params=params, timeout=TIMEOUT)
     except requests.RequestException as exc:
         raise GitHubError(f"GitHub unreachable: {exc}") from exc
 
-    if response.status_code == 401:
-        raise GitHubError("GitHub rejected the token (401) — it may be expired or revoked")
-    if response.status_code == 403:
-        remaining = response.headers.get("x-ratelimit-remaining")
-        if remaining == "0":
-            raise GitHubError("GitHub rate limit reached — try again shortly")
+
+def _get(path: str, **params: Any) -> Any:
+    """Try each configured token; return the first that can see the resource.
+
+    A fine-grained PAT is scoped to one resource owner, so a personal token
+    simply cannot see an organisation's repositories. Trying each in turn means
+    the caller never has to know which token owns which project.
+    """
+    tokens = settings.github_tokens
+    if not tokens:
         raise GitHubError(
-            "GitHub returned 403 — the token likely lacks Contents: Read on that "
-            "repository, or the repository is outside its scope"
+            "no GitHub token configured — IBLU can only read repositories on "
+            "this box. Add GITHUB_TOKEN (and GITHUB_TOKEN_2 etc. for "
+            "organisations) to .env."
         )
-    if response.status_code == 404:
-        raise GitHubError(
-            "not found — either the path does not exist, or the token's "
-            "repository scope does not include it"
-        )
-    if response.status_code >= 400:
-        raise GitHubError(f"GitHub returned {response.status_code}: {response.text[:200]}")
-    return response.json()
+
+    last: GitHubError | None = None
+    for token in tokens:
+        response = _request(token, path, **params)
+        if response.status_code < 400:
+            return response.json()
+        if response.status_code == 401:
+            last = GitHubError("GitHub rejected a token (401) — expired or revoked")
+        elif response.status_code == 403:
+            if response.headers.get("x-ratelimit-remaining") == "0":
+                raise GitHubError("GitHub rate limit reached — try again shortly")
+            last = GitHubError(
+                "GitHub returned 403 — a token lacks Contents: Read on that "
+                "repository, or it is outside every token's scope"
+            )
+        elif response.status_code == 404:
+            last = GitHubError(
+                f"not found with any of the {len(tokens)} configured token(s) — "
+                "either it does not exist, or it belongs to an organisation "
+                "that needs its own fine-grained token (GITHUB_TOKEN_2 ...)"
+            )
+        else:
+            last = GitHubError(
+                f"GitHub returned {response.status_code}: {response.text[:200]}"
+            )
+    raise last or GitHubError("GitHub request failed")
 
 
 def _full_name(repo_name: str) -> str:
@@ -89,8 +110,27 @@ def _full_name(repo_name: str) -> str:
 
 
 def list_repos(limit: int = 100) -> dict:
-    """Every repository the token can see, most recently pushed first."""
-    data = _get("/user/repos", per_page=min(limit, 100), sort="pushed", affiliation="owner,collaborator,organization_member")
+    """Every repository ANY configured token can see, newest push first.
+
+    Merged across tokens and de-duplicated, so personal and organisation repos
+    appear in one list.
+    """
+    seen: dict[str, dict] = {}
+    errors: list[str] = []
+    for token in settings.github_tokens:
+        response = _request(
+            token, "/user/repos", per_page=min(limit, 100), sort="pushed",
+            affiliation="owner,collaborator,organization_member",
+        )
+        if response.status_code >= 400:
+            errors.append(f"{response.status_code}")
+            continue
+        for r in response.json():
+            seen.setdefault(r["full_name"], r)
+
+    data = sorted(seen.values(), key=lambda r: r.get("pushed_at") or "", reverse=True)
+    if not data and errors:
+        raise GitHubError(f"no repositories readable (token errors: {', '.join(errors)})")
     return {
         "source": "github",
         "count": len(data),
@@ -171,28 +211,141 @@ def read_file(
     }
 
 
-def search(repo_name: str | None, query: str) -> dict:
-    """GitHub code search, scoped to one repo or to everything the token sees."""
-    if not query or not query.strip():
-        raise GitHubError("query must not be empty")
-    scope = f" repo:{_full_name(repo_name)}" if repo_name else f" user:{settings.github_owner}"
-    data = _get("/search/code", q=f"{query}{scope}", per_page=min(MAX_MATCHES, 100))
+# Extensions worth grepping. Everything else is skipped so a search does not
+# spend its request budget on lockfiles and images.
+TEXT_SUFFIXES = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".sh", ".bash", ".sql", ".md", ".txt",
+    ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf", ".json", ".html", ".css",
+    ".rb", ".go", ".rs", ".java", ".php", ".prisma", ".env.example", "Dockerfile",
+}
+SKIP_PATH_PARTS = {
+    "node_modules", ".venv", "venv", "dist", "build", ".next", "__pycache__",
+    "vendor", "migrations/versions",
+}
+MAX_FILES_SCANNED = 250
+MAX_SEARCH_BYTES = 400_000
 
+
+def _tree(repo_full: str, ref: str | None = None) -> list[dict]:
+    """Every file path in a repository — one request, not one per file."""
+    if ref is None:
+        ref = _get(f"/repos/{repo_full}").get("default_branch", "main")
+    data = _get(f"/repos/{repo_full}/git/trees/{ref}", recursive="1")
+    return [x for x in data.get("tree", []) if x.get("type") == "blob"]
+
+
+def _searchable(path: str, size: int) -> bool:
+    if size > MAX_SEARCH_BYTES:
+        return False
+    if any(part in SKIP_PATH_PARTS for part in path.split("/")):
+        return False
+    name = path.rsplit("/", 1)[-1]
     from .repo import _is_secret
 
-    matches = []
-    for item in data.get("items", []):
-        if _is_secret(item["name"]):
+    if _is_secret(name):
+        return False
+    return name in TEXT_SUFFIXES or any(name.endswith(sfx) for sfx in TEXT_SUFFIXES)
+
+
+# A repo's text files, cached briefly. Searching by fetching each blob cost ~50s
+# for four repositories; the tarball is ONE request, so the same search is a
+# couple of seconds and a repeat search is instant.
+_CACHE: dict[str, tuple[float, list[tuple[str, str]]]] = {}
+CACHE_TTL = 300
+MAX_TARBALL_BYTES = 60_000_000
+
+
+def _repo_text(repo_full: str, ref: str | None = None) -> list[tuple[str, str]]:
+    """`[(path, text)]` for every searchable file, via one tarball request."""
+    key = f"{repo_full}@{ref or 'default'}"
+    hit = _CACHE.get(key)
+    if hit and time.time() - hit[0] < CACHE_TTL:
+        return hit[1]
+
+    path = f"/repos/{repo_full}/tarball" + (f"/{ref}" if ref else "")
+    blob: bytes | None = None
+    for token in settings.github_tokens:
+        response = _request(token, path)
+        if response.status_code < 400:
+            blob = response.content
+            break
+    if blob is None:
+        raise GitHubError(f"could not download {repo_full}")
+    if len(blob) > MAX_TARBALL_BYTES:
+        raise GitHubError(f"{repo_full} is too large to search ({len(blob)} bytes)")
+
+    from .repo import _looks_binary
+
+    files: list[tuple[str, str]] = []
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        for member in tar:
+            if not member.isfile() or member.size > MAX_SEARCH_BYTES:
+                continue
+            # The tarball root is "<owner>-<repo>-<sha>/"; strip it.
+            rel = member.name.split("/", 1)[1] if "/" in member.name else member.name
+            if not _searchable(rel, member.size):
+                continue
+            handle = tar.extractfile(member)
+            if handle is None:
+                continue
+            raw = handle.read()
+            if _looks_binary(raw):
+                continue
+            files.append((rel, raw.decode("utf-8", errors="replace")))
+
+    _CACHE[key] = (time.time(), files)
+    return files
+
+
+def search(repo_name: str | None, query: str, ref: str | None = None) -> dict:
+    """Find text across one repository or all of them.
+
+    GitHub's /search/code endpoint returns nothing for fine-grained tokens, so
+    IBLU greps the repositories itself — downloading each as a single tarball
+    rather than fetching files one at a time, and caching the result for a few
+    minutes so follow-up searches are instant.
+    """
+    if not query or not query.strip():
+        raise GitHubError("query must not be empty")
+    needle = query.lower()
+
+    targets = [_full_name(repo_name)] if repo_name else [
+        r["name"] for r in list_repos()["repos"]
+    ]
+
+    matches: list[dict] = []
+    scanned = 0
+    truncated = False
+
+    for full in targets:
+        if len(matches) >= MAX_MATCHES:
+            truncated = True
+            break
+        try:
+            files = _repo_text(full, ref if repo_name else None)
+        except GitHubError as exc:
+            logger.warning("search: skipping %s: %s", full, exc)
             continue
-        matches.append({
-            "repo": item["repository"]["full_name"],
-            "path": item["path"],
-            "url": item.get("html_url"),
-        })
+
+        for path, text in files:
+            scanned += 1
+            for number, line in enumerate(text.splitlines(), start=1):
+                if needle in line.lower():
+                    matches.append({
+                        "repo": full, "path": path, "line": number,
+                        "text": line.strip()[:200],
+                    })
+                    break  # one hit per file keeps the answer readable
+            if len(matches) >= MAX_MATCHES:
+                truncated = True
+                break
+
     return {
         "source": "github",
         "query": query,
-        "total": data.get("total_count", 0),
+        "searched_repos": len(targets),
+        "files_scanned": scanned,
+        "truncated": truncated,
         "count": len(matches),
         "matches": matches,
     }

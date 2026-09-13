@@ -105,25 +105,27 @@ def test_it_can_actually_read_this_repo(monkeypatch):
 # --- GitHub source --------------------------------------------------------
 
 
+class _Settings:
+    """Stand-in for the frozen Settings dataclass."""
+
+    github_owner = "ignas-hub"
+
+    def __init__(self, *tokens):
+        self.github_token = tokens[0] if tokens else ""
+        self.github_tokens = tuple(t for t in tokens if t)
+
+
 def _no_token(monkeypatch):
     from iblu_keeper.tools import github_repo as gh
 
-    class _S:
-        github_token = ""
-        github_owner = "ignas-hub"
-
-    monkeypatch.setattr(gh, "settings", _S())
+    monkeypatch.setattr(gh, "settings", _Settings())
     return gh
 
 
-def _with_token(monkeypatch, token="ghp_test"):
+def _with_token(monkeypatch, *tokens):
     from iblu_keeper.tools import github_repo as gh
 
-    class _S:
-        github_token = token
-        github_owner = "ignas-hub"
-
-    monkeypatch.setattr(gh, "settings", _S())
+    monkeypatch.setattr(gh, "settings", _Settings(*(tokens or ("ghp_test",))))
     return gh
 
 
@@ -166,41 +168,58 @@ def test_github_refuses_credential_files_too(monkeypatch):
         gh.read_file("machina", "config/.env")
 
 
+class _Resp:
+    def __init__(self, code, remaining="42", payload=None):
+        self.status_code = code
+        self.headers = {"x-ratelimit-remaining": remaining}
+        self.text = "nope"
+        self._payload = payload if payload is not None else {}
+
+    def json(self):
+        return self._payload
+
+
 def test_github_errors_are_actionable(monkeypatch):
     gh = _with_token(monkeypatch)
-
-    class _Resp:
-        def __init__(self, code):
-            self.status_code = code
-            self.headers = {"x-ratelimit-remaining": "42"}
-            self.text = "nope"
-
-        def json(self):
-            return {}
-
-    for code, expect in [(401, "expired or revoked"), (403, "Contents: Read"), (404, "not found")]:
-        monkeypatch.setattr(gh.requests, "get", lambda *a, **k: _Resp(code))
+    for code, expect in [
+        (401, "expired or revoked"),
+        (403, "Contents: Read"),
+        (404, "not found"),
+    ]:
+        monkeypatch.setattr(gh, "_request", lambda *a, **k: _Resp(code))
         with pytest.raises(gh.GitHubError, match=expect):
             gh._get("/anything")
 
 
 def test_github_rate_limit_is_distinguished_from_permission(monkeypatch):
     gh = _with_token(monkeypatch)
-
-    class _Resp:
-        status_code = 403
-        headers = {"x-ratelimit-remaining": "0"}
-        text = ""
-
-        def json(self):
-            return {}
-
-    monkeypatch.setattr(gh.requests, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(gh, "_request", lambda *a, **k: _Resp(403, remaining="0"))
     with pytest.raises(gh.GitHubError, match="rate limit"):
         gh._get("/anything")
 
 
 def test_a_missing_token_is_explained_not_crashed(monkeypatch):
     gh = _no_token(monkeypatch)
-    with pytest.raises(gh.GitHubError, match="GITHUB_TOKEN is not set"):
-        gh._headers()
+    with pytest.raises(gh.GitHubError, match="no GitHub token configured"):
+        gh._get("/anything")
+
+
+def test_a_second_token_is_tried_when_the_first_cannot_see_the_repo(monkeypatch):
+    """Org repos need their own fine-grained token; personal ones can't see them."""
+    gh = _with_token(monkeypatch, "personal", "org")
+    tried = []
+
+    def _req(token, path, **params):
+        tried.append(token)
+        return _Resp(404) if token == "personal" else _Resp(200, payload={"ok": True})
+
+    monkeypatch.setattr(gh, "_request", _req)
+    assert gh._get("/repos/someorg/machina") == {"ok": True}
+    assert tried == ["personal", "org"]
+
+
+def test_the_404_message_points_at_organisation_tokens(monkeypatch):
+    gh = _with_token(monkeypatch, "only-personal")
+    monkeypatch.setattr(gh, "_request", lambda *a, **k: _Resp(404))
+    with pytest.raises(gh.GitHubError, match="GITHUB_TOKEN_2"):
+        gh._get("/repos/someorg/machina")

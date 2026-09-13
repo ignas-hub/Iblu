@@ -233,9 +233,14 @@ def _use_github(repo_name: str, source: str) -> bool:
     return repo_name not in ROOTS
 
 
+# Where list/read/log start when the caller names no repository. `search`
+# deliberately does NOT default: with no repo it searches everything.
+DEFAULT_REPO = "iblu"
+
+
 def repo(
     action: str = "list",
-    repo_name: str = "iblu",
+    repo_name: str | None = None,
     path: str | None = None,
     query: str | None = None,
     limit: int = 20,
@@ -270,6 +275,22 @@ def repo(
             "count": len(local) + remote["count"],
         }
 
+    if action == "search" and not repo_name:
+        # Search across every repository the token can see. This is the whole
+        # point of asking "where did I write X?" without knowing which project.
+        from . import github_repo as gh_mod
+
+        if not gh_mod.configured():
+            raise RepoError(
+                "searching all repositories needs GITHUB_TOKEN; name a local "
+                f"repo instead ({', '.join(sorted(ROOTS))})"
+            )
+        try:
+            return gh_mod.search(None, query or "")
+        except gh_mod.GitHubError as exc:
+            raise RepoError(str(exc)) from exc
+
+    repo_name = repo_name or DEFAULT_REPO
     use_gh = _use_github(repo_name, source)
 
     try:

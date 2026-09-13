@@ -115,6 +115,20 @@ class Settings:
         default_factory=lambda: os.getenv("GITHUB_OWNER", "ignas-hub")
     )
 
+    @property
+    def github_tokens(self) -> tuple[str, ...]:
+        """Every GitHub token, in order: GITHUB_TOKEN, GITHUB_TOKEN_2, _3 ...
+
+        A fine-grained PAT is scoped to ONE resource owner, so personal repos
+        and each organisation need their own token. Rather than invent a
+        mapping syntax that has to be kept in step with reality, IBLU simply
+        tries each token and uses whichever can see the repository.
+        """
+        tokens = [self.github_token]
+        for n in range(2, 10):
+            tokens.append(os.getenv(f"GITHUB_TOKEN_{n}", ""))
+        return tuple(t for t in tokens if t.strip())
+
     # Ping composer (Anthropic Messages API).
     anthropic_api_key: str = field(
         default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "")

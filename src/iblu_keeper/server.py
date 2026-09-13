@@ -842,7 +842,7 @@ def context_get_summary(window: str = "1d") -> dict:
 @with_retry("repo")
 def repo(
     action: str = "list",
-    repo_name: str = "iblu",
+    repo_name: str | None = None,
     path: str | None = None,
     query: str | None = None,
     limit: int = 20,
@@ -861,10 +861,13 @@ def repo(
       - ``repos``  — every readable repository, local and GitHub
       - ``list``   — directory contents (``path``, default the repo root)
       - ``read``   — one text file (``path`` required; ``max_chars`` caps it)
-      - ``search`` — find text (``query``; omit ``repo_name`` to search them all)
+      - ``search`` — find text (``query``). With no ``repo_name`` this searches
+        EVERY repository at once — use it when you do not know which project
+        something is in. Name one to narrow it.
       - ``log``    — recent commits (``limit``)
 
-    ``repo_name`` accepts a local alias (``iblu``), a bare GitHub name
+    ``repo_name`` defaults to ``iblu`` for list/read/log. It accepts a local
+    alias (``iblu``), a bare GitHub name
     (``machina``) or a full one (``owner/name``). ``ref`` reads a branch, tag or
     commit. ``source`` forces ``'local'`` or ``'github'`` when it matters.
 

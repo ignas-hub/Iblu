@@ -59,7 +59,12 @@ and `data/drafts.jsonl`.
 two sources behind one namespace: `iblu` and `automations` come off this box's
 disk (so they include uncommitted work), everything else from GitHub via a
 fine-grained read-only token (`GITHUB_TOKEN`). Credential-shaped filenames are
-refused from both; local paths cannot escape the repo root. Permission policy (set 2026-09-13): only
+refused from both; local paths cannot escape the repo root. A fine-grained
+PAT is scoped to ONE resource owner, so each GitHub organisation needs its own
+token: set `GITHUB_TOKEN`, `GITHUB_TOKEN_2`, ... and IBLU tries each until one
+can see the repository. GitHub's /search/code endpoint returns nothing for
+fine-grained tokens, so search downloads each repo as a single tarball and greps
+it locally, cached 5 min — 3s cold across all repos, instant warm. Permission policy (set 2026-09-13): only
 `gmail_send_email` and `chat_send_message` ask; the other 35 are auto-allow,
 including `gmail_reply`. Enforced by `tests/test_tool_permissions.py` — which keeps the annotations
 honest but CANNOT set the client's behaviour: claude.ai stores Allow/Ask per
