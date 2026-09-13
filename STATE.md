@@ -55,7 +55,7 @@ connector itself authenticates Claude.ai via FastMCP's Google provider (DCR).
 `schema_migrations`. Before this, IBLU persisted nothing but `data/token.json`
 and `data/drafts.jsonl`.
 
-**Tools currently exposed (36).** Phase 2 added `context_log` and
+**Tools currently exposed (37).** Phase 2 added `context_log` and
 `context_search`; `context_get_summary` and `context_log_conversation` are no
 longer stubs and now read/write Postgres. In mock mode (`DRY_RUN=true`) all four
 return `{"status": "mock"}` and never touch the database.
@@ -78,6 +78,14 @@ has moved ahead of the database (`None` when the file cannot be read — that is
 database into its system prompt; an empty mission logs one warning and
 continues. The four "what IBLU must become" lines lead the MCP server's
 connect-time instructions, with the full text one `get_context` call away.
+
+**Analyst read (stage 2, started):** `context_review(window)` reports the
+venture split, the work-type split (tapped answers only — inferred data never
+reaches it), threads touched >=3 times as delegation candidates, the share of
+signals in threads Ignas did not start, and the ping answer rate against its
+80% target. Every response carries `coverage` so a thin window cannot read as a
+confident finding; `response_format='markdown'` gives the speakable form.
+Deterministic SQL, no LLM — scripts fetch, the LLM judges.
 
 **Recent themes (see git log for detail):** real-time Chat unread via Workspace
 Events + Pub/Sub, Drive/Docs edit tools, freshness/anti-replay envelope

@@ -30,7 +30,7 @@ Phase 2 is being built to the plan in
 Two components, one repo:
 
 ### 1. MCP server (Python, FastMCP)
-Remote MCP server Claude connects to over HTTPS. **36 tools** organised by
+Remote MCP server Claude connects to over HTTPS. **37 tools** organised by
 service, with MCP tool annotations (`readOnlyHint` / `destructiveHint`) so
 Claude.ai picks safe permission defaults automatically:
 
@@ -65,6 +65,7 @@ Claude.ai picks safe permission defaults automatically:
 | `drive_upload_from_url` | Fetch a URL and save it to Drive | auto-allow |
 | `drive_save_gmail_attachment` | Save an email attachment straight to Drive | auto-allow |
 | `get_infra_status` | Latest infrastructure health from the Drive collector | auto-allow |
+| `context_review` | Where attention went: venture split, repeat-touch threads, inbound share, ping habit | auto-allow |
 | `get_context` | Mission first, then the memory brief and the window summary — call before deciding anything | auto-allow |
 | `context_log` | Store a durable memory entry (fact / decision / preference / work_log) | auto-allow |
 | `context_search` | Full-text + filtered search over stored entries | auto-allow |
@@ -445,6 +446,27 @@ Three invariants worth keeping:
 - **Silence is not presence.** An empty stretch is unknown, not idle — the
   calendar collector seeds its baseline silently on first run.
 - **The Secretary space is never collected.** Answering a ping is not work.
+
+## The analyst read
+
+`context_review(window='7d')` answers the question the whole thing exists for —
+*where did my attention actually go?* — as counts, never estimates:
+
+- the **venture** split, and the **work-type** split (only from answers tapped
+  on a ping; inferred data never reaches it);
+- threads **touched three times or more** — the delegation and automation
+  candidates;
+- how much of it sat in threads **he did not start**;
+- the **ping answer rate** against its 80% target, so IBLU scores its own habit.
+
+Every response carries `coverage` — how many days in the window produced any
+evidence at all. Read the split against it: a confident-looking 100% over two
+observed days is exactly the flattery the mission forbids, so the markdown
+rendering says so out loud. Counts are evidence of attention, not hours.
+
+```bash
+context_review(window='30d', response_format='markdown')
+```
 
 ## Out of scope (for now)
 - Voice (handled by Claude apps, not this project)

@@ -51,6 +51,7 @@ def _maybe_markdown(result, kind: str, response_format: str):
 from .tools import calendar as calendar_tools
 from .tools import chat as chat_tools
 from .tools import context as context_tools
+from .tools import review as review_tools
 from .tools import gmail as gmail_tools
 
 
@@ -701,6 +702,32 @@ def get_context(window: str = "1d") -> dict:
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
     return context_tools.get_context(window)
+
+
+@mcp.tool(name="context_review", annotations={"title": "Review Where Attention Went", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_retry("context_review")
+def context_review(window: str = "7d", response_format: str = "json") -> dict:
+    """Where Ignas's attention actually went over a window — counts, not estimates.
+
+    Returns the venture split, the work-type split (only from answers he
+    tapped, never inferred), the threads he touched repeatedly (candidates to
+    delegate or automate), how much of it was in threads he did not start, and
+    the ping answer rate against its 80% target.
+
+    ``coverage`` says how many days in the window produced any evidence at all.
+    Read the split against it: silence is never presence, and a day with no
+    signals is unknown, not idle. Counts are evidence of attention, not hours —
+    never present them as time worked.
+
+    Pass ``response_format='markdown'`` for a compact, speakable summary.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
+    data = review_tools.review(window)
+    if response_format == "markdown":
+        return {"markdown": review_tools.as_markdown(data), "window": window}
+    return data
 
 
 @mcp.tool(name="context_log", annotations={"title": "Log Memory Entry", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
