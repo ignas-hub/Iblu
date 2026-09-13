@@ -30,7 +30,7 @@ Phase 2 is being built to the plan in
 Two components, one repo:
 
 ### 1. MCP server (Python, FastMCP)
-Remote MCP server Claude connects to over HTTPS. **35 tools** organised by
+Remote MCP server Claude connects to over HTTPS. **36 tools** organised by
 service, with MCP tool annotations (`readOnlyHint` / `destructiveHint`) so
 Claude.ai picks safe permission defaults automatically:
 
@@ -65,6 +65,7 @@ Claude.ai picks safe permission defaults automatically:
 | `drive_upload_from_url` | Fetch a URL and save it to Drive | auto-allow |
 | `drive_save_gmail_attachment` | Save an email attachment straight to Drive | auto-allow |
 | `get_infra_status` | Latest infrastructure health from the Drive collector | auto-allow |
+| `get_context` | Mission first, then the memory brief and the window summary — call before deciding anything | auto-allow |
 | `context_log` | Store a durable memory entry (fact / decision / preference / work_log) | auto-allow |
 | `context_search` | Full-text + filtered search over stored entries | auto-allow |
 | `context_get_summary` | What the recorder saw in a window: signal counts, pings, work_log | auto-allow |
@@ -396,6 +397,26 @@ python -m iblu_keeper.db migrate    # apply pending migrations
 In mock mode (`DRY_RUN=true`) every context tool returns `{"status": "mock"}`
 and never opens a database connection — a mock row must never reach the
 database (see `DEBUG_FINDINGS.md`).
+
+## Mission
+
+[`docs/MISSION.md`](docs/MISSION.md) says what IBLU is for. It is the source of
+truth; two copies follow it — the IBLU Claude Project instructions (pasted by
+hand) and `context_brief.mission` inside the database:
+
+```bash
+python -m iblu_keeper.db seed-mission     # copy docs/MISSION.md into the DB
+```
+
+The copy is keyed by `sha256`, so re-seeding an unchanged file is free and
+`get_context` reports `mission_stale=true` when the file has moved ahead of the
+database — drift is visible rather than silent. The mission lives in its own
+column, not inside `context_brief.content`, so a future compactor cannot
+rewrite or drop it. The ping composer carries it in its system prompt, and the
+four "what IBLU must become" lines lead the MCP server's connect-time
+instructions.
+
+**Change `docs/MISSION.md` first; the other two copies follow.**
 
 ## Recording (Phase 2)
 

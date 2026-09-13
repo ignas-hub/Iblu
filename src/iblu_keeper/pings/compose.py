@@ -401,13 +401,27 @@ Signal ids, in order: {[s['id'] for s in signals][:80]}
 Ask at most 3. Return only JSON of this shape:
 {SCHEMA_HINT}"""
 
+    # M3: the mission comes from the database — the same copy the tools serve —
+    # so the questions are judged against what IBLU is for, not just the
+    # signals. An empty mission warns once and continues: Monday must never
+    # depend on this having been seeded.
+    from .. import db
+
+    mission, mission_digest = db.load_mission()
+    if mission.strip():
+        logger.info("composer: mission sha=%s loaded", (mission_digest or "")[:12])
+        system = f"{mission}\n\n---\n\n{SYSTEM}"
+    else:
+        logger.warning("composer: mission EMPTY — continuing")
+        system = SYSTEM
+
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=60.0)
     # NOTE: no `temperature` — sampling parameters were removed on Sonnet 5 and
     # return a 400. Determinism comes from low effort + a strict schema instead.
     response = client.messages.create(
         model=settings.iblu_llm_model,
         max_tokens=2000,
-        system=SYSTEM,
+        system=system,
         output_config={"effort": "low"},
         messages=[{"role": "user", "content": prompt}],
     )

@@ -181,3 +181,94 @@ pytest -q
 - `deploy/` — systemd units, Caddyfile, nginx example
 - `db/schema.sql` — Phase 2 Postgres sketch
 - `README.md` — full setup + deployment guide
+
+---
+
+## 10. Corrections from the Phase 2 build (2026-09-12 / 13)
+
+Nine things a later session must not rediscover the hard way. Sections 1–9 above
+describe the June state; these supersede it where they conflict.
+
+**Infrastructure**
+
+1. **Postgres is a Docker container, not a host install.** There is no host
+   Postgres on the box and no passwordless sudo, so IBLU has its own container
+   `iblu-db` (`postgres:16-alpine`, volume `iblu-pgdata`, `--restart
+   unless-stopped`, bound to `127.0.0.1:5432` only). The unrelated `radovi-db-1`
+   container is not touched. The v1 plan's `apt install postgresql` path was
+   **not** used. `pg_dump` therefore runs *inside* the container — there is no
+   client on the host — which is why `deploy/iblu-backup.sh` shells through
+   `docker exec`.
+
+2. **`.env` values containing `&` must be single-quoted.** The Secretary webhook
+   URL has `?key=...&token=...`; unquoted, `set -a; . ./.env` splits the line and
+   silently drops everything after the ampersand, leaving a URL that 401s at send
+   time. `python-dotenv` parses it correctly, which is exactly what made this
+   invisible. systemd's `EnvironmentFile` strips matching outer quotes, so one
+   quoting style satisfies all three consumers.
+
+3. **`/q`, `tools/` and `server.py` run inside `iblu-mcp`** — changes there need
+   `sudo systemctl restart iblu-mcp`. The tick job is a separate process that
+   re-reads `.env` on every run, so collector, composer and delivery changes go
+   live without a restart.
+
+**Anthropic API**
+
+4. **Never pass `temperature` (or any sampling parameter).** They were removed on
+   `claude-sonnet-5` and return HTTP 400. The v1 plan §7.3 specifies
+   `temperature=0`; it cannot be followed. Determinism comes from
+   `output_config={"effort": ...}` plus a strict schema.
+
+**Collectors**
+
+5. **Gmail `in:sent` is not the same as "I wrote it".** Google Group traffic
+   (`contracts@`, `finance@`) is filed under Sent for group members. Six of the
+   first seven collected messages were written by other people — one was a
+   colleague's invoice reply, recorded as 355 characters of Ignas's attention.
+   The collector compares the *parsed* `From` address against the account; a
+   substring check is not enough (`not-ignas@blanklabel.team.evil.com`).
+
+6. **The Secretary Chat space is excluded from `chat_sent`.** Answering a ping is
+   not work. Left in, the recorder would eventually report talking to itself as
+   Ignas's biggest attention sink.
+
+**Pings**
+
+7. **Migration 002's unique index is scoped to `source='chat_reply'` and must
+   stay narrow.** Free-text replies were being recorded once per tick, because
+   `read_thread_replies` used `ON CONFLICT DO NOTHING` with no constraint to
+   conflict on and watermarks deliberately rewind 5 minutes. A unique index
+   across all sources would break corrections: taps intentionally write several
+   rows per `source_ref` to form the supersede chain (plan D9).
+
+8. **`deliver.send()` preflights the `/q` route and refuses to send on a 404.**
+   The tick and the server are separate processes, so the timer can be live while
+   the server runs a build without the tap route — the card sends, the buttons
+   404, and nothing says so until Ignas taps one on his phone. Better no card
+   than a card with dead buttons. A healthy route answers 410 to a bad token.
+
+9. **Failed pings are retryable.** Plan §7.4 requires retry on the next tick with
+   the same row, but `_already_handled` originally treated any non-pending status
+   as done, so one webhook outage would have cost the whole day's ping.
+
+**Question design**
+
+10. **There is a fourth question type, `work_type`,** beyond the plan's §7.2 set.
+    All three original types asked about *venture*; nothing asked what kind of
+    work it was. Venture is recoverable after the fact from an email domain —
+    `work_type` never is, so an unasked classification is lost permanently and
+    "where does my sales time go?" becomes unanswerable. It is captured by tap,
+    not inferred; an option carrying `verdict='classify'` without a `work_type`
+    code fails validation. Two wording rules are enforced by schema validation
+    rather than prompt alone, so a regressing model falls through to the
+    deterministic templates: internal qids (`sink`) must not appear in the text a
+    human reads, and unnamed references ("a gmail thread") are rejected.
+
+**Testing**
+
+11. **`tests/conftest.py` pins `DRY_RUN=true` for the whole suite.** `config.py`
+    calls `load_dotenv()` at import and the live `.env` has `DRY_RUN=false`, so
+    isolation depended on which module imported `iblu_keeper` first — adding a
+    test file broke it and a test wrote a real row into the live database.
+    `Settings` is a frozen dataclass: substitute the module-level `settings`
+    object, never patch its attributes.

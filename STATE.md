@@ -1,5 +1,7 @@
 # IBLU — Current State (living document)
 
+Mission: docs/MISSION.md — read before anything else; every change in this repo serves it.
+
 > **Read this first.** This is the single entry point for the current state of
 > IBLU. It is kept in the repo so it travels with the code. Snapshots below are
 > dated; when in doubt, trust the **live sources** listed here over any pasted
@@ -20,7 +22,7 @@ the start of a task rather than relying on memory.
 
 ---
 
-## Snapshot — as of 2026-09-12 (Phase 2 recording v1 live)
+## Snapshot — as of 2026-09-13 (recording v1 live + mission layer)
 
 **What IBLU is:** a self-hosted personal assistant for Ignas. A FastMCP server
 exposes Google Chat / Gmail / Calendar / Docs / Drive tools that Claude connects
@@ -53,7 +55,7 @@ connector itself authenticates Claude.ai via FastMCP's Google provider (DCR).
 `schema_migrations`. Before this, IBLU persisted nothing but `data/token.json`
 and `data/drafts.jsonl`.
 
-**Tools currently exposed (35).** Phase 2 added `context_log` and
+**Tools currently exposed (36).** Phase 2 added `context_log` and
 `context_search`; `context_get_summary` and `context_log_conversation` are no
 longer stubs and now read/write Postgres. In mock mode (`DRY_RUN=true`) all four
 return `{"status": "mock"}` and never touch the database.
@@ -65,6 +67,17 @@ return `{"status": "mock"}` and never touch the database.
 Values containing shell metacharacters **must be quoted** in `.env` — the
 webhook URL contains `&`, and unquoted it is silently truncated when the
 file is sourced by a shell.
+
+**Mission layer (session 4):** `docs/MISSION.md` is the source of truth for
+what IBLU is for. Migration 003 adds `context_brief.mission` / `mission_sha` /
+`mission_seeded_at`; `python -m iblu_keeper.db seed-mission` copies the file in
+and is idempotent by sha. The `get_context` tool returns the mission first,
+then the brief and the window summary, and flags `mission_stale` when the file
+has moved ahead of the database (`None` when the file cannot be read — that is
+"could not check", not "current"). The ping composer loads the mission from the
+database into its system prompt; an empty mission logs one warning and
+continues. The four "what IBLU must become" lines lead the MCP server's
+connect-time instructions, with the full text one `get_context` call away.
 
 **Recent themes (see git log for detail):** real-time Chat unread via Workspace
 Events + Pub/Sub, Drive/Docs edit tools, freshness/anti-replay envelope

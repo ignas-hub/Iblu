@@ -366,6 +366,45 @@ def get_summary(window: str = "1d") -> dict:
     }
 
 
+def get_context(window: str = "1d") -> dict:
+    """Everything an LLM needs before it decides anything: mission first.
+
+    Order matters. The mission is what every other field is judged against, so
+    it comes first and is never omitted — a summary read without it is just
+    activity data.
+
+    `mission_stale` compares docs/MISSION.md on disk with the runtime copy in
+    the database: True when they differ, False when they match, and None when
+    the file could not be read. None is not False — it means "could not check",
+    and claiming the copy is current when we never looked would be the same
+    class of lie as returning mock data silently.
+    """
+    if settings.use_mock:
+        return dict(_MOCK)
+
+    mission, sha = db.load_mission()
+
+    on_disk = db.read_mission_file()
+    if on_disk is None:
+        stale = None
+    else:
+        stale = db.mission_sha(on_disk) != sha
+
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT content FROM context_brief WHERE id = 1"
+        ).fetchone()
+    brief = (row["content"] if row else "") or ""
+
+    return {
+        "mission": mission,
+        "mission_sha": sha,
+        "mission_stale": stale,
+        "brief": brief,
+        "summary": get_summary(window),
+    }
+
+
 def reference_data() -> dict:
     """The venture / work_type taxonomy — for tool errors and the composer."""
     if settings.use_mock:

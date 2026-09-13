@@ -13,12 +13,14 @@ Design notes:
     happens in the pings layer, never here.
 
 CLI:
-    python -m iblu_keeper.db migrate     # apply pending migrations
-    python -m iblu_keeper.db status      # show applied / pending
+    python -m iblu_keeper.db migrate       # apply pending migrations
+    python -m iblu_keeper.db status        # show applied / pending
+    python -m iblu_keeper.db seed-mission  # copy docs/MISSION.md into the DB
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 import threading
@@ -35,7 +37,11 @@ from .config import settings
 logger = logging.getLogger("iblu_keeper.db")
 
 # db/migrations/ lives at the repo root; this file is src/iblu_keeper/db.py.
-MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
+# docs/MISSION.md is the source of truth; context_brief.mission is the
+# runtime copy (decision M2).
+MISSION_FILE = REPO_ROOT / "docs" / "MISSION.md"
 
 _pool: ConnectionPool | None = None
 _pool_lock = threading.Lock()
@@ -191,6 +197,76 @@ def status() -> dict:
     }
 
 
+# --------------------------------------------------------------------------
+# Mission
+# --------------------------------------------------------------------------
+
+
+def mission_sha(text: str) -> str:
+    """sha256 of the mission text. Used to detect drift, never for security."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def read_mission_file(path: Path | None = None) -> str | None:
+    """The mission as it exists on disk, or None when it cannot be read.
+
+    None is meaningful: `get_context` reports `mission_stale=None` rather than
+    claiming the DB copy is current when we simply could not check.
+    """
+    target = path or MISSION_FILE
+    try:
+        return target.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("mission: cannot read %s: %s", target, exc)
+        return None
+
+
+def seed_mission(path: Path | None = None) -> tuple[bool, str]:
+    """Copy docs/MISSION.md into context_brief. Returns `(changed, sha)`.
+
+    Idempotent by sha (M2): the row is rewritten only when the file's digest
+    differs from the stored one, so running this on every deploy is free and
+    `mission_seeded_at` means "when the text last actually changed".
+    """
+    target = path or MISSION_FILE
+    text = read_mission_file(target)
+    if text is None:
+        raise FileNotFoundError(f"mission file not readable: {target}")
+    if not text.strip():
+        raise ValueError(f"mission file is empty: {target}")
+
+    sha = mission_sha(text)
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT mission_sha FROM context_brief WHERE id = 1"
+        ).fetchone()
+        if row is not None and row["mission_sha"] == sha:
+            return False, sha
+        conn.execute(
+            """
+            INSERT INTO context_brief (id, mission, mission_sha, mission_seeded_at)
+            VALUES (1, %s, %s, now())
+            ON CONFLICT (id) DO UPDATE SET
+                mission = EXCLUDED.mission,
+                mission_sha = EXCLUDED.mission_sha,
+                mission_seeded_at = now()
+            """,
+            (text, sha),
+        )
+    return True, sha
+
+
+def load_mission() -> tuple[str, str | None]:
+    """The runtime mission copy: `(text, sha)`. Empty string when unseeded."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT mission, mission_sha FROM context_brief WHERE id = 1"
+        ).fetchone()
+    if row is None:
+        return "", None
+    return row["mission"] or "", row["mission_sha"]
+
+
 def healthcheck() -> dict:
     """Cheap liveness probe used by server_health / the /health endpoint."""
     if not is_configured():
@@ -226,14 +302,27 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"applied: {', '.join(applied)}" if applied else "nothing to apply"
             )
+        elif command == "seed-mission":
+            # Never print the mission text — only whether it moved, and the sha.
+            if settings.use_mock:
+                print("refusing to run in mock mode")
+                return 1
+            path = None
+            if "--file" in args:
+                path = Path(args[args.index("--file") + 1])
+            changed, sha = seed_mission(path)
+            print(f"mission {'seeded' if changed else 'unchanged'} sha={sha[:12]}")
         elif command == "status":
             st = status()
             print(f"applied: {', '.join(st['applied']) or '(none)'}")
             print(f"pending: {', '.join(st['pending']) or '(none)'}")
         else:
-            print(f"unknown command: {command!r} (expected 'migrate' or 'status')")
+            print(
+                f"unknown command: {command!r} — expected "
+                "'migrate', 'status' or 'seed-mission'"
+            )
             return 2
-    except DatabaseNotConfigured as exc:
+    except (DatabaseNotConfigured, FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}")
         return 1
     finally:

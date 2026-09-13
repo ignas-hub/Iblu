@@ -99,6 +99,20 @@ def _build_auth() -> GoogleProvider | None:
 mcp = FastMCP(
     name="iblu-keeper",
     instructions=(
+        # M4: only the four "WHAT IBLU MUST BECOME" lines ship at connect time —
+        # those tokens are paid on every session, including voice. The full
+        # mission is one tool call away via get_context.
+        "WHAT IBLU MUST BECOME:\n"
+        "1. It knows the truth about where Ignas's attention goes — measured, "
+        "not remembered.\n"
+        "2. It holds his priorities at every level — yearly, monthly, weekly, "
+        "daily — and judges every incoming thing against the top of that "
+        "hierarchy.\n"
+        "3. It keeps those priorities in front of him every day, inside his "
+        "existing flow (Chat, voice), with no app to open.\n"
+        "4. It continuously removes work from him: it proposes what to "
+        "delegate or automate, then does the automatable parts itself.\n"
+        "Full mission: call `get_context`.\n\n"
         "Personal assistant tools for Ignas: read/send Google Chat, "
         "read/draft/send Gmail, read attachments + Google Docs, and create "
         "Calendar events. Identify Chat conversations primarily by the "
@@ -669,6 +683,26 @@ def calendar_add_label(
 # --------------------------------------------------------------------------- #
 # Context / memory — Phase 2 stubs (interfaces stable now)
 # --------------------------------------------------------------------------- #
+@mcp.tool(name="get_context", annotations={"title": "Get IBLU Context (mission first)", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_retry("get_context")
+def get_context(window: str = "1d") -> dict:
+    """What IBLU is for, plus what it has recorded. Call this before deciding anything.
+
+    Returns, in order: ``mission`` (the full text of docs/MISSION.md — what
+    IBLU exists to do, and the principles that constrain it), ``mission_sha``,
+    ``mission_stale`` (true when the file on disk has changed since the runtime
+    copy was seeded; null when the file could not be read), ``brief`` (the
+    compacted memory brief, may be empty), and ``summary`` (the same payload as
+    ``context_get_summary`` for the given window).
+
+    Read the mission first and judge everything else against it.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
+    return context_tools.get_context(window)
+
+
 @mcp.tool(name="context_log", annotations={"title": "Log Memory Entry", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_retry("context_log")
