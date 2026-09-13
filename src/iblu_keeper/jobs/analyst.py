@@ -81,6 +81,24 @@ def run(on: date | None = None, days: int = 1, dry: bool = False, mirror: bool =
                 minutes["ambiguous"],
                 " [dry]" if dry else "",
             )
+            # The analyst is the last thing to touch the day, so it is where
+            # IBLU checks its own work: deterministic invariants first, then
+            # the model reading what the scripts produced. Findings go to
+            # `observations`; neither pass can fail this job.
+            if not dry:
+                try:
+                    from ..analyst.sensecheck import run as sensecheck
+
+                    checked = sensecheck(conn, day)
+                    if checked["findings"]:
+                        logger.info(
+                            "sensecheck %s: %d finding(s) (%d rule, %d llm) — "
+                            "see `python -m iblu_keeper.store.observations`",
+                            day, checked["findings"], checked["rules"], checked["llm"],
+                        )
+                except Exception:  # noqa: BLE001 — a checker must not break its job
+                    logger.warning("analyst: sense-check failed", exc_info=True)
+
             if dry:
                 for row in summary.get("preview", []):
                     logger.info(

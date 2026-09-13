@@ -396,6 +396,18 @@ def compose_review(window: str | None = None) -> tuple[str, dict]:
                 "falling back to the deterministic gains template",
                 violations,
             )
+            # The whole point of the validator is that Ignas never sees what it
+            # caught. So the only way to know whether it is working — or
+            # over-firing — is to write down what it rejected.
+            from ..store import observations as obs
+
+            obs.record_safe(
+                source="weekly", kind="gap_language_rejected", severity="warn",
+                summary=f"the composed review tripped {len(violations)} language rule(s)",
+                detail="; ".join(str(v) for v in violations)[:1000],
+                evidence={"violations": [str(v) for v in violations][:10]},
+                fp=obs.fingerprint("weekly", "gap_language_rejected"),
+            )
             gains_body = _gains_lines(gains_data)
             text = _section(gains_body)
 

@@ -860,6 +860,17 @@ def compose(
         logger.info("compose: llm produced %d question(s)", len(attention.questions))
     except (ValidationError, json.JSONDecodeError) as exc:
         logger.warning("compose: llm output rejected (%s) — using fallback", exc)
+        # The fallback questions are fine, so this is invisible to Ignas — which
+        # is why it needs recording. A composer that silently never works would
+        # look exactly like one that always works.
+        from ..store import observations as obs
+
+        obs.record_safe(
+            source="composer", kind="llm_output_rejected", severity="warn",
+            summary="the ping composer's output was rejected; deterministic questions were sent",
+            detail=str(exc)[:1000],
+            fp=obs.fingerprint("composer", "llm_output_rejected"),
+        )
         attention = None
     except Exception as exc:  # noqa: BLE001 - the API being down is not fatal
         logger.warning("compose: llm unavailable (%s) — using fallback", exc)

@@ -42,3 +42,9 @@ htmlcov/
 
 # Local Claude Code permissions (machine-specific, not shared)
 .claude/
+
+# Generated from the `observations` table, which is the source of truth.
+# Regenerate with `python -m iblu_keeper.store.observations --write-doc`.
+# Untracked on purpose: it changes every day and would otherwise churn git
+# with findings nobody committed.
+docs/OBSERVATIONS.md

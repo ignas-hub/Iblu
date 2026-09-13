@@ -233,6 +233,18 @@ class Settings:
         default_factory=lambda: os.getenv("IBLU_LLM_MODEL", "claude-sonnet-5")
     )
 
+    # The model that checks the work, as opposed to the one that does it.
+    #
+    # The ping composer runs on every tick and writes four short questions —
+    # frequent, cheap, low-stakes, and wrong in a way Ignas sees immediately.
+    # The sense-check and the analyst's judge run twice a day and decide what
+    # the record SAYS he did. A mistake there is silent and compounds: it
+    # becomes the history everything later is measured against. That asymmetry
+    # is worth a better model, and twice a day it costs almost nothing.
+    iblu_check_model: str = field(
+        default_factory=lambda: os.getenv("IBLU_CHECK_MODEL", "claude-opus-5")
+    )
+
     # The mirror calendar that will hold reconstructed `blocks` — one calendar
     # on blanklabel.team covering EVERY venture (HANDOFF.md §15). Deliberately
     # not the primary: it will contain Choco and Deadlift work, and a shared

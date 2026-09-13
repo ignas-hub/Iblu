@@ -379,6 +379,9 @@ def load_signals(conn, start: datetime, end: datetime) -> list[dict]:
           FROM signals
          WHERE occurred_at >= %s AND occurred_at < %s
            AND actor = 'me'
+           -- Excluded signals are real messages that were never work: test
+           -- sends and fixtures. Kept for audit, never counted (migration 009).
+           AND excluded_reason IS NULL
          ORDER BY occurred_at
         """,
         (start, end),
@@ -570,6 +573,13 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
     _supersede(conn, on, previous, new_ids)
     summary["superseded"] = len(previous)
     summary["ids"] = new_ids
+
+    # The analyst has had a `collector_state` row since migration 005 and never
+    # wrote to it, so "has the analyst run?" had no answer — which is exactly
+    # the kind of silence the sense-check is for. It found this one itself.
+    from ..collectors import set_state
+
+    set_state(conn, "analyst_blocks", watermark=end, error=None)
 
     if mirror and settings.secretary_calendar_id:
         from .mirror import mirror_day

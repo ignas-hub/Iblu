@@ -91,6 +91,17 @@ def run(dry: bool = False, force_ping: str | None = None, assume_yes: bool = Fal
     failed = [name for name, value in results.items() if not isinstance(value, int)]
     for name in failed:
         logger.error("tick: collector %s failed: %s", name, results[name])
+        # One collector failing never stops the others, which is exactly why it
+        # can go unnoticed for days. The journal rotates; this does not.
+        from ..store import observations as obs
+
+        obs.record_safe(
+            source="tick", kind="collector_failed", severity="error",
+            summary=f"collector {name} failed during the tick",
+            detail=str(results[name])[:1000],
+            evidence={"collector": name},
+            fp=obs.fingerprint("tick", "collector_failed", name),
+        )
 
     # --- free-text replies in the Secretary thread -------------------------
     replies = 0

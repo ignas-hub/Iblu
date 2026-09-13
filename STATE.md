@@ -229,6 +229,22 @@ template rather than sending text that failed. Two validators exist and have
 different jobs: `store/gap_check.py` guards what Ignas writes into IBLU;
 `jobs/review_language.py` guards what IBLU writes back to him.
 
+**What IBLU caught itself getting wrong:** `observations` (migration 008)
+collects every rejected LLM response, failed invariant and collector error —
+things that were previously a `logger.warning` and then gone. The analyst runs
+two sense-check passes at the end of every run: deterministic invariants
+(`detected_by='rule'`, a fact) and an LLM reading what the scripts produced
+(`detected_by='llm'`, a lead). Never merge the two. Read them with:
+
+```
+python -m iblu_keeper.store.observations              # open findings
+python -m iblu_keeper.store.observations --write-doc  # regenerate docs/OBSERVATIONS.md
+python -m iblu_keeper.store.observations --resolve <id> --note "what was done"
+```
+
+`IBLU_CHECK_MODEL` (default `claude-opus-5`) is the model that checks the work;
+`IBLU_LLM_MODEL` (Sonnet) is the one that composes pings. See HANDOFF §21.
+
 **Known open items:** external DM partners who are not in Google Contacts
 cannot be named by the People API, so their `counterpart` stays `users/<id>`
 (1 space today). Phase 3 (goals/priorities) not started. Remaining week-2 backlog (plan §12): the mobile web app,

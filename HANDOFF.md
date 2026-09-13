@@ -500,3 +500,54 @@ block for any unaccounted stretch of at least 30 minutes inside 07:00–20:00 �
 and it is right, because the evening ping's `gap` question needs something to
 supersede when Ignas says what the hour was. Both readings honour "silence is
 never presence"; only the brief's gives him a way to answer.
+
+### 21. IBLU keeps a log of what it caught itself getting wrong
+
+Built 2026-09-13, after Ignas asked "do we have some log of observations?" The
+answer was no, and the gap was bigger than it looked: roughly thirty places
+noticed something real — an LLM response rejected, a collector erroring for one
+account, a review failing its own language check — and wrote a `logger.warning`
+that rotated out of the journal. Nobody could answer "what has IBLU been quietly
+catching?", which is the first question any later session has.
+
+`observations` (migration 008) is that answer, and `store/observations.py` is
+the only way in. Four things about it are deliberate:
+
+**Recording must never break the thing being observed.** `record_safe`
+swallows every exception including the database being down. A watchdog that can
+take down what it watches is worse than no watchdog.
+
+**A rule and a model are different witnesses.** `detected_by='rule'` means an
+invariant failed — a fact. `detected_by='llm'` means the sense-check pass
+thought something looked wrong — a lead. Nothing downstream may merge them, and
+the generated document says so at the top, because a later reader will act on
+these.
+
+**Deduplicated on a caller-supplied fingerprint**, never on the message text.
+An exception string usually carries a timestamp or an id, so fingerprinting on
+it opens a fresh row every run. For LLM findings the fingerprint is
+`(kind, date)` only — the same problem described in slightly different words is
+the same problem. This is also why `run_llm` forces `kind` into a closed list:
+the first version let the model invent slugs and got `venture_misattribution`
+and `misattributed_venture` as two separate findings of the same thing.
+
+**Resolving is a state change**, never a delete, with a required note saying
+what was done.
+
+`analyst/sensecheck.py` runs both passes at the end of every analyst run.
+`docs/OBSERVATIONS.md` is generated from the table (untracked — the database is
+the source of truth) for a session that would rather read a file than query.
+
+The check model is separate from the composer model: `IBLU_CHECK_MODEL`
+defaults to `claude-opus-5` while `IBLU_LLM_MODEL` stays on Sonnet. The composer
+runs every tick and writes four short questions — frequent, cheap, and wrong in
+a way Ignas sees immediately. The judge and the sense-check run twice a day and
+decide what the record *says* he did; a mistake there is silent and becomes the
+history everything later is measured against.
+
+**It earned its place on the first run.** It found a signal built from an
+acceptance test — a mail to `a@b.com` titled "subj" — being counted as fifteen
+minutes of Saturday admin, and it found that `analyst_blocks` had owned a
+`collector_state` row since migration 005 and never written to it, so "has the
+analyst run?" had no answer. Both are fixed; see migration 009 for why the test
+signal was excluded rather than deleted.
