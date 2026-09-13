@@ -55,7 +55,7 @@ connector itself authenticates Claude.ai via FastMCP's Google provider (DCR).
 `schema_migrations`. Before this, IBLU persisted nothing but `data/token.json`
 and `data/drafts.jsonl`.
 
-**Tools currently exposed (38).** The `repo` tool reads Ignas's source from
+**Tools currently exposed (39).** The `repo` tool reads Ignas's source from
 two sources behind one namespace: `iblu` and `automations` come off this box's
 disk (so they include uncommitted work), everything else from GitHub via a
 fine-grained read-only token (`GITHUB_TOKEN`). Credential-shaped filenames are
@@ -126,6 +126,12 @@ runs once per account with its own watermark. `chat_sent` and
 `calendar_changes` still run against the primary only — the Chat backend
 resolves one self-id per process and a second calendar would need its own
 `calendar_seen` namespace.
+
+**Calendar management:** the `calendar` tool adds list / find_slot / create /
+update / move / delete behind one name. `find_slot` computes free gaps from
+`events.list` rather than the freeBusy API, deliberately — freeBusy would need a
+wider OAuth scope and therefore re-consent on every account. Declined meetings
+count as free time, because a declined meeting is not a commitment.
 
 **Recent themes (see git log for detail):** real-time Chat unread via Workspace
 Events + Pub/Sub, Drive/Docs edit tools, freshness/anti-replay envelope

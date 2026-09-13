@@ -49,6 +49,7 @@ def _maybe_markdown(result, kind: str, response_format: str):
         token = result.get("next_page_token")
     return to_markdown_envelope(kind, items, token)
 from .tools import calendar as calendar_tools
+from .tools import calendar_manage as calendar_manage_tools
 from .tools import chat as chat_tools
 from .tools import context as context_tools
 from .tools import repo as repo_tools
@@ -837,6 +838,54 @@ def context_get_summary(window: str = "1d") -> dict:
 # --------------------------------------------------------------------------- #
 # Infrastructure status (reads collector output from Drive)
 # --------------------------------------------------------------------------- #
+@mcp.tool(name="calendar", annotations={"title": "Manage Calendar", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("calendar")
+@with_retry("calendar")
+def calendar(
+    action: str = "list",
+    start: str | None = None,
+    days: int = 1,
+    calendar_id: str = "primary",
+    minutes: int | None = None,
+    work_start: str = "09:00",
+    work_end: str = "18:00",
+    include_weekends: bool = False,
+    event_id: str | None = None,
+    summary: str | None = None,
+    end: str | None = None,
+    description: str | None = None,
+    location: str | None = None,
+) -> dict:
+    """See and manage Ignas's calendar — list, find free time, create, move, change, delete.
+
+    ``action``:
+      - ``list``      — events in a window (``start`` ISO date, ``days``). Each
+        event reports ``is_self_block`` (no attendees — time he blocked for
+        himself) and ``self_response``.
+      - ``find_slot`` — free gaps of at least ``minutes`` within working hours
+        (``work_start``/``work_end``, weekends skipped unless
+        ``include_weekends``). Declined meetings are treated as free, because a
+        declined meeting is not a commitment.
+      - ``create``    — needs ``summary``, ``start``, ``end``.
+      - ``update``    — ``event_id`` plus only the fields to change.
+      - ``move``      — ``event_id`` plus ``minutes`` (may be negative) or an
+        absolute ``start``; the duration is preserved either way.
+      - ``delete``    — ``event_id``.
+
+    Times are ISO (``2026-09-15T14:00``) in Ignas's configured timezone. Prefer
+    ``find_slot`` over guessing when he asks for time to be booked.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
+    return calendar_manage_tools.manage(
+        action=action, start=start, days=days, calendar_id=calendar_id,
+        minutes=minutes, work_start=work_start, work_end=work_end,
+        include_weekends=include_weekends, event_id=event_id, summary=summary,
+        end=end, description=description, location=location,
+    )
+
+
 @mcp.tool(name="repo", annotations={"title": "Read Ignas's Code", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_retry("repo")

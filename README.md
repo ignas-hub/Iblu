@@ -30,7 +30,7 @@ Phase 2 is being built to the plan in
 Two components, one repo:
 
 ### 1. MCP server (Python, FastMCP)
-Remote MCP server Claude connects to over HTTPS. **38 tools** organised by
+Remote MCP server Claude connects to over HTTPS. **39 tools** organised by
 service, with MCP tool annotations (`readOnlyHint` / `destructiveHint`) so
 Claude.ai picks safe permission defaults automatically:
 
@@ -53,7 +53,8 @@ Claude.ai picks safe permission defaults automatically:
 | `gmail_reply` | Threaded reply (proper In-Reply-To / References) | auto-allow |
 | `gmail_mark_read` / `gmail_mark_unread` | Toggle UNREAD label | auto-allow |
 | `gdoc_read` | Fetch a Google Doc / Sheet / Slides as plain text (URL or ID) | auto-allow |
-| `calendar_create_event` | Create a Calendar event | auto-allow |
+| `calendar` | See and manage the calendar: list / find free time / create / move / update / delete | auto-allow |
+| `calendar_create_event` | Create a Calendar event (superseded by `calendar`) | auto-allow |
 | `calendar_add_label` | Attach a custom label to a Calendar event | auto-allow |
 | `gdoc_create` | Create a new Google Doc | auto-allow |
 | `gdoc_append` | Append text to an existing Doc | auto-allow |
