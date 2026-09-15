@@ -840,3 +840,109 @@ def test_an_attention_question_answered_in_words_is_not_a_gain():
 def test_the_body_mind_escape_shows_the_number_format():
     q = compose.compose_body_mind_question()
     assert "body 4 mind 2" in q["options"][-1]["label"]
+
+
+# --- 'life' is a work type; 'personal' is a venture that means tooling ----
+
+
+class _EvidenceConn:
+    """Answers _gain_evidence's three queries by matching their SELECT."""
+
+    def __init__(self, learned=None, progressed=None, experienced=None):
+        self.answers = {"FROM context_entries": learned or [],
+                        "confidence = 'fact'": progressed or [],
+                        "attention = 'present'": experienced or []}
+        self.sql: list[str] = []
+
+    def execute(self, sql, params=()):
+        flat = " ".join(sql.split())
+        self.sql.append(flat)
+        rows = next((v for k, v in self.answers.items() if k in flat), [])
+
+        class _Cur:
+            def fetchone(self_inner):
+                return rows[0] if rows else None
+
+            def fetchall(self_inner):
+                return rows
+
+        return _Cur()
+
+
+def test_building_iblu_is_not_something_he_experienced():
+    """A `personal/build/iblu` block is 25 messages of tooling work. The plan
+    says an experienced gain is a family or LIFE block, and `life` is a work
+    type meaning "non-work"; `personal` is the venture "Own tooling & infra".
+    Reading one as the other offered him his own work as a lived experience."""
+    from iblu_keeper.pings.runner import _gain_evidence
+
+    conn = _EvidenceConn()
+    _gain_evidence(conn, date(2026, 9, 15))
+    experienced_sql = next(q for q in conn.sql if "attention = 'present'" in q)
+    assert "venture = 'family' OR work_type = 'life'" in experienced_sql
+    assert "venture IN ('family', 'personal')" not in experienced_sql
+
+
+def test_family_time_is_named_as_family_time():
+    from iblu_keeper.pings.runner import _lived_words
+
+    assert _lived_words({"venture": "family"}) == "Time with the family"
+    assert _lived_words({"venture": "jakusi"}) == "Time on the house"
+
+
+def test_unnamed_non_work_time_says_so_rather_than_naming_a_code():
+    """"Time on your own projects" was a venture primary key in a sentence."""
+    text = _lived_words_for({"venture": "blt", "work_type": "life", "project": None})
+    assert text == "Time away from work"
+    assert "blt" not in text
+
+
+def _lived_words_for(block):
+    from iblu_keeper.pings.runner import _lived_words
+
+    return _lived_words(block)
+
+
+def test_a_named_project_is_used_when_there_is_one():
+    assert _lived_words_for({"venture": "blt", "work_type": "life",
+                             "project": "brazil-trip"}) == "Time on brazil-trip"
+
+
+def test_a_stage_move_counts_as_progress():
+    """Unlike a thread "looking closed", a stage move is a fact: he confirmed
+    it by tapping, and project_stage_history says who changed it and when."""
+    from iblu_keeper.pings.runner import _gain_evidence
+
+    class _Conn(_EvidenceConn):
+        def execute(self, sql, params=()):
+            flat = " ".join(sql.split())
+            self.sql.append(flat)
+            if "project_stage_history" in flat:
+                rows = [{"id": 5, "project": "machina", "to_stage": "implement",
+                         "label": "Implementing fully"}]
+            else:
+                rows = []
+
+            class _Cur:
+                def fetchone(self_inner):
+                    return rows[0] if rows else None
+
+                def fetchall(self_inner):
+                    return rows
+
+            return _Cur()
+
+    ev = _gain_evidence(_Conn(), date(2026, 9, 15))
+    assert ev["progressed"][0]["label"] == "Machina reached 'Implementing fully'"
+
+
+def test_a_missing_project_registry_does_not_break_the_card():
+    from iblu_keeper.pings.runner import _gain_evidence
+
+    class _Conn(_EvidenceConn):
+        def execute(self, sql, params=()):
+            if "project_stage_history" in " ".join(sql.split()):
+                raise RuntimeError('relation "project_stage_history" does not exist')
+            return super().execute(sql, params)
+
+    assert _gain_evidence(_Conn(), date(2026, 9, 15))["progressed"] == []

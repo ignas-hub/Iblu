@@ -148,10 +148,21 @@ VENTURE_WORDS = {
     "personal": "your own tools",
 }
 
-EXPERIENCED_WORDS = {
+# Non-work time, named by where it went. Never by a venture CODE: "Time on your
+# own projects" told Ignas nothing he could confirm or deny.
+LIVED_WORDS = {
     "family": "Time with the family",
-    "personal": "Time on your own projects",
+    "jakusi": "Time on the house",
 }
+
+
+def _lived_words(block: dict) -> str:
+    """What to call a stretch of non-work time on a button."""
+    named = LIVED_WORDS.get(block.get("venture"))
+    if named:
+        return named
+    project = _project_name(block.get("project"))
+    return f"Time on {project}" if project else "Time away from work"
 
 # A Chat button is about this wide. The gains validator refuses an option the
 # SCHEMA truncated, because a sentence with its ending removed cannot be
@@ -263,7 +274,7 @@ def _gain_evidence(conn: psycopg.Connection, day) -> dict[str, list[dict]]:
         logger.warning("pings: current_priorities unavailable (%s)", exc)
 
     progressed_sql = (
-        "SELECT id, venture, project FROM blocks "
+        "SELECT id, venture, project, starts_at, ends_at FROM blocks "
         "WHERE local_date = %s AND confidence = 'fact' AND superseded_by IS NULL "
         "AND venture IS NOT NULL"
     )
@@ -278,22 +289,54 @@ def _gain_evidence(conn: psycopg.Connection, day) -> dict[str, list[dict]]:
         what = _project_name(progressed.get("project")) or VENTURE_WORDS.get(
             progressed["venture"], progressed["venture"]
         )
+        span = _duration(progressed.get("starts_at"), progressed.get("ends_at"))
         evidence["progressed"].append({
-            "label": _fit(f"Moved {what} forward"),
-            "source_text": f"Moved {what} forward",
+            "label": _fit(f"Moved {what} forward{span}"),
+            "source_text": f"Moved {what} forward{span}",
             "evidence_ids": [str(progressed["id"])],
         })
 
+    # Plan §4.1 says an experienced gain is a "present family or LIFE block".
+    # The first version read that as `venture IN ('family','personal')` — but
+    # in IBLU's taxonomy `personal` is the venture "Own tooling & infra (IBLU,
+    # accounting bot, servers)" and `life` is a WORK TYPE, "Non-work: family,
+    # home, health". They are opposites. So 30 minutes of building IBLU — 25
+    # messages in a chat called "Claude questions" — was offered to Ignas as
+    # something he had experienced, and he quite reasonably said he did not
+    # understand what it meant.
+    # A stage move is the other kind of progress plan §4.1 names, and unlike a
+    # thread "looking closed" it is a fact: he confirmed it by tapping, and
+    # `project_stage_history` recorded who changed it and when.
+    if not evidence["progressed"]:
+        try:
+            moved = conn.execute(
+                "SELECT h.id, h.project, h.to_stage, s.label "
+                "  FROM project_stage_history h "
+                "  LEFT JOIN stages s ON s.code = h.to_stage "
+                " WHERE h.changed_at >= %s AND h.changed_at < %s "
+                " ORDER BY h.changed_at DESC LIMIT 1",
+                _local_day_bounds(day),
+            ).fetchone()
+        except Exception as exc:  # noqa: BLE001 — the registry may not exist yet
+            logger.debug("pings: stage history unavailable (%s)", exc)
+            moved = None
+        if moved:
+            name = _project_name(moved["project"]) or moved["project"]
+            text = f"{name} reached '{moved['label'] or moved['to_stage']}'"
+            evidence["progressed"].append({
+                "label": _fit(text), "source_text": text,
+                "evidence_ids": [str(moved["id"])],
+            })
+
     experienced = conn.execute(
-        "SELECT id, venture, starts_at, ends_at FROM blocks "
+        "SELECT id, venture, work_type, project, starts_at, ends_at FROM blocks "
         "WHERE local_date = %s AND attention = 'present' AND superseded_by IS NULL "
-        "AND venture IN ('family', 'personal') ORDER BY starts_at DESC LIMIT 1",
+        "AND (venture = 'family' OR work_type = 'life') "
+        "ORDER BY starts_at DESC LIMIT 1",
         (day,),
     ).fetchone()
     if experienced:
-        text = EXPERIENCED_WORDS.get(
-            experienced["venture"], f"Time on {experienced['venture']}"
-        )
+        text = _lived_words(experienced)
         span = _duration(experienced.get("starts_at"), experienced.get("ends_at"))
         text = f"{text}{span}"
         evidence["experienced"].append({
