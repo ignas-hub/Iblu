@@ -133,6 +133,71 @@ def _day_blocks(conn: psycopg.Connection, day) -> list[dict]:
         return []
 
 
+# What a venture is CALLED to Ignas, not what it is keyed as. The card showed
+# "Experienced: time with personal" — "Experienced" is the internal kind name
+# and "personal" is a primary key, and neither should ever have reached his
+# phone. `personal` is his own tooling, so "time with personal" was not even
+# wrong in an interesting way; it was meaningless.
+VENTURE_WORDS = {
+    "blt": "Blank Label",
+    "choco": "Choco",
+    "deadlift": "Deadlift",
+    "gostellar": "GoStellar",
+    "jakusi": "the house",
+    "family": "the family",
+    "personal": "your own tools",
+}
+
+EXPERIENCED_WORDS = {
+    "family": "Time with the family",
+    "personal": "Time on your own projects",
+}
+
+# A Chat button is about this wide. The gains validator refuses an option the
+# SCHEMA truncated, because a sentence with its ending removed cannot be
+# checked — so anything built here is shortened deliberately and carries its
+# full text alongside for validation.
+LABEL_FIT = 38
+
+
+def _fit(text: str) -> str:
+    """Shorten to a button, at a word boundary, without an ellipsis."""
+    text = " ".join(text.split())
+    if len(text) <= LABEL_FIT:
+        return text
+    cut = text[:LABEL_FIT]
+    space = cut.rfind(" ")
+    return (cut[:space] if space > LABEL_FIT // 2 else cut).rstrip(" ,.;:—-")
+
+
+def _first_clause(content: str) -> str:
+    """The decision itself, not the paragraph explaining it."""
+    text = " ".join((content or "").split())
+    for stop in (" — ", ". ", "; ", ", "):
+        head = text.split(stop)[0]
+        if 12 <= len(head) <= LABEL_FIT:
+            return head
+    return text
+
+
+def _project_name(code: str | None) -> str | None:
+    """A registered project's human name, falling back to its code."""
+    if not code:
+        return None
+    return {"email-writer": "Email Writer", "bd-global": "the BD hire",
+            "iblu": "Iblu", "machina": "Machina", "radovi": "Radovi",
+            "accounting-app": "the accounting bot"}.get(code, code)
+
+
+def _duration(start, end) -> str:
+    if not start or not end:
+        return ""
+    minutes = int((end - start).total_seconds() // 60)
+    if minutes >= 90:
+        return f" — {round(minutes / 60)}h"
+    return f" — {minutes} min" if minutes else ""
+
+
 def _local_day_bounds(day):
     """The UTC instants bracketing a Zagreb calendar day.
 
@@ -178,8 +243,12 @@ def _gain_evidence(conn: psycopg.Connection, day) -> dict[str, list[dict]]:
         _local_day_bounds(day),
     ).fetchone()
     if learned:
+        text = _first_clause(learned["content"])
         evidence["learned"].append({
-            "label": f"Learned: {learned['content']}",
+            "label": _fit(text),
+            # The FULL sentence, so the gains validator judges what he actually
+            # decided rather than the 40 characters that fit on a button.
+            "source_text": learned["content"],
             "evidence_ids": [str(learned["id"])],
         })
 
@@ -206,21 +275,30 @@ def _gain_evidence(conn: psycopg.Connection, day) -> dict[str, list[dict]]:
         progressed_sql + " ORDER BY starts_at DESC LIMIT 1", progressed_args
     ).fetchone()
     if progressed:
-        what = progressed.get("project") or progressed["venture"]
+        what = _project_name(progressed.get("project")) or VENTURE_WORDS.get(
+            progressed["venture"], progressed["venture"]
+        )
         evidence["progressed"].append({
-            "label": f"Progressed: {what}",
+            "label": _fit(f"Moved {what} forward"),
+            "source_text": f"Moved {what} forward",
             "evidence_ids": [str(progressed["id"])],
         })
 
     experienced = conn.execute(
-        "SELECT id, venture FROM blocks "
+        "SELECT id, venture, starts_at, ends_at FROM blocks "
         "WHERE local_date = %s AND attention = 'present' AND superseded_by IS NULL "
         "AND venture IN ('family', 'personal') ORDER BY starts_at DESC LIMIT 1",
         (day,),
     ).fetchone()
     if experienced:
+        text = EXPERIENCED_WORDS.get(
+            experienced["venture"], f"Time on {experienced['venture']}"
+        )
+        span = _duration(experienced.get("starts_at"), experienced.get("ends_at"))
+        text = f"{text}{span}"
         evidence["experienced"].append({
-            "label": f"Experienced: time with {experienced['venture']}",
+            "label": _fit(text),
+            "source_text": text,
             "evidence_ids": [str(experienced["id"])],
         })
 

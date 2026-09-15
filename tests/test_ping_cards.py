@@ -92,8 +92,8 @@ def test_compose_never_exceeds_the_evening_budget_end_to_end(monkeypatch):
          "confidence": "inferred", "intent_title": None},
     ]
     gain_evidence = {
-        "learned": [{"label": "Learned: logged a decision", "evidence_ids": ["1"]}],
-        "progressed": [{"label": "Progressed: machina", "evidence_ids": ["2"]}],
+        "learned": [{"label": "Logged a decision", "evidence_ids": ["1"]}],
+        "progressed": [{"label": "Moved Machina forward", "evidence_ids": ["2"]}],
         "experienced": [],
     }
     signals = [{
@@ -256,8 +256,8 @@ def test_compose_gains_question_offers_only_the_reply_without_evidence():
 
 def test_compose_gains_question_builds_one_option_per_kind_plus_escape():
     evidence = {
-        "learned": [{"label": "Learned: closed the Opera thread", "evidence_ids": ["a"]}],
-        "progressed": [{"label": "Progressed: machina", "evidence_ids": ["b"]}],
+        "learned": [{"label": "Closed the Opera thread", "evidence_ids": ["a"]}],
+        "progressed": [{"label": "Moved Machina forward", "evidence_ids": ["b"]}],
         "experienced": [],
     }
     q = compose.compose_gains_question(evidence)
@@ -449,10 +449,10 @@ def test_gains_taps_are_independent_not_a_supersede_chain():
     question = {
         "qid": "gains", "text": "What moved today?",
         "options": [
-            {"key": "A", "label": "Learned: closed the Opera thread",
+            {"key": "A", "label": "Closed the Opera thread",
              "payload": {"kind": "gains", "verdict": "learned", "gain_kind": "learned",
                          "evidence_ids": ["ce-1"]}},
-            {"key": "B", "label": "Progressed: machina",
+            {"key": "B", "label": "Moved Machina forward",
              "payload": {"kind": "gains", "verdict": "progressed", "gain_kind": "progressed",
                          "evidence_ids": ["blk-2"]}},
         ],
@@ -476,7 +476,7 @@ def test_retapping_the_same_gain_option_does_supersede_itself():
     question = {
         "qid": "gains", "text": "What moved today?",
         "options": [
-            {"key": "A", "label": "Learned: closed the Opera thread",
+            {"key": "A", "label": "Closed the Opera thread",
              "payload": {"kind": "gains", "verdict": "learned", "gain_kind": "learned"}},
         ],
     }
@@ -497,16 +497,15 @@ def test_retapping_the_same_gain_option_does_supersede_itself():
 def test_body_mind_options_map_to_the_1_to_5_scale():
     q = compose.compose_body_mind_question()
     assert q["qid"] == "body_mind"
-    assert q["text"] == "Today — body / mind"
-    by_label = {o["label"]: o["payload"] for o in q["options"]}
-    assert by_label["strong · excited"]["body"] == 4
-    assert by_label["strong · excited"]["mind"] == 4
-    assert by_label["strong · tired"]["body"] == 4
-    assert by_label["strong · tired"]["mind"] == 2
-    assert by_label["weak · excited"]["body"] == 2
-    assert by_label["weak · excited"]["mind"] == 4
-    assert by_label["weak · exhausted"]["body"] == 2
-    assert by_label["weak · exhausted"]["mind"] == 2
+    assert "body and mind" in q["text"]
+    # Keyed on the verdict, not the wording: the labels were rewritten on
+    # 2026-09-15 because "strong · excited" left the reader to work out which
+    # word was the body, and pinning them here would fight the next rewrite.
+    by_verdict = {o["payload"]["verdict"]: o["payload"] for o in q["options"]}
+    assert (by_verdict["strong_excited"]["body"], by_verdict["strong_excited"]["mind"]) == (4, 4)
+    assert (by_verdict["strong_tired"]["body"], by_verdict["strong_tired"]["mind"]) == (4, 2)
+    assert (by_verdict["weak_excited"]["body"], by_verdict["weak_excited"]["mind"]) == (2, 4)
+    assert (by_verdict["weak_exhausted"]["body"], by_verdict["weak_exhausted"]["mind"]) == (2, 2)
     assert q["options"][-1]["label"] == "Other → reply"
     assert len(q["options"]) == 5
 
@@ -596,7 +595,7 @@ def test_a_quiet_day_still_asks_what_moved():
 
     card = compose_gains_question({"learned": [], "progressed": [], "experienced": []})
     assert card is not None
-    assert card["text"] == "What moved today?"
+    assert "moved today" in card["text"]
     assert [o["label"] for o in card["options"]] == ["Add one → reply"]
 
 
@@ -614,7 +613,7 @@ def test_a_gain_is_validated_before_it_is_truncated():
     """The 40-char label cut the disqualifying word off before the validator
     saw it, so a plan passed the gate and would have reached his phone."""
     evidence = {"learned": [{
-        "label": "Learned: Signed with three new clients this quarter, will "
+        "label": "Signed with three new clients this quarter, will "
                  "announce the partnership expansion plan next month",
         "evidence_ids": ["1"],
     }], "progressed": [], "experienced": []}
@@ -630,8 +629,8 @@ def test_a_truncated_gain_option_is_refused_by_the_schema():
     with pytest.raises(Exception, match="truncated"):
         compose.Option(
             key="A",
-            label="Learned: signed three new clients this quarter and also "
-                  "will announce something later",
+            label="Signed three new clients this quarter and also will "
+                  "announce something later",
             payload={"kind": "gains", "verdict": "learned", "gain_kind": "learned"},
         )
 
@@ -705,3 +704,66 @@ def test_an_article_makes_it_vague_no_matter_what_else_is_named():
                  "payload": {"kind": "sink", "verdict": "one_off"}},
             ],
         })
+
+
+# --- a button must read as English (2026-09-15) ---------------------------
+
+
+def test_a_gains_option_may_not_lead_with_the_internal_kind_name():
+    """"Experienced: time with personal" reached his phone: the kind name
+    prefixed to a venture primary key. Neither half meant anything to him."""
+    for bad in ("Experienced: time with personal", "Learned: something",
+                "Progressed: bd-global"):
+        with pytest.raises(Exception, match="internal kind name"):
+            compose.Option(key="A", label=bad,
+                           payload={"kind": "gains", "verdict": "learned",
+                                    "gain_kind": "learned"})
+
+
+def test_a_plain_english_gain_passes():
+    o = compose.Option(key="A", label="Time with the family — 2h",
+                       payload={"kind": "gains", "verdict": "experienced",
+                                "gain_kind": "experienced"})
+    assert o.label == "Time with the family — 2h"
+
+
+def test_the_full_sentence_is_validated_not_the_shortened_button():
+    """The button is a deliberate shortening; the validator must judge what he
+    actually did, or a plan could hide past the 38th character."""
+    evidence = {"learned": [{
+        "label": "Signed with three new clients",
+        "source_text": "Signed with three new clients this quarter and will "
+                       "announce the expansion plan next month",
+        "evidence_ids": ["1"],
+    }], "progressed": [], "experienced": []}
+    card = compose.compose_gains_question(evidence)
+    assert [o["label"] for o in card["options"]] == ["Add one → reply"]
+
+
+def test_a_shortened_button_whose_full_text_is_a_real_gain_is_kept():
+    evidence = {"learned": [{
+        "label": "Decided to cover Alexan's cost",
+        "source_text": "Decided to cover Alexan's cost from personal funds "
+                       "rather than asking Greta to carry it",
+        "evidence_ids": ["1"],
+    }], "progressed": [], "experienced": []}
+    card = compose.compose_gains_question(evidence)
+    assert "Decided to cover Alexan's cost" in [o["label"] for o in card["options"]]
+
+
+def test_every_card_says_what_it_is_asking():
+    """Ignas read the evening card on 2026-09-15 and said he did not
+    understand it. A question he has to decode is a question he will not
+    answer, and the whole experiment rests on him answering."""
+    gains = compose.compose_gains_question(None)
+    assert "moved" in gains["text"].lower()
+    assert "tap" in gains["text"].lower(), "it must say a tap is what it wants"
+    assert "more than one" in gains["text"].lower(), "multi-select must be stated"
+
+    body = compose.compose_body_mind_question()
+    assert "body" in body["text"].lower() and "mind" in body["text"].lower()
+    for option in body["options"][:-1]:
+        label = option["label"].lower()
+        assert "body" in label and "mind" in label, (
+            f"{option['label']!r} leaves the reader to work out which is which"
+        )

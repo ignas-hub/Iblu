@@ -136,6 +136,13 @@ class Option(BaseModel):
             # ending removed, refuse it: a gain that does not fit on a phone
             # button was never a good option anyway, and refusing drops the set
             # to the deterministic fallback instead of sending a plan as a gain.
+            lowered_label = self.label.lower()
+            for word in GAINS_JARGON:
+                if lowered_label.startswith(word):
+                    raise ValueError(
+                        f"gains option leads with the internal kind name "
+                        f"{word!r}: {self.label!r}"
+                    )
             if self.label.endswith("…"):
                 raise ValueError(
                     "gains option was truncated, so it cannot be validated: "
@@ -154,6 +161,12 @@ class Option(BaseModel):
 # to a human at a glance. A prompt rule alone is not enough — a model that
 # regresses should fail validation and fall through to the fallback templates.
 JARGON = ("sink", "attention sink")
+
+# The three gain kinds are payload values, not English. "Experienced: time with
+# personal" reached Ignas's phone on 2026-09-15 — the kind name prefixed to a
+# venture PRIMARY KEY. Both halves were internal; neither meant anything to a
+# human reading a button.
+GAINS_JARGON = ("learned:", "progressed:", "experienced:")
 
 # An unnamed reference is unauditable: "a gmail thread" cannot be resolved back
 # to one of forty threads six weeks later. The composer has the subject lines,
@@ -510,7 +523,10 @@ def compose_gains_question(evidence: dict[str, list[dict]] | None) -> dict | Non
         # the plan next month" became "Learned: Signed three clients, will a…"
         # in one case and, for a longer prefix, lost "will" entirely — so a
         # plan passed the gate and reached his phone as a gain.
-        ok, why = validate_gain_option(item["label"])
+        # Validate what he actually did, not the 38 characters that fit on the
+        # button. `source_text` is the full sentence; the label is a deliberate
+        # shortening of it made by the caller.
+        ok, why = validate_gain_option(item.get("source_text") or item["label"])
         if not ok:
             logger.info("compose: gains option rejected (%s)", why)
             continue
@@ -526,7 +542,11 @@ def compose_gains_question(evidence: dict[str, list[dict]] | None) -> dict | Non
         "payload": {"kind": "gains", "verdict": "other"},
     })
     return {
-        "qid": "gains", "text": "What moved today?",
+        "qid": "gains",
+        # Says what a tap MEANS and that more than one is allowed. The header
+        # used to be three words, and with a button reading "Experienced: time
+        # with personal" beside it, Ignas could not tell what was being asked.
+        "text": "What actually moved today? Tap any that happened — more than one is fine.",
         "options": options[:MAX_OPTIONS], "multi": True,
     }
 
@@ -538,11 +558,15 @@ def compose_gains_question(evidence: dict[str, list[dict]] | None) -> dict | Non
 # label -> (body, mind) on the 1-5 scale. Deliberately just two points per
 # axis (2 and 4): a tired thumb can pick one of four buttons; anything finer
 # belongs in the reply override, not the card.
+#
+# The labels name BOTH axes on every button. "strong · excited" left the reader
+# to work out which word was the body and which was the mind, on a phone, at
+# the end of a day.
 BODY_MIND_OPTIONS: tuple[tuple[str, str, int, int], ...] = (
-    ("strong_excited", "strong · excited", 4, 4),
-    ("strong_tired", "strong · tired", 4, 2),
-    ("weak_excited", "weak · excited", 2, 4),
-    ("weak_exhausted", "weak · exhausted", 2, 2),
+    ("strong_excited", "Body strong · mind sharp", 4, 4),
+    ("strong_tired", "Body strong · mind tired", 4, 2),
+    ("weak_excited", "Body tired · mind sharp", 2, 4),
+    ("weak_exhausted", "Body tired · mind drained", 2, 2),
 )
 
 # "body 1 mind 3" (either order, optional punctuation) overrides with exact
@@ -575,7 +599,11 @@ def compose_body_mind_question() -> dict:
         "key": chr(65 + len(options)), "label": "Other → reply",
         "payload": {"kind": "body_mind", "verdict": "other"},
     })
-    return {"qid": "body_mind", "text": "Today — body / mind", "options": options}
+    return {
+        "qid": "body_mind",
+        "text": "How were your body and mind today? (numbers only — Iblu records them, it does not read them)",
+        "options": options,
+    }
 
 
 # --------------------------------------------------------------------------
