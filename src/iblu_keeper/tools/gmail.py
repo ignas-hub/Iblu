@@ -1,6 +1,13 @@
-"""Gmail tools via the delegated service account.
+"""Gmail tools, acting as Ignas via his own OAuth token.
 
-Gmail via service account is known-good (Ignas has used this pattern before).
+No service account is involved, despite what this line used to say. IBLU
+authenticates as Ignas himself with an ordinary OAuth refresh token, one per
+Workspace — no service-account key, no domain-wide delegation (HANDOFF §3.1).
+That is a deliberate security choice: a delegated service account holds a
+downloadable key that can impersonate ANY user in the Workspace, where a user
+token can act only as the one person who approved it and can be revoked by
+them.
+
 In dry-run / no-credentials mode these return deterministic mock data.
 """
 

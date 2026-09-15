@@ -9,7 +9,8 @@ server code changes required.
 
 Backends:
   - MockChatBackend  : deterministic fake data; used in dry-run / no-creds mode.
-  - GoogleChatBackend: real Google Chat API via the delegated service account.
+  - GoogleChatBackend: the real Google Chat API, acting as Ignas via his own
+    OAuth token — no service account, no domain-wide delegation (HANDOFF §3.1).
 
 Conversations are searched/identified primarily by the participant's name.
 """
