@@ -642,3 +642,66 @@ def test_a_short_genuine_gain_still_passes():
         payload={"kind": "gains", "verdict": "learned", "gain_kind": "learned"},
     )
     assert o.label == "Closed the Womanizer thread"
+
+
+# --- the vagueness rule must not eat a named question ---------------------
+
+
+def test_a_named_thread_survives_even_when_it_says_email_thread():
+    """Found in the observation log 2026-09-14: this exact question was
+    rejected for containing "email thread", although it names the thread
+    twice, and the composer fell back to a generic question all day."""
+    q = compose.Question.model_validate({
+        "qid": "sink",
+        "text": "Binance/Defixolt email thread with Jurgita — you authorized "
+                "power of attorney at 15:26. Was that yours to do?",
+        "options": [
+            {"key": "A", "label": "Planned & mine",
+             "payload": {"kind": "sink", "verdict": "planned_mine"}},
+            {"key": "B", "label": "One-off, ignore",
+             "payload": {"kind": "sink", "verdict": "one_off"}},
+        ],
+    })
+    assert "Binance/Defixolt" in q.text
+
+
+def test_a_genuinely_unnamed_reference_is_still_rejected():
+    with pytest.raises(Exception, match="vague"):
+        compose.Question.model_validate({
+            "qid": "sink",
+            "text": "an email thread took most of it. was that yours to do?",
+            "options": [
+                {"key": "A", "label": "Planned & mine",
+                 "payload": {"kind": "sink", "verdict": "planned_mine"}},
+                {"key": "B", "label": "One-off, ignore",
+                 "payload": {"kind": "sink", "verdict": "one_off"}},
+            ],
+        })
+
+
+def test_a_quoted_subject_counts_as_naming_something():
+    assert compose._names_something('the "Noshinku 3PL training" thread')
+
+
+def test_an_address_counts_as_naming_something():
+    assert compose._names_something("a thread with ante@blanklabel.team")
+
+
+def test_a_sentence_of_only_common_words_names_nothing():
+    assert not compose._names_something("some work on a few messages today")
+
+
+def test_an_article_makes_it_vague_no_matter_what_else_is_named():
+    """"Mostly Ante Cetinic work + a gmail thread" names a person, but the
+    second referent still points at nothing."""
+    with pytest.raises(Exception, match="vague"):
+        compose.Question.model_validate({
+            "qid": "sink",
+            "text": "Mostly Ante Cetinic work + a gmail thread — right?",
+            "options": [
+                {"key": "A", "label": "Planned & mine",
+                 "payload": {"kind": "sink", "verdict": "planned_mine"}},
+                {"key": "B", "label": "One-off, ignore",
+                 "payload": {"kind": "sink", "verdict": "one_off"}},
+            ],
+        })

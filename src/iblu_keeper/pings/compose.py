@@ -159,12 +159,36 @@ JARGON = ("sink", "attention sink")
 # to one of forty threads six weeks later. The composer has the subject lines,
 # so a vague reference is laziness, not missing data — reject it and let the
 # fallback (which always names the container) answer instead.
+# Always vague: the article or quantifier IS the vagueness. "a gmail thread"
+# points at nothing no matter what else the sentence names.
 VAGUE = (
     "a gmail thread", "an email thread", "a chat thread", "an email exchange",
     "some emails", "some messages", "a few messages", "a few emails",
-    "email thread", "a thread", "various threads", "other threads",
+    "a thread", "the thread", "that thread", "various threads", "other threads",
     "some work", "several messages",
 )
+
+# Vague only when nothing beside them is named. A bare noun is how you refer to
+# a thread you have just named — "Binance/Defixolt email thread with Jurgita"
+# is precise, and rejecting it for containing "email thread" threw away a good
+# question for a whole day on 2026-09-14.
+VAGUE_UNLESS_NAMED = ("email thread", "chat thread", "gmail thread")
+
+
+def _names_something(text: str) -> bool:
+    """Does this question point at something a human could look up later?
+
+    A proper noun, a quoted string, or an address is enough. Deliberately a
+    heuristic and deliberately generous: the cost of being too strict is a good
+    question silently replaced by a generic one, which is the failure this
+    check just caused. The cost of being too loose is a vague question Ignas
+    can answer anyway.
+    """
+    if '"' in text or "'" in text or "@" in text:
+        return True
+    words = text.split()
+    # Skip the first word: every sentence starts with a capital.
+    return any(w[:1].isupper() for w in words[1:] if w[:1].isalpha())
 
 
 class Question(BaseModel):
@@ -186,11 +210,23 @@ class Question(BaseModel):
                 raise ValueError(
                     f"question text leaks the internal key {word!r}: {text!r}"
                 )
+        # The rule is "an unnamed reference is unauditable", not "this phrase is
+        # banned". Matching the bare phrase threw away a perfectly good
+        # question on 2026-09-14: "Binance/Defixolt email thread with Jurgita —
+        # you authorized power of attorney at 15:26" was rejected for
+        # containing "email thread", although it names the thread twice. The
+        # composer fell back to a generic question for the rest of the day.
         for phrase in VAGUE:
             if phrase in lowered:
                 raise ValueError(
                     f"question text is vague ({phrase!r}) — name the thread: {text!r}"
                 )
+        if not _names_something(text):
+            for phrase in VAGUE_UNLESS_NAMED:
+                if phrase in lowered:
+                    raise ValueError(
+                        f"question text is vague ({phrase!r}) — name the thread: {text!r}"
+                    )
         return text
 
 
