@@ -259,3 +259,34 @@ def test_server_health_contains_server_time_and_auth():
     assert "server_time" in result
     assert "auth" in result
     assert result["mode"] in ("live", "mock")
+
+
+# --- per-account scopes (2026-09-15) --------------------------------------
+
+
+def test_only_the_primary_account_requests_the_cloud_platform_scope():
+    """`pubsub` is a Google Cloud Platform scope, and a token carrying one
+    falls under the Workspace's Google Cloud session control policy — which is
+    what made Deadlift and Choco fail every refresh with `invalid_rapt` while
+    BLT ran for three months on one sign-in. Only the readstate worker uses
+    Pub/Sub, and only on the primary account."""
+    from iblu_keeper.config import settings
+    from iblu_keeper.google_auth import PRIMARY_ONLY_SCOPES, scopes_for
+
+    primary = scopes_for(settings.primary_alias)
+    assert PRIMARY_ONLY_SCOPES <= set(primary)
+
+    for alias in settings.account_aliases:
+        if alias == settings.primary_alias:
+            continue
+        assert not (PRIMARY_ONLY_SCOPES & set(scopes_for(alias))), alias
+
+
+def test_a_non_primary_account_keeps_everything_it_actually_uses():
+    from iblu_keeper.google_auth import SCOPES, scopes_for
+
+    narrowed = set(scopes_for("deadlift"))
+    for scope in SCOPES:
+        if "pubsub" in scope:
+            continue
+        assert scope in narrowed, f"{scope} was dropped and is still needed"

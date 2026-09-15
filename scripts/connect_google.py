@@ -31,7 +31,7 @@ def main() -> int:
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     from iblu_keeper.config import settings
-    from iblu_keeper.google_auth import SCOPES, _save_token
+    from iblu_keeper.google_auth import scopes_for, _save_token
 
     parser = argparse.ArgumentParser(description="Authorize one Google account.")
     parser.add_argument(
@@ -63,7 +63,17 @@ def main() -> int:
             "redirect_uris": ["http://localhost:8765/"],
         }
     }
-    flow = InstalledAppFlow.from_client_config(client_config, scopes=list(SCOPES))
+    # Non-primary accounts do NOT request the Pub/Sub scope. It is a Google
+    # Cloud Platform scope, and a token that carries one falls under the
+    # Workspace's "Google Cloud session control" policy — which is what made
+    # Deadlift and Choco fail every refresh with `invalid_rapt` while BLT,
+    # whose Workspace does not enforce that policy, ran for three months on a
+    # single sign-in. Only the readstate worker uses Pub/Sub, and only on the
+    # primary account.
+    scopes = scopes_for(alias)
+    flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
+    print(f"Requesting {len(scopes)} scopes"
+          + ("" if alias == settings.primary_alias else " (no Pub/Sub — see comment above)"))
 
     # Headless-friendly: don't try to launch a browser here. Print the auth
     # URL and wait for Google to redirect to http://localhost:8765/. From a

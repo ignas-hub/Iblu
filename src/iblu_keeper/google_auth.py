@@ -59,6 +59,30 @@ SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/pubsub",
 )
 
+# Scopes only the PRIMARY account needs.
+#
+# `pubsub` is a Google **Cloud Platform** scope, and a token carrying one falls
+# under the Workspace's "Google Cloud session control" policy — the thing that
+# forces periodic reauthentication and makes a refresh fail with
+# `invalid_grant: reauth related error (invalid_rapt)`. Only the readstate
+# worker uses Pub/Sub, and it runs on the primary account alone
+# (`readstate_worker` calls `get_credentials()`, never `get_credentials_for`),
+# so Deadlift and Choco were carrying a scope they never use and paying for it
+# with an outage every day or so.
+PRIMARY_ONLY_SCOPES: frozenset[str] = frozenset({
+    "https://www.googleapis.com/auth/pubsub",
+})
+
+
+def scopes_for(alias: str | None) -> list[str]:
+    """The scopes one account should request. Narrower for non-primary ones."""
+    from .config import settings
+
+    alias = (alias or settings.primary_alias).lower()
+    if alias == settings.primary_alias:
+        return list(SCOPES)
+    return [s for s in SCOPES if s not in PRIMARY_ONLY_SCOPES]
+
 logger = logging.getLogger("iblu_keeper.google_auth")
 
 _lock = threading.Lock()
@@ -133,7 +157,7 @@ def _load_credentials(alias: str | None = None):
     info["client_secret"] = client_secret
     info.setdefault("token_uri", "https://oauth2.googleapis.com/token")
 
-    creds = Credentials.from_authorized_user_info(info, list(SCOPES))
+    creds = Credentials.from_authorized_user_info(info, scopes_for(account["alias"]))
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             try:
