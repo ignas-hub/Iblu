@@ -245,6 +245,20 @@ python -m iblu_keeper.store.observations --resolve <id> --note "what was done"
 `IBLU_CHECK_MODEL` (default `claude-opus-5`) is the model that checks the work;
 `IBLU_LLM_MODEL` (Sonnet) is the one that composes pings. See HANDOFF §21.
 
+**Is IBLU itself working?** `jobs/watchdog.py` runs every 30 minutes
+(`deploy/iblu-watchdog.timer`, every day — the box can die on a Saturday) and
+checks the machine rather than the data: systemd units up, disk, tick freshness
+(Mon–Fri only, so a quiet weekend is not an alarm), backup age, Google token
+refresh per account, and whether the analyst has run. Findings become
+`observations`; open **errors** are posted to the Secretary space on the
+`iblu-health` thread, once, then again only after six hours, and never between
+21:00 and 08:00 — an alert that repeats every half hour is muted within a day.
+It exists because Deadlift and Choco were dead for 135 consecutive ticks and
+every one of them logged the error correctly.
+
+    python -m iblu_keeper.jobs.watchdog --dry        # check, write nothing
+    python -m iblu_keeper.jobs.watchdog --no-alert   # record, stay quiet
+
 **Known open items:** external DM partners who are not in Google Contacts
 cannot be named by the People API, so their `counterpart` stays `users/<id>`
 (1 space today). Phase 3 (goals/priorities) not started. Remaining week-2 backlog (plan §12): the mobile web app,

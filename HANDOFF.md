@@ -627,3 +627,54 @@ transaction that rolls back.
 
 > **Rule: a fake that reimplements the logic under test proves nothing.** When
 > the behaviour *is* the SQL, test the SQL.
+
+### 23. A calendar title is not evidence, and nobody was watching the watchman
+
+Two fixes on 2026-09-15, both traceable to the same root: IBLU could be wrong
+for days without anything noticing.
+
+**The judge was labelling blocks it had no evidence for.** "Go pickup Emory",
+"Emory hosting" and "dinner with emory" came back as 420 minutes of
+`blt/client`. Every one of those blocks had zero signals: `build()` never
+assigns a work type or project to a calendar-derived block, so the labels came
+from the model reading the title. The untracked guard missed it because a block
+*with* an intent is not untracked — the intent is exactly what made it look
+attributable.
+
+The judge is now graded per block by what is behind it:
+
+| grade | behind it | it may set |
+|---|---|---|
+| `none` | a calendar title only | the reasoning line, nothing else |
+| `silent` | signals with no readable text | venture only |
+| `full` | at least one signal with a subject or body | everything |
+
+The grade is shown in the prompt *and* enforced after the response, because a
+rule asked for politely is not a rule. A sense-check invariant checks it is
+still working — scoped to calendar-derived blocks, since a cluster cut at an
+intent boundary can legitimately leave a slice with no signals of its own while
+inheriting the surrounding stretch's attribution. That is a continuation, not an
+invention.
+
+> **Rule: a title says what was meant to happen. Only a signal says what did.**
+
+**And the watchdog.** `jobs/watchdog.py` checks the machine — units, disk, tick
+freshness, backups, per-account token refresh, analyst freshness — and posts
+open errors to the Secretary space. It exists because Deadlift and Choco were
+dead for 135 consecutive ticks while logging the error correctly every time.
+
+Four things about it are deliberate:
+
+- **Checks become observations; alerts are a view of the log.** One pipeline —
+  check, record, announce — not a second alarm system with its own memory.
+- **Errors only.** A warning is something to read on Sunday. An error means
+  IBLU is not recording.
+- **Announce once, then only after six hours, and never between 21:00 and
+  08:00.** An alert that repeats every half hour is muted within a day, which
+  is the same as no alert at all, only louder. An error found at 03:00 is
+  queued, not lost.
+- **A failed send does not stamp `alerted_at`.** The next run must try again;
+  a silent alerter is the exact thing being guarded against.
+
+The tick is Mon–Fri 07:00–19:50, so `check_tick_freshness` only complains
+inside that window. A quiet Sunday is the timer working.

@@ -1,0 +1,16 @@
+[Unit]
+Description=Check that IBLU itself is still working, every 30 minutes
+
+[Timer]
+# Every day, not just weekdays: the box can die on a Saturday, and the backup
+# timer runs nightly. The watchdog knows the tick is only expected Mon-Fri and
+# does not cry wolf about a quiet weekend.
+OnCalendar=*-*-* *:00,30:00 Europe/Zagreb
+# Alerts queue until 08:00 rather than firing at boot for something that broke
+# overnight — the watchdog decides that itself, so catch-up here is harmless.
+Persistent=false
+AccuracySec=1min
+Unit=iblu-watchdog.service
+
+[Install]
+WantedBy=timers.target

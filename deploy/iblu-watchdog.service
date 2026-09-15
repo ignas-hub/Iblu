@@ -1,0 +1,17 @@
+[Unit]
+Description=iblu-keeper watchdog — is IBLU itself still working
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ignas
+WorkingDirectory=/home/ignas/iblu
+EnvironmentFile=/home/ignas/iblu/.env
+ExecStart=/home/ignas/iblu/.venv/bin/python -m iblu_keeper.jobs.watchdog
+TimeoutStartSec=180
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
