@@ -47,21 +47,34 @@ A block marked untracked has no evidence at all. Leave it untracked: silence is
 never presence, and guessing what an unobserved hour was is the one thing that
 would make this record worthless.
 
+A block whose line shows `evidence=none` was built from a calendar title and
+nothing else. A title says what was MEANT to happen, never what did. Do not
+give such a block a venture, a work type or a project — "Go pickup Emory" is
+not evidence of client work, and "womanizer report" is not evidence that a
+report was written. You may improve its reasoning line and nothing else.
+
+A block whose line shows `evidence=silent` has signals with no readable text —
+messages that render as nothing but a name. Those show he was present and
+nothing more. Do not give such a block a work type or a project.
+
 Return only JSON: {"blocks": [{"i": <index>, "venture": <code|null>,
 "work_type": <code|null>, "project": <code|null>, "reasoning": "<=120 chars"}]}
 Omit any block you would not change."""
 
 
-def _lines(rows: list[dict], tz) -> str:
+def _lines(rows: list[dict], tz, quality: list[str] | None = None) -> str:
     out = []
     for i, b in enumerate(rows):
         start = b["starts_at"].astimezone(tz).strftime("%H:%M")
         end = b["ends_at"].astimezone(tz).strftime("%H:%M")
         mark = " UNTRACKED" if b.get("untracked") else ""
+        grade = {NOTHING: " evidence=none", VENTURE_ONLY: " evidence=silent"}.get(
+            (quality or [])[i] if quality and i < len(quality) else FULL, ""
+        )
         out.append(
             f"{i}. {start}-{end} venture={b['venture'] or '-'} "
             f"work_type={b['work_type'] or '-'} project={b['project'] or '-'} "
-            f"attention={b['attention']}{mark} :: {b['reasoning']}"
+            f"attention={b['attention']}{mark}{grade} :: {b['reasoning']}"
         )
     return "\n".join(out)
 
@@ -82,6 +95,44 @@ def _evidence(rows: list[dict], signals: list[dict]) -> str:
         if subjects:
             out.append(f"{i}. " + " | ".join(subjects))
     return "\n".join(out)
+
+
+# What the judge is allowed to touch on a given block, decided by what is
+# actually behind it — not by what it would like to say.
+FULL = "full"                  # signals with readable content: label freely
+VENTURE_ONLY = "venture_only"  # signals exist but say nothing: no work_type/project
+NOTHING = "nothing"            # no signals at all: a calendar title is not evidence
+
+
+def evidence_quality(rows: list[dict], signals: list[dict]) -> list[str]:
+    """How much each block's own evidence can support.
+
+    A block with no signals has exactly one input: the title of a calendar
+    event. A title is an *intent* — it says what was meant to happen, never
+    what did. Letting a model read "Go pickup Emory" and write
+    `blt / client / bd-global` across six hours is how a record of attention
+    turns into a record of the calendar, which is the one thing this system
+    exists not to be.
+
+    A block whose signals carry no readable text is a weaker case of the same
+    thing: three Chat messages rendering as nothing but the recipient's name
+    are evidence that he was *present*, and evidence of nothing else. Venture
+    survives (the account it came from is a fact); the KIND of work does not.
+    """
+    content_by_id = {
+        s["id"]: bool((s.get("subject") or "").strip() or (s.get("snippet") or "").strip())
+        for s in signals
+    }
+    out = []
+    for row in rows:
+        ids = row.get("evidence") or []
+        if not ids:
+            out.append(NOTHING)
+        elif any(content_by_id.get(i) for i in ids):
+            out.append(FULL)
+        else:
+            out.append(VENTURE_ONLY)
+    return out
 
 
 def judge(
@@ -135,12 +186,13 @@ def _call(rows, signals, ventures, work_types, projects, tz) -> list[dict]:
     except Exception as exc:  # noqa: BLE001
         logger.info("judge: continuing without mission/priorities (%s)", exc)
 
+    quality = evidence_quality(rows, signals)
     prompt = f"""Ventures: {', '.join(ventures)}
 Work types: {', '.join(work_types)}
 Known projects: {', '.join(projects) or '(none registered)'}
 
 Blocks:
-{_lines(rows, tz)}
+{_lines(rows, tz, quality)}
 
 Evidence behind them:
 {_evidence(rows, signals) or '(none)'}"""
@@ -157,7 +209,9 @@ Evidence behind them:
     text = "".join(b.text for b in response.content if b.type == "text").strip()
     if text.startswith("```"):
         text = text.split("```")[1].removeprefix("json").strip()
-    return apply_patch(rows, json.loads(text), ventures, work_types, projects)
+    return apply_patch(
+        rows, json.loads(text), ventures, work_types, projects, quality=quality,
+    )
 
 
 def _rejected_language(text: str) -> bool:
@@ -179,6 +233,7 @@ def apply_patch(
     ventures: list[str],
     work_types: list[str],
     projects: list[str],
+    quality: list[str] | None = None,
 ) -> list[dict]:
     """Merge the judge's corrections, dropping anything it was not allowed to say.
 
@@ -200,15 +255,22 @@ def apply_patch(
         if block.get("untracked"):
             continue
 
-        if "venture" in patch and patch["venture"] is not None:
+        # What this block's own evidence can support. `NOTHING` means the only
+        # input was a calendar title, and a title is an intent, not evidence —
+        # only the reasoning line may change. `VENTURE_ONLY` means signals
+        # exist but say nothing readable: he was present, and the kind of work
+        # is not recoverable from that.
+        grade = (quality or [])[i] if quality and i < len(quality) else FULL
+
+        if "venture" in patch and patch["venture"] is not None and grade != NOTHING:
             if patch["venture"] not in ventures:
                 raise ValueError(f"judge invented venture {patch['venture']!r}")
             block["venture"] = patch["venture"]
-        if "work_type" in patch and patch["work_type"] is not None:
+        if "work_type" in patch and patch["work_type"] is not None and grade == FULL:
             if patch["work_type"] not in work_types:
                 raise ValueError(f"judge invented work type {patch['work_type']!r}")
             block["work_type"] = patch["work_type"]
-        if "project" in patch and patch["project"] is not None:
+        if "project" in patch and patch["project"] is not None and grade == FULL:
             # An unregistered project name is kept as text elsewhere in IBLU,
             # but the judge may not be the one to coin it.
             if projects and patch["project"] not in projects:

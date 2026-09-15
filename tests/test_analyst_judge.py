@@ -156,3 +156,79 @@ def test_judge_swallows_an_api_failure_and_keeps_the_computed_day(monkeypatch):
     out, used = J.judge(rows, [], ventures=VENTURES, work_types=WORK_TYPES,
                         projects=PROJECTS, tz=UTC)
     assert out == rows and used is False
+
+
+# --- what the evidence can actually support (2026-09-15) ------------------
+#
+# Found by the sense-check: "Go pickup Emory", "Emory hosting" and "dinner with
+# emory" became 420 minutes of blt/client. Every one of those blocks had zero
+# evidence — the labels came from the judge reading a calendar title.
+
+
+def sig(i, subject=None, snippet=None):
+    return {"id": i, "subject": subject, "snippet": snippet, "source": "chat"}
+
+
+def test_a_calendar_title_is_not_evidence_of_what_happened():
+    rows = [block(evidence=[], venture=None, work_type=None)]
+    out = J.apply_patch(
+        rows,
+        patch(venture="blt", work_type="client", project="machina",
+              reasoning="hosting a client"),
+        VENTURES, WORK_TYPES, PROJECTS,
+        quality=J.evidence_quality(rows, []),
+    )
+    assert out[0]["venture"] is None
+    assert out[0]["work_type"] is None
+    assert out[0]["project"] is None
+
+
+def test_an_evidence_free_block_may_still_have_its_reasoning_improved():
+    rows = [block(evidence=[], venture=None)]
+    out = J.apply_patch(
+        rows, patch(reasoning="nothing recorded during the pickup"),
+        VENTURES, WORK_TYPES, PROJECTS, quality=J.evidence_quality(rows, []),
+    )
+    assert "nothing recorded during the pickup" in out[0]["reasoning"]
+
+
+def test_signals_with_no_readable_text_support_a_venture_but_not_a_work_type():
+    """Three chats rendering as nothing but the recipient's name show he was
+    present. They show nothing about the KIND of work."""
+    rows = [block(evidence=[1, 2, 3])]
+    signals = [sig(1), sig(2), sig(3)]
+    out = J.apply_patch(
+        rows, patch(venture="deadlift", work_type="client", project="machina"),
+        VENTURES, WORK_TYPES, PROJECTS, quality=J.evidence_quality(rows, signals),
+    )
+    assert out[0]["venture"] == "deadlift"
+    assert out[0]["work_type"] is None
+    assert out[0]["project"] is None
+
+
+def test_one_signal_with_real_text_is_enough_to_label_fully():
+    rows = [block(evidence=[1, 2])]
+    signals = [sig(1), sig(2, subject="Dokumenti mjesec 08. Blank Label d.o.o.")]
+    out = J.apply_patch(
+        rows, patch(venture="blt", work_type="client"),
+        VENTURES, WORK_TYPES, PROJECTS, quality=J.evidence_quality(rows, signals),
+    )
+    assert out[0]["venture"] == "blt" and out[0]["work_type"] == "client"
+
+
+def test_evidence_quality_grades_each_block_on_its_own_signals():
+    rows = [block(evidence=[]), block(evidence=[1]), block(evidence=[2])]
+    signals = [sig(1), sig(2, snippet="please review the contract")]
+    assert J.evidence_quality(rows, signals) == [J.NOTHING, J.VENTURE_ONLY, J.FULL]
+
+
+def test_whitespace_is_not_readable_content():
+    rows = [block(evidence=[1])]
+    assert J.evidence_quality(rows, [sig(1, subject="   ", snippet="\n")]) == [J.VENTURE_ONLY]
+
+
+def test_without_a_quality_list_the_judge_is_unrestricted():
+    """Back-compatible: callers that pass no grading get the old behaviour."""
+    out = J.apply_patch([block(evidence=[])], patch(venture="blt"),
+                        VENTURES, WORK_TYPES, PROJECTS)
+    assert out[0]["venture"] == "blt"

@@ -304,3 +304,15 @@ def test_gostellar_is_recognised_by_name():
     assert venture == "gostellar"
     venture, _ = infer("ignas@blanklabel.team", subject="Kassari ads review")
     assert venture == "gostellar"
+
+
+def test_the_bookkeepers_domain_means_company_admin_not_personal_finance():
+    """"Lamb invoices" reads personal until you know whose books they are."""
+    from iblu_keeper.collectors.venture_hints import infer
+
+    venture, _ = infer(
+        "ignas@blanklabel.team",
+        counterpart="lamb@lamb-knjigovodstvo.hr",
+        subject="Dokumenti mjesec 08. Blank Label d.o.o.",
+    )
+    assert venture == "blt"

@@ -189,3 +189,14 @@ def _parse(payload):
         return mod.run_llm(_Conn({}), DAY)
     finally:
         mod.settings = real_settings
+
+
+def test_a_calendar_block_labelled_without_evidence_is_an_error():
+    """"Go pickup Emory" became 420 minutes of blt/client once."""
+    conn = _Conn({"jsonb_array_length(evidence) = 0": [
+        {"id": 7, "starts_at": None, "venture": "blt", "work_type": "client",
+         "project": None, "intent_title": "Go pickup Emory"},
+    ]})
+    [f] = [f for f in S.run_rules(conn, DAY) if f["kind"] == "labelled_without_evidence"]
+    assert f["severity"] == "error"
+    assert f["detected_by"] == "rule"

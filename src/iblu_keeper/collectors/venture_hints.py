@@ -20,6 +20,11 @@ import re
 DOMAINS: dict[str, str] = {
     "deadlift.io": "deadlift",
     "chocoagency.com": "choco",
+    # Blank Label's bookkeeper. Mail here is company accounting — the
+    # sense-check caught "Dokumenti mjesec 08. Blank Label d.o.o." filed as
+    # personal/finance, because "invoices" reads personal until you know whose
+    # books they are.
+    "lamb-knjigovodstvo.hr": "blt",
 }
 
 # Host / subdomain -> project (free text).

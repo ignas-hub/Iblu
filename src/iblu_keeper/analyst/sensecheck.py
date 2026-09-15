@@ -148,7 +148,46 @@ def run_rules(conn, on: date) -> list[dict]:
                 fp_parts=(on,),
             )
 
-    # 5. Collectors: errors, and watermarks that stopped moving.
+    # 5. A calendar title is not evidence of what happened.
+    labelled_without_evidence = conn.execute(
+        """
+        SELECT id, starts_at, venture, work_type, project, intent_title
+          FROM blocks
+         WHERE local_date = %s AND superseded_by IS NULL
+           AND confidence <> 'fact'
+           AND jsonb_array_length(evidence) = 0
+           -- Only CALENDAR-derived blocks. A cluster cut at an intent boundary
+           -- can legitimately leave a slice with no signals of its own while
+           -- inheriting the surrounding stretch's attribution; that is a
+           -- continuation, not an invention. The bug this guards against was
+           -- specifically a calendar TITLE becoming a label.
+           AND intent_title IS NOT NULL
+           AND (work_type IS NOT NULL OR project IS NOT NULL)
+        """,
+        (on,),
+    ).fetchall()
+    if labelled_without_evidence:
+        _flag(
+            "labelled_without_evidence",
+            f"{len(labelled_without_evidence)} block(s) on {on} carry a work type "
+            f"or project with no evidence behind them",
+            severity="error",
+            detail="A block with no signals was built from a calendar title, and "
+                   "a title says what was MEANT to happen. 'Go pickup Emory' "
+                   "became 420 minutes of blt/client once; the judge's evidence "
+                   "gate exists to stop that and this checks it is still working.",
+            evidence={
+                "date": str(on),
+                "blocks": [
+                    {"id": r["id"], "intent": r["intent_title"],
+                     "label": f"{r['venture']}/{r['work_type']}/{r['project']}"}
+                    for r in labelled_without_evidence[:8]
+                ],
+            },
+            fp_parts=(on,),
+        )
+
+    # 6. Collectors: errors, and watermarks that stopped moving.
     for row in conn.execute(
         "SELECT name, watermark, last_run_at, last_error FROM collector_state"
     ).fetchall():
@@ -183,7 +222,7 @@ def run_rules(conn, on: date) -> list[dict]:
                 fp_parts=(row["name"],),
             )
 
-    # 6. The mission on disk drifting from the seeded copy.
+    # 7. The mission on disk drifting from the seeded copy.
     try:
         from .. import db
 
