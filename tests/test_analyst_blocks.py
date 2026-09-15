@@ -422,3 +422,37 @@ def test_clipping_drops_a_remainder_below_the_floor_rather_than_emitting_it():
 def test_clipping_leaves_an_ordinary_block_untouched():
     blocks = B.build(B.cluster_signals([signal(1, at(9, 0))]), [])
     assert B._clip_to_day(blocks, (at(0, 0), at(0, 0) + timedelta(days=1))) == blocks
+
+
+def test_two_overlapping_calendar_events_do_not_both_claim_the_same_minutes():
+    """Found by the sense-check on 2026-09-14: "Emory hosting" 15:45-16:00 and
+    "dinner with emory" 15:45-17:30 each emitted an ambiguous block for 15:45,
+    so the day double-counted itself. Ignas double-books constantly."""
+    intents = [
+        intent(at(15, 45), at(16, 0), title="Emory hosting", event_id="a"),
+        intent(at(15, 45), at(17, 30), title="dinner with emory", event_id="b"),
+    ]
+    blocks = B.build([], intents)
+    for first, second in zip(blocks, blocks[1:]):
+        assert first["ends_at"] <= second["starts_at"], "two blocks claim the same minute"
+
+
+def test_the_longer_of_two_overlapping_events_wins_the_span():
+    intents = [
+        intent(at(15, 45), at(16, 0), title="short", event_id="a"),
+        intent(at(15, 45), at(17, 30), title="long", event_id="b"),
+    ]
+    [block] = B.build([], intents)
+    assert block["intent_title"] == "long"
+
+
+def test_a_partially_overlapping_event_still_reports_the_part_that_is_its_own():
+    intents = [
+        intent(at(9, 0), at(10, 0), title="first", event_id="a"),
+        intent(at(9, 30), at(11, 0), title="second", event_id="b"),
+    ]
+    blocks = B.build([], intents)
+    titles = [b["intent_title"] for b in blocks]
+    assert "first" in titles and "second" in titles
+    for first, second in zip(blocks, blocks[1:]):
+        assert first["ends_at"] <= second["starts_at"]

@@ -271,11 +271,22 @@ def build(
             )
 
     # Intent that produced nothing at all is the honest 'ambiguous'.
+    #
+    # `covered` grows as each intent claims its span. The first version computed
+    # it once from the evidence blocks and never updated it, so two OVERLAPPING
+    # calendar events each emitted an ambiguous block for the same minutes —
+    # "Emory hosting" 15:45-16:00 and "dinner with emory" 15:45-17:30 on
+    # 2026-09-14 both claimed 15:45, and the day double-counted itself. Ignas
+    # double-books constantly; this is the normal case, not an edge one.
+    #
+    # Longest-first within the same start, so the span goes to the event that
+    # says more about the afternoon than a fifteen-minute fragment does.
     covered = [(b["starts_at"], b["ends_at"]) for b in blocks]
-    for intent in intents:
+    for intent in sorted(intents, key=lambda i: (i.start, -(i.end - i.start))):
         for start, end in _subtract((intent.start, intent.end), covered):
             if end - start < MIN_AMBIGUOUS:
                 continue
+            covered.append((start, end))
             blocks.append(
                 {
                     "starts_at": start,
@@ -315,6 +326,11 @@ def _merge_adjacent(blocks: list[dict]) -> list[dict]:
             prev
             and prev["ends_at"] == b["starts_at"]
             and prev.get("_untracked") == b.get("_untracked")
+            # Two back-to-back meetings that both produced nothing are two
+            # unaccounted meetings, not one long one — merging them lost the
+            # second one's name, which is the only thing that makes an
+            # ambiguous block answerable.
+            and prev.get("_intent_title") == b.get("_intent_title")
             and all(
                 prev[k] == b[k]
                 for k in ("venture", "work_type", "project", "attention", "confidence")
