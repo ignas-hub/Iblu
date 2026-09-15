@@ -596,7 +596,11 @@ def compose_body_mind_question() -> dict:
         for i, (verdict, label, body, mind) in enumerate(BODY_MIND_OPTIONS)
     ]
     options.append({
-        "key": chr(65 + len(options)), "label": "Other → reply",
+        # The exact numbers are only reachable through this reply, and nothing
+        # on the card said so. Ignas tapped it and answered in sentences, which
+        # is the obvious thing to do — his words are kept either way, but if he
+        # wants the scale he now knows how to give it.
+        "key": chr(65 + len(options)), "label": "Other → reply 'body 4 mind 2'",
         "payload": {"kind": "body_mind", "verdict": "other"},
     })
     return {

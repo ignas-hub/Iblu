@@ -322,23 +322,78 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
     }
 
 
-def _classify_reply(ping_kind: str, text: str) -> tuple[list[str], dict, bool]:
+# Which card a "→ reply" escape belongs to, expressed as the tag its answer
+# should carry.
+REPLY_TAG_BY_QID = {
+    "body_mind": "health",
+    "gains": "gain",
+    "sink": "attention",
+    "displaced": "attention",
+    "split": "attention",
+    "work_type": "attention",
+    "gap": "attention",
+}
+
+
+def _awaiting_reply_qid(conn, ping_id: int) -> str | None:
+    """Which question he most recently tapped "Other → reply" on.
+
+    This is the whole answer to "what is this reply about". Every card's escape
+    hatch records a tap with `verdict='other'` before he starts typing, so the
+    newest one names the question he is answering.
+    """
+    row = conn.execute(
+        """
+        SELECT meta ->> 'qid' AS qid
+          FROM context_entries
+         WHERE source = 'ping' AND meta ->> 'ping_id' = %s
+           AND meta -> 'payload' ->> 'verdict' = 'other'
+         ORDER BY created_at DESC
+         LIMIT 1
+        """,
+        (str(ping_id),),
+    ).fetchone()
+    return row["qid"] if row else None
+
+
+def _classify_reply(conn, ping: dict, text: str) -> tuple[list[str], dict, bool]:
     """What a free-text reply in a ping's thread means.
 
-    Returns `(extra_tags, meta_extra, overrides_body_mind)`. Only an evening
-    (or 'test') ping carries the gains/body-mind cards, so only those kinds
-    are even considered for either: a `"body 1 mind 3"` reply (either order)
-    overrides the body/mind card's numbers exactly (plan §4.2); anything else
-    in that thread is a gain logged by reply (plan §4.1 — "replies in the
-    card's thread are gain entries too"). A midday reply is unclassified, as
-    before.
+    Returns `(extra_tags, meta_extra, overrides_body_mind)`.
+
+    The first version assumed every evening reply that was not literally
+    "body 4 mind 2" was a gain. On 2026-09-15 Ignas tapped "Other → reply" on
+    the body/mind card and wrote "ok body since I've slept for 8 hours. But
+    mentally I feel I'm just grinding through" — an answer about his health,
+    filed as something that moved today. Answering a question in words is the
+    obvious thing to do; the system has to know which question.
+
+    So the reply is attributed to whichever card he last tapped the escape on.
+    An explicit "body N mind N" still wins outright, whatever he tapped: it is
+    unambiguous, and it is the only path that sets the numbers. Prose is kept
+    verbatim and left unscored — reading a mood out of his sentences is exactly
+    what §4.2 forbids, and the card promises Iblu records the numbers rather
+    than interpreting them.
     """
-    if ping_kind in ("evening", "test"):
-        parsed = parse_body_mind_reply(text)
-        if parsed is not None:
-            body, mind = parsed
-            return ["health", "reply"], {"body": body, "mind": mind}, True
-        return ["gain", "reply"], {}, False
+    parsed = parse_body_mind_reply(text)
+    if parsed is not None:
+        body, mind = parsed
+        return ["health", "reply"], {"body": body, "mind": mind}, True
+
+    qid = _awaiting_reply_qid(conn, ping["id"])
+    if qid:
+        tag = REPLY_TAG_BY_QID.get(qid, "reply")
+        meta = {"answers_qid": qid}
+        if qid == "body_mind":
+            # His own words, no numbers derived from them.
+            meta |= {"body": None, "mind": None, "scored": False}
+        return [tag, "reply"], meta, False
+
+    if ping["kind"] in ("evening", "test"):
+        # No escape tapped: an unprompted note in the evening thread, which
+        # plan §4.1 reads as a gain ("replies in the card's thread are gain
+        # entries too").
+        return ["gain", "reply"], {"answers_qid": None}, False
     return ["reply"], {}, False
 
 
@@ -404,7 +459,7 @@ def read_thread_replies(conn: psycopg.Connection, *, dry: bool = False) -> int:
             inserted += 1
             continue
 
-        extra_tags, meta_extra, overrides_body_mind = _classify_reply(ping["kind"], text)
+        extra_tags, meta_extra, overrides_body_mind = _classify_reply(conn, ping, text)
 
         # RETURNING so the count reflects rows actually written, not messages
         # seen: the watermark overlap re-reads the same message every tick.

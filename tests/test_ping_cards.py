@@ -506,7 +506,7 @@ def test_body_mind_options_map_to_the_1_to_5_scale():
     assert (by_verdict["strong_tired"]["body"], by_verdict["strong_tired"]["mind"]) == (4, 2)
     assert (by_verdict["weak_excited"]["body"], by_verdict["weak_excited"]["mind"]) == (2, 4)
     assert (by_verdict["weak_exhausted"]["body"], by_verdict["weak_exhausted"]["mind"]) == (2, 2)
-    assert q["options"][-1]["label"] == "Other → reply"
+    assert q["options"][-1]["label"].startswith("Other → reply")
     assert len(q["options"]) == 5
 
 
@@ -542,20 +542,20 @@ def test_body_mind_tap_writes_one_row_with_the_numbers_and_nothing_else():
 def test_body_mind_reply_supersedes_a_previous_answer():
     """A `body 1 mind 3` reply overrides whatever answered the card before —
     tap or reply — via `answers._classify_reply`, without touching a DB."""
-    extra_tags, meta_extra, overrides = answers._classify_reply("evening", "body 1 mind 3")
+    extra_tags, meta_extra, overrides = answers._classify_reply(_ReplyConn(None), {"id": 1, "kind": "evening"}, "body 1 mind 3")
     assert overrides is True
     assert meta_extra == {"body": 1, "mind": 3}
     assert "health" in extra_tags
 
 
 def test_a_plain_evening_reply_is_treated_as_a_gain():
-    extra_tags, meta_extra, overrides = answers._classify_reply("evening", "Signed the new lease today")
+    extra_tags, meta_extra, overrides = answers._classify_reply(_ReplyConn(None), {"id": 1, "kind": "evening"}, "Signed the new lease today")
     assert overrides is False
     assert "gain" in extra_tags
 
 
 def test_a_midday_reply_is_unclassified_as_before():
-    extra_tags, meta_extra, overrides = answers._classify_reply("midday", "It was a client call")
+    extra_tags, meta_extra, overrides = answers._classify_reply(_ReplyConn(None), {"id": 1, "kind": "midday"}, "It was a client call")
     assert extra_tags == ["reply"]
     assert overrides is False
 
@@ -767,3 +767,76 @@ def test_every_card_says_what_it_is_asking():
         assert "body" in label and "mind" in label, (
             f"{option['label']!r} leaves the reader to work out which is which"
         )
+
+
+# --- a reply answers the question he tapped (2026-09-15) ------------------
+
+
+class _ReplyConn:
+    def __init__(self, qid):
+        self.qid = qid
+
+    def execute(self, sql, params=()):
+        qid = self.qid
+
+        class _Cur:
+            def fetchone(self_inner):
+                return {"qid": qid} if qid else None
+
+        return _Cur()
+
+
+def test_words_answering_the_body_mind_card_are_filed_as_health_not_a_gain():
+    """He tapped "Other → reply" on body/mind and wrote about sleeping eight
+    hours and grinding through. That was filed as something that moved today."""
+    tags, meta, overrides = answers._classify_reply(
+        _ReplyConn("body_mind"), {"id": 78, "kind": "evening"},
+        "ok body since I've slept for 8 hours. But mentally I'm grinding through",
+    )
+    assert "health" in tags and "gain" not in tags
+    assert meta["answers_qid"] == "body_mind"
+
+
+def test_prose_about_his_body_is_never_scored():
+    """Reading a mood out of his sentences is what §4.2 forbids, and the card
+    promises Iblu records the numbers rather than interpreting them."""
+    _, meta, overrides = answers._classify_reply(
+        _ReplyConn("body_mind"), {"id": 78, "kind": "evening"}, "completely wiped out",
+    )
+    assert meta["body"] is None and meta["mind"] is None
+    assert meta["scored"] is False
+    assert overrides is False
+
+
+def test_explicit_numbers_win_whatever_he_tapped():
+    tags, meta, overrides = answers._classify_reply(
+        _ReplyConn("gains"), {"id": 78, "kind": "evening"}, "body 4 mind 2",
+    )
+    assert tags == ["health", "reply"] and meta == {"body": 4, "mind": 2}
+    assert overrides is True
+
+
+def test_words_answering_the_gains_card_are_still_a_gain():
+    tags, meta, _ = answers._classify_reply(
+        _ReplyConn("gains"), {"id": 78, "kind": "evening"}, "closed the Opera thread",
+    )
+    assert "gain" in tags and meta["answers_qid"] == "gains"
+
+
+def test_an_unprompted_evening_note_is_read_as_a_gain():
+    tags, meta, _ = answers._classify_reply(
+        _ReplyConn(None), {"id": 78, "kind": "evening"}, "shipped the thing",
+    )
+    assert "gain" in tags and meta["answers_qid"] is None
+
+
+def test_an_attention_question_answered_in_words_is_not_a_gain():
+    tags, _, _ = answers._classify_reply(
+        _ReplyConn("sink"), {"id": 78, "kind": "evening"}, "it was Ante, not me",
+    )
+    assert tags == ["attention", "reply"]
+
+
+def test_the_body_mind_escape_shows_the_number_format():
+    q = compose.compose_body_mind_question()
+    assert "body 4 mind 2" in q["options"][-1]["label"]
