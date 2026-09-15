@@ -94,24 +94,40 @@ def test_a_collector_error_is_reported_with_its_own_fingerprint():
     assert f["severity"] == "error"
 
 
-def test_a_watermark_that_stopped_moving_is_flagged():
+def test_one_collector_not_running_while_the_others_do_is_flagged():
+    """Every collector runs in the same tick, so one lagging means it is being
+    skipped — it fails silently because nothing errors, it simply never runs.
+    This is how the LLM pass spotted secretary_replies had stopped."""
     now = datetime(2026, 9, 15, 12, tzinfo=UTC)
     conn = _Conn({"SELECT name, watermark, last_run_at, last_error FROM collector_state": [
-        {"name": "chat_sent", "watermark": now - timedelta(days=5),
-         "last_run_at": now, "last_error": None},
+        {"name": "gmail_sent", "watermark": now, "last_run_at": now, "last_error": None},
+        {"name": "secretary_replies", "watermark": now - timedelta(days=3),
+         "last_run_at": now - timedelta(days=3), "last_error": None},
     ]})
-    [f] = [f for f in S.run_rules(conn, DAY) if f["kind"] == "watermark_not_advancing"]
-    assert "5 days behind" in f["summary"]
+    [f] = [f for f in S.run_rules(conn, DAY) if f["kind"] == "collector_not_running"]
+    assert "secretary_replies" in f["summary"]
 
 
-def test_a_weekend_gap_is_not_a_stalled_watermark():
-    """The threshold is longer than a weekend so Monday is not a false alarm."""
+def test_collectors_that_all_ran_together_are_not_flagged():
     now = datetime(2026, 9, 15, 12, tzinfo=UTC)
     conn = _Conn({"SELECT name, watermark, last_run_at, last_error FROM collector_state": [
-        {"name": "chat_sent", "watermark": now - timedelta(hours=60),
+        {"name": "gmail_sent", "watermark": now, "last_run_at": now, "last_error": None},
+        {"name": "chat_sent", "watermark": now,
+         "last_run_at": now - timedelta(minutes=2), "last_error": None},
+    ]})
+    assert "collector_not_running" not in _kinds(S.run_rules(conn, DAY))
+
+
+def test_a_silent_mailbox_is_no_longer_mistaken_for_a_broken_one():
+    """The watermark now means "read up to here" and advances even on a quiet
+    day, so a silent week and a dead token no longer look the same."""
+    now = datetime(2026, 9, 15, 12, tzinfo=UTC)
+    conn = _Conn({"SELECT name, watermark, last_run_at, last_error FROM collector_state": [
+        {"name": "gmail_sent:deadlift", "watermark": now - timedelta(seconds=1),
          "last_run_at": now, "last_error": None},
     ]})
-    assert "watermark_not_advancing" not in _kinds(S.run_rules(conn, DAY))
+    assert S.run_rules(conn, DAY) == []
+
 
 
 # --- the LLM pass's guard rails -------------------------------------------
@@ -200,3 +216,71 @@ def test_a_calendar_block_labelled_without_evidence_is_an_error():
     [f] = [f for f in S.run_rules(conn, DAY) if f["kind"] == "labelled_without_evidence"]
     assert f["severity"] == "error"
     assert f["detected_by"] == "rule"
+
+
+# --- a fixed finding retires itself (2026-09-15) --------------------------
+#
+# A rule finding stayed open after the day was rebuilt and kept triggering
+# health alerts for a block that no longer existed. That is how an alert
+# becomes noise.
+
+
+class _RetireConn(_Conn):
+    def __init__(self, open_rows, rule_answers=None):
+        super().__init__(rule_answers or {})
+        self.open_rows = open_rows
+        self.resolved: list[int] = []
+
+    def execute(self, sql, args=()):
+        flat = " ".join(sql.split())
+        if "status = 'open' AND detected_by = 'rule'" in flat:
+            rows = self.open_rows
+
+            class _Cur:
+                def fetchall(self_inner):
+                    return rows
+
+                def fetchone(self_inner):
+                    return rows[0] if rows else None
+
+            return _Cur()
+        if flat.startswith("UPDATE observations SET status = 'resolved'"):
+            self.resolved.append(args[1])
+
+            class _Cur:
+                def fetchone(self_inner):
+                    return {"id": args[1]}
+
+            return _Cur()
+        return super().execute(sql, args)
+
+
+def test_a_rule_finding_that_no_longer_reproduces_is_retired():
+    conn = _RetireConn([{"id": 884, "fingerprint": "gone", "summary": "an old finding"}])
+    retired = S._retire_fixed_rules(conn, DAY, findings=[])
+    assert retired == 1 and conn.resolved == [884]
+
+
+def test_a_rule_finding_that_still_reproduces_stays_open():
+    still = {"fp": "here", "detected_by": "rule"}
+    conn = _RetireConn([{"id": 884, "fingerprint": "here", "summary": "still true"}])
+    assert S._retire_fixed_rules(conn, DAY, findings=[still]) == 0
+    assert conn.resolved == []
+
+
+def test_an_llm_finding_is_never_retired_by_absence():
+    """A model's opinion is not reproducible, so not repeating it proves
+    nothing about whether the thing it noticed was fixed."""
+    import inspect
+
+    # The only query that finds retirable rows filters on detected_by='rule',
+    # so an LLM finding is never even a candidate.
+    source = inspect.getsource(S._retire_fixed_rules)
+    assert "detected_by = 'rule'" in source
+    assert "f[\"detected_by\"] == \"rule\"" in source
+
+
+def test_a_crashed_rules_pass_retires_nothing():
+    """An empty findings list from a crash looks exactly like a clean day."""
+    assert S.dry_run_like([{"kind": "_rules_pass_failed", "detected_by": "rule"}])
+    assert not S.dry_run_like([])

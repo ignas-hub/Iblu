@@ -38,9 +38,10 @@ logger = logging.getLogger("iblu_keeper.analyst.sensecheck")
 # genuinely is unobserved, and crying wolf would train Ignas to ignore this.
 UNTRACKED_ALARM_PCT = 95
 
-# How long a collector may go without its watermark moving before that is worth
-# saying out loud. Longer than a weekend, so Monday morning is not a false alarm.
-STALE_WATERMARK_HOURS = 72
+# How far behind its siblings a collector may fall before that is worth saying
+# out loud. Every collector runs in the same tick, so a lag this large means one
+# is being skipped entirely rather than merely finding nothing.
+STALE_COLLECTOR_HOURS = 24
 
 
 # --- deterministic invariants ----------------------------------------------
@@ -187,10 +188,13 @@ def run_rules(conn, on: date) -> list[dict]:
             fp_parts=(on,),
         )
 
-    # 6. Collectors: errors, and watermarks that stopped moving.
-    for row in conn.execute(
+    # 6. Collectors: errors, and one quietly not running while the rest do.
+    collectors = conn.execute(
         "SELECT name, watermark, last_run_at, last_error FROM collector_state"
-    ).fetchall():
+    ).fetchall()
+    runs = [r["last_run_at"] for r in collectors if r["last_run_at"]]
+    newest_run = max(runs) if runs else None
+    for row in collectors:
         if row["last_error"]:
             _flag(
                 "collector_error",
@@ -201,26 +205,32 @@ def run_rules(conn, on: date) -> list[dict]:
                 evidence={"collector": row["name"], "error": row["last_error"][:500]},
                 fp_parts=(row["name"], (row["last_error"] or "")[:60]),
             )
-        stale = (
-            row["watermark"]
-            and row["last_run_at"]
-            and row["last_run_at"] - row["watermark"] > timedelta(hours=STALE_WATERMARK_HOURS)
-        )
-        if stale:
-            _flag(
-                "watermark_not_advancing",
-                f"collector {row['name']} has run recently but its watermark is "
-                f"{(row['last_run_at'] - row['watermark']).days} days behind",
-                detail="The collector is running and finding nothing new. Either "
-                       "that is true, or its query stopped matching — the second "
-                       "looks identical to the first from the outside.",
-                evidence={
-                    "collector": row["name"],
-                    "watermark": str(row["watermark"]),
-                    "last_run_at": str(row["last_run_at"]),
-                },
-                fp_parts=(row["name"],),
-            )
+        # A collector that has simply stopped running, while its siblings carry
+        # on. This used to compare the watermark against the last run, but the
+        # watermark now means "read up to here" and advances even on a silent
+        # day — so that comparison can no longer detect anything. What still
+        # can: one collector falling behind the others. That is how the LLM
+        # pass spotted `secretary_replies` had not run for two days "unlike all
+        # other collectors".
+        if row["last_run_at"] and newest_run:
+            behind = newest_run - row["last_run_at"]
+            if behind > timedelta(hours=STALE_COLLECTOR_HOURS):
+                _flag(
+                    "collector_not_running",
+                    f"collector {row['name']} last ran {behind.days}d "
+                    f"{behind.seconds // 3600}h before the others",
+                    detail="Every collector runs in the same tick, so one of "
+                           "them lagging means it is being skipped — dropped "
+                           "from the registry, or its account no longer "
+                           "configured. It fails silently because nothing "
+                           "errors; it simply never runs.",
+                    evidence={
+                        "collector": row["name"],
+                        "last_run_at": str(row["last_run_at"]),
+                        "newest_run": str(newest_run),
+                    },
+                    fp_parts=(row["name"],),
+                )
 
     # 7. The mission on disk drifting from the seeded copy.
     try:
@@ -408,6 +418,9 @@ def run(conn, on: date, *, use_llm: bool = True) -> dict:
         findings += run_rules(conn, on)
     except Exception as exc:  # noqa: BLE001
         logger.warning("sensecheck: rules pass failed (%s)", exc, exc_info=True)
+        # Marks this pass as "we know nothing" rather than "the day is clean",
+        # so nothing gets retired on the strength of a crash. Never recorded.
+        findings.append({"kind": "_rules_pass_failed", "detected_by": "rule"})
 
     llm_ok = False
     if use_llm:
@@ -429,11 +442,23 @@ def run(conn, on: date, *, use_llm: bool = True) -> dict:
 
     recorded = 0
     for f in findings:
+        if f.get("kind") == "_rules_pass_failed":
+            continue          # an internal marker, not a finding
         try:
             obs.record(conn, **f)
             recorded += 1
         except Exception:  # noqa: BLE001
             logger.warning("sensecheck: could not record %s", f.get("kind"), exc_info=True)
+
+    # A deterministic finding that no longer reproduces has been fixed, and
+    # should say so itself. Without this, a rule finding stayed open after the
+    # day was rebuilt and kept triggering alerts for a block that no longer
+    # existed — which is how a health alert becomes noise. Only `rule`
+    # findings: an LLM's opinion is not reproducible, so its absence on one run
+    # is not evidence that anything changed.
+    retired = 0
+    if not dry_run_like(findings):
+        retired = _retire_fixed_rules(conn, on, findings)
 
     logger.info(
         "sensecheck %s: %d finding(s) recorded (llm=%s)", on, recorded, llm_ok
@@ -441,7 +466,44 @@ def run(conn, on: date, *, use_llm: bool = True) -> dict:
     return {
         "date": str(on),
         "findings": recorded,
+        "retired": retired,
         "rules": sum(1 for f in findings if f["detected_by"] == "rule"),
         "llm": sum(1 for f in findings if f["detected_by"] == "llm"),
         "llm_ran": llm_ok,
     }
+
+
+def dry_run_like(findings: list[dict]) -> bool:
+    """A pass that produced nothing because it crashed must not retire anything.
+
+    `run_rules` returning [] legitimately means "the day is clean". `run_rules`
+    raising means we know nothing, and `run` has already logged it — but the
+    empty list that reaches here looks identical. The flag it sets is the
+    difference between "fixed" and "not checked".
+    """
+    return any(f.get("kind") == "_rules_pass_failed" for f in findings)
+
+
+def _retire_fixed_rules(conn, on: date, findings: list[dict]) -> int:
+    """Close open rule findings for this day that the current pass did not repeat."""
+    still_true = {f["fp"] for f in findings if f["detected_by"] == "rule"}
+    open_rows = conn.execute(
+        """
+        SELECT id, fingerprint, summary FROM observations
+         WHERE status = 'open' AND detected_by = 'rule' AND source = 'sensecheck'
+           AND evidence ->> 'date' = %s
+        """,
+        (str(on),),
+    ).fetchall()
+
+    retired = 0
+    for row in open_rows:
+        if row["fingerprint"] in still_true:
+            continue
+        if obs.resolve(
+            conn, row["id"],
+            f"no longer reproduces: the {on} sense-check re-ran and did not find it",
+        ):
+            retired += 1
+            logger.info("sensecheck: retired #%s (%s)", row["id"], row["summary"][:60])
+    return retired

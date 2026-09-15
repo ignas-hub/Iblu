@@ -316,3 +316,24 @@ def test_the_bookkeepers_domain_means_company_admin_not_personal_finance():
         subject="Dokumenti mjesec 08. Blank Label d.o.o.",
     )
     assert venture == "blt"
+
+
+# --- the watermark means "read up to here" (2026-09-15) -------------------
+
+
+def test_a_quiet_mailbox_still_advances_its_watermark():
+    """gmail_sent:deadlift sat five days behind its own last run because the
+    watermark tracked the newest signal found rather than how far the collector
+    had read. A silent week then looked exactly like a dead token, and the
+    collector re-read the same window on every tick."""
+    import inspect
+
+    from iblu_keeper.collectors import chat_sent, gmail_sent
+
+    for module in (gmail_sent, chat_sent):
+        source = inspect.getsource(module.collect)
+        assert "max(newest, read_through)" in source, module.__name__
+        assert "read_through = datetime.now(timezone.utc)" in source, module.__name__
+        # Taken before the read, not after — otherwise a message arriving
+        # mid-run is skipped rather than re-read.
+        assert source.index("read_through =") < source.index("max(newest, read_through)")

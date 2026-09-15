@@ -80,6 +80,9 @@ def collect(
 
     inserted = 0
     newest = since
+    # Taken BEFORE the read, so anything that arrives during it is re-read next
+    # run rather than skipped.
+    read_through = datetime.now(timezone.utc)
     seen_spaces = 0
     page_token = None
 
@@ -185,7 +188,16 @@ def collect(
         if not page_token:
             break
 
+    # The watermark means "I have read up to here", not "the newest thing I
+    # found". Leaving it at the newest signal meant a quiet mailbox looked
+    # identical to a broken one: gmail_sent:deadlift sat five days behind its
+    # own last run, the collector re-read the same window on every tick, and
+    # the staleness check could never tell a silent week from a dead token.
+    #
+    # `get_watermark` subtracts OVERLAP when reading it back, so a message that
+    # arrived while this run was mid-flight is still picked up next time, and
+    # UNIQUE(source, source_ref) makes the re-read free.
     if not dry:
-        set_state(conn, state_key, watermark=newest, error=None)
+        set_state(conn, state_key, watermark=max(newest, read_through), error=None)
     logger.info("%s[%s]: %d new signal(s) across %d space(s)", NAME, alias, inserted, seen_spaces)
     return inserted

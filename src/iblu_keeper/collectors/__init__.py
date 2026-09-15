@@ -63,11 +63,15 @@ def set_state(
     conn.execute(
         """
         INSERT INTO collector_state (name, watermark, cursor, last_run_at, last_error)
-        VALUES (%s, %s, %s, now(), %s)
+        -- clock_timestamp(), not now(): `now()` is the TRANSACTION start time,
+        -- and every collector in a tick shares one transaction. It recorded all
+        -- of them as having run at the instant the tick began, which made
+        -- last_run_at read slightly EARLIER than a watermark taken mid-run.
+        VALUES (%s, %s, %s, clock_timestamp(), %s)
         ON CONFLICT (name) DO UPDATE SET
             watermark   = COALESCE(EXCLUDED.watermark, collector_state.watermark),
             cursor      = COALESCE(EXCLUDED.cursor,    collector_state.cursor),
-            last_run_at = now(),
+            last_run_at = clock_timestamp(),
             last_error  = EXCLUDED.last_error
         """,
         (name, watermark, cursor, error),
