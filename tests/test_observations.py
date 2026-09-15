@@ -151,3 +151,33 @@ def test_a_repeat_says_how_often():
 
 def test_the_document_says_how_to_close_something():
     assert "--resolve" in obs.as_markdown([_row()])
+
+
+# --- leads that stop recurring stop being shown (2026-09-15) --------------
+
+
+def test_an_unrepeated_llm_lead_ages_out():
+    conn = _FakeConn([{"id": 1}, {"id": 2}])
+    assert obs.age_out_llm_leads(conn) == 2
+    sql = conn.sql[0]
+    assert "detected_by = 'llm'" in sql
+    assert "severity <> 'error'" in sql
+    assert "status = 'resolved'" in sql
+    assert "DELETE" not in sql
+
+
+def test_ageing_out_says_not_reproduced_rather_than_fixed():
+    """Nobody checked. That is the honest claim, and it is why this only
+    applies to leads and never to rule findings."""
+    conn = _FakeConn([{"id": 1}])
+    obs.age_out_llm_leads(conn)
+    resolution = conn.args[0][0]
+    assert "not reproduced" in resolution
+    assert "fixed" not in resolution.lower()
+
+
+def test_an_error_never_ages_out():
+    """An error means IBLU is not recording. It goes away when it is fixed."""
+    conn = _FakeConn([])
+    obs.age_out_llm_leads(conn)
+    assert "severity <> 'error'" in conn.sql[0]

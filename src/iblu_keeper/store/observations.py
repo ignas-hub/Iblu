@@ -154,6 +154,39 @@ def resolve(conn, observation_id: int, resolution: str) -> bool:
     return row is not None
 
 
+# How long an unrepeated LLM lead stays open. A model's finding cannot retire
+# itself the way a rule's can — absence on one run proves nothing, because the
+# output is not reproducible. But keeping them forever is worse: the list silts
+# up with leads about days that have since been rebuilt, and the real signals
+# drown in them. A week without recurrence is enough to stop showing it.
+LLM_LEAD_TTL = timedelta(days=7)
+
+
+def age_out_llm_leads(conn, *, ttl: timedelta = LLM_LEAD_TTL) -> int:
+    """Close LLM findings that have not recurred. Rule findings are untouched.
+
+    Deliberately worded as "not reproduced" rather than "fixed": nobody checked.
+    That is the honest claim, and it is why this only applies to leads.
+    """
+    rows = conn.execute(
+        """
+        UPDATE observations
+           SET status = 'resolved', resolved_at = now(),
+               resolution = %s
+         WHERE status = 'open' AND detected_by = 'llm'
+           AND severity <> 'error'
+           AND last_seen_at < %s
+        RETURNING id
+        """,
+        (
+            f"aged out: not reproduced in {ttl.days} days. A lead, not a fact — "
+            f"nobody confirmed or refuted it, and it stopped recurring.",
+            datetime.now(timezone.utc) - ttl,
+        ),
+    ).fetchall()
+    return len(rows)
+
+
 def summary_counts(conn, days: int = 7) -> dict:
     """How much IBLU has been catching lately, by source."""
     since = datetime.now(timezone.utc) - timedelta(days=days)

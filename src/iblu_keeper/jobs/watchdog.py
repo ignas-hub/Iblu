@@ -347,6 +347,14 @@ def run(dry: bool = False, alert: bool = True) -> int:
                 except Exception:  # noqa: BLE001
                     logger.warning("watchdog: could not record %s", finding["kind"], exc_info=True)
 
+        # Housekeeping: leads that stopped recurring stop being shown. Never
+        # errors, and never rule findings — those retire only by not
+        # reproducing, which the sense-check checks properly.
+        if not dry:
+            aged = obs.age_out_llm_leads(conn)
+            if aged:
+                logger.info("watchdog: aged out %d unrepeated lead(s)", aged)
+
         errors = [f for f in found if f["severity"] == "error"]
         logger.info(
             "watchdog: %d finding(s), %d error(s)%s",
