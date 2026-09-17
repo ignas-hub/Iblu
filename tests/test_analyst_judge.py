@@ -289,3 +289,25 @@ def test_without_signals_the_citation_guard_is_skipped():
         VENTURES, WORK_TYPES, PROJECTS,
     )
     assert "Someone else's meeting" in out[0]["reasoning"]
+
+
+def test_an_outage_is_distinguishable_from_a_quiet_judge(monkeypatch):
+    """The analyst keeps the last judged day during an API outage, so it has to
+    be able to tell "the API refused us" from "the judge had nothing to say"."""
+    class _Key:
+        anthropic_api_key = "sk-test"
+
+    monkeypatch.setattr(J, "settings", _Key())
+    monkeypatch.setattr("iblu_keeper.store.observations.record_safe", lambda **kw: None)
+
+    def _broke(*a, **k):
+        raise RuntimeError("Your credit balance is too low to access the Anthropic API.")
+
+    monkeypatch.setattr(J, "_call", _broke)
+    _, used = J.judge([block()], [], ventures=VENTURES, work_types=WORK_TYPES,
+                      projects=PROJECTS, tz=UTC)
+    assert used is False and J.failed_on_outage() is True
+
+    monkeypatch.setattr(J, "_call", lambda *a, **k: (_ for _ in ()).throw(TimeoutError("slow")))
+    J.judge([block()], [], ventures=VENTURES, work_types=WORK_TYPES, projects=PROJECTS, tz=UTC)
+    assert J.failed_on_outage() is False

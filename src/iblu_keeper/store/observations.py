@@ -313,3 +313,60 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+
+# --- the LLM layer being down is an outage, not a footnote ------------------
+#
+# Found 2026-09-17: the Anthropic credit balance ran out, and every LLM step —
+# the ping composer, the analyst's judge, the intent classifier, the
+# sense-check — fell back quietly, exactly as designed. The sense-check recorded
+# its own failure at severity `info`, so the watchdog (errors only) never said a
+# word. Graceful degradation with no alarm is indistinguishable from working.
+
+_OUTAGE_MARKERS = (
+    "credit balance", "billing", "authentication_error", "permission_error",
+    "invalid x-api-key", "invalid api key", "api key",
+)
+
+
+def is_llm_outage(exc: BaseException) -> bool:
+    """True when the API refused us for a reason that will not fix itself."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _OUTAGE_MARKERS)
+
+
+def record_llm_failure(source: str, exc: BaseException, *, context: str = "") -> None:
+    """Record an LLM failure at the severity it deserves. Never raises.
+
+    A billing or authentication refusal is ONE error for the whole system —
+    one fingerprint, whichever step hit it first — so the watchdog announces it
+    once instead of once per component. Anything else (a timeout, a malformed
+    response) stays a per-source warning, because those are transient.
+    """
+    try:
+        from ..pings.deliver import _scrub
+
+        detail = _scrub(exc)[:800]
+    except Exception:  # noqa: BLE001
+        detail = str(exc)[:800]
+
+    if is_llm_outage(exc):
+        record_safe(
+            source=source, kind="llm_unavailable", severity="error",
+            summary="the Anthropic API is refusing requests — every LLM step "
+                    "(pings, judge, calendar classifier, sense-check) is running "
+                    "on fallbacks",
+            detail=f"{detail}\n\nIf this is the credit balance, top it up at "
+                   "console.anthropic.com → Plans & Billing. Nothing is lost "
+                   "meanwhile; the reconstruction is simply unjudged.",
+            evidence={"first_seen_in": source, "context": context},
+            fp=fingerprint("llm", "unavailable"),
+        )
+        return
+    record_safe(
+        source=source, kind="llm_call_failed", severity="warn",
+        summary=f"an LLM call failed in {source}",
+        detail=detail,
+        evidence={"context": context},
+        fp=fingerprint(source, "llm_call_failed"),
+    )

@@ -302,6 +302,9 @@ def classify_missing(conn, intents: list, ventures: list[dict]) -> list:
                 "intents: classifier unavailable (%s) — leaving %d intent(s) unclassified",
                 exc, len(to_call),
             )
+            from ..store import observations as obs
+
+            obs.record_llm_failure("analyst", exc, context="intent classification")
             results = [None] * len(to_call)
         model = settings.iblu_check_model
         for (iv, key), result in zip(to_call, results):

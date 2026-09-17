@@ -146,6 +146,18 @@ def evidence_quality(rows: list[dict], signals: list[dict]) -> list[str]:
     return out
 
 
+# The most recent judge failure in this process, so the caller can tell "the
+# judge had nothing to say" from "the API is refusing us". Reset on every call.
+_last_failure: BaseException | None = None
+
+
+def failed_on_outage() -> bool:
+    """Did the last `judge()` call fail because the API refused us outright?"""
+    from ..store.observations import is_llm_outage
+
+    return _last_failure is not None and is_llm_outage(_last_failure)
+
+
 def judge(
     rows: list[dict],
     signals: list[dict],
@@ -158,22 +170,28 @@ def judge(
     """Return `(rows, llm_used)`. Never raises — a bad judge is a silent no-op."""
     if not rows or not settings.anthropic_api_key:
         return rows, False
+    global _last_failure
+    _last_failure = None
     try:
         patched = _call(rows, signals, ventures, work_types, projects, tz)
     except Exception as exc:  # noqa: BLE001 — the day stands without the judge
+        _last_failure = exc
         logger.warning("judge: unavailable or rejected (%s) — keeping the computed day", exc)
         # A rejection means either the model tried something it is not allowed
         # to do, or the guard rails are too tight. Both are worth reading later;
         # neither is visible from the reconstructed day itself.
         from ..store import observations as obs
 
-        obs.record_safe(
-            source="judge", kind="llm_output_rejected", severity="warn",
-            summary="the analyst's judge was rejected; the day was kept as computed",
-            detail=str(exc)[:1000],
-            evidence={"blocks": len(rows)},
-            fp=obs.fingerprint("judge", "llm_output_rejected", str(exc)[:60]),
-        )
+        if obs.is_llm_outage(exc):
+            obs.record_llm_failure("judge", exc, context=f"{len(rows)} blocks")
+        else:
+            obs.record_safe(
+                source="judge", kind="llm_output_rejected", severity="warn",
+                summary="the analyst's judge was rejected; the day was kept as computed",
+                detail=str(exc)[:1000],
+                evidence={"blocks": len(rows)},
+                fp=obs.fingerprint("judge", "llm_output_rejected", str(exc)[:60]),
+            )
         return rows, False
     return patched, True
 

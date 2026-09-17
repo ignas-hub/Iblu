@@ -1007,6 +1007,32 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
     # the computed day stands and `llm=False` says so.
     rows, llm_used = _judge(conn, rows, signals)
 
+    # During an API outage, keep the day as it was last judged rather than
+    # replace it with an unjudged one. Found 2026-09-17 when the credit balance
+    # ran out mid-rebuild: each rebuilt day swapped reviewed labels and
+    # reasoning for raw ones. New evidence waits for the next run with a
+    # working API; a day that has never been reconstructed is still built.
+    from .judge import failed_on_outage
+
+    if not llm_used and failed_on_outage() and not dry:
+        existing = [b for b in live_blocks(conn, on) if not _is_confirmed(b)]
+        if existing:
+            logger.warning(
+                "analyst %s: LLM unavailable — keeping the last judged reconstruction "
+                "(%d blocks) instead of replacing it", on, len(existing),
+            )
+            return {
+                "date": on.isoformat(), "signals": len(signals),
+                "intents": len(intents), "blocks": len(existing),
+                "kept_previous": True, "llm": False, "dry": dry,
+                "by_attention": _counts(existing),
+                "minutes": {
+                    k: sum(int((b["ends_at"] - b["starts_at"]).total_seconds() // 60)
+                           for b in existing if b["attention"] == k)
+                    for k in ("present", "displaced", "ambiguous")
+                },
+            }
+
     summary = {
         "date": on.isoformat(),
         "signals": len(signals),

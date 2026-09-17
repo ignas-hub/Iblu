@@ -181,3 +181,40 @@ def test_an_error_never_ages_out():
     conn = _FakeConn([])
     obs.age_out_llm_leads(conn)
     assert "severity <> 'error'" in conn.sql[0]
+
+
+# --- an API outage is an error, recorded once (2026-09-17) ----------------
+
+
+def test_a_billing_refusal_is_an_outage():
+    exc = RuntimeError("Error code: 400 - {'message': 'Your credit balance is too low "
+                       "to access the Anthropic API.'}")
+    assert obs.is_llm_outage(exc)
+
+
+def test_an_auth_refusal_is_an_outage():
+    assert obs.is_llm_outage(RuntimeError("authentication_error: invalid x-api-key"))
+
+
+def test_a_timeout_is_not_an_outage():
+    assert not obs.is_llm_outage(TimeoutError("Request timed out."))
+
+
+def test_every_component_reports_the_same_outage_once(monkeypatch):
+    """One error for the whole system, whichever step hit it first — so the
+    watchdog announces it once instead of four times."""
+    calls = []
+    monkeypatch.setattr(obs, "record_safe", lambda **kw: calls.append(kw))
+    exc = RuntimeError("Your credit balance is too low")
+    for source in ("composer", "judge", "analyst", "sensecheck"):
+        obs.record_llm_failure(source, exc)
+    assert {c["fp"] for c in calls} == {obs.fingerprint("llm", "unavailable")}
+    assert all(c["severity"] == "error" for c in calls)
+
+
+def test_a_transient_failure_stays_a_per_source_warning(monkeypatch):
+    calls = []
+    monkeypatch.setattr(obs, "record_safe", lambda **kw: calls.append(kw))
+    obs.record_llm_failure("judge", TimeoutError("timed out"))
+    assert calls[0]["severity"] == "warn"
+    assert calls[0]["kind"] == "llm_call_failed"

@@ -965,6 +965,9 @@ def compose(
         attention = None
     except Exception as exc:  # noqa: BLE001 - the API being down is not fatal
         logger.warning("compose: llm unavailable (%s) — using fallback", exc)
+        from ..store import observations as obs
+
+        obs.record_llm_failure("composer", exc, context="ping composition")
         attention = None
 
     if attention is None:

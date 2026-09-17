@@ -437,14 +437,7 @@ def run(conn, on: date, *, use_llm: bool = True) -> dict:
             logger.warning("sensecheck: llm pass unavailable (%s)", exc)
             # The check failing is itself worth knowing about — quietly losing
             # the second opinion is exactly the silence this module exists for.
-            obs.record_safe(
-                source="sensecheck", kind="llm_sensecheck_unavailable",
-                severity="info",
-                summary="the LLM sense-check could not run",
-                detail=str(exc)[:500],
-                evidence={"date": str(on)},
-                fp=obs.fingerprint("sensecheck", "llm_unavailable"),
-            )
+            obs.record_llm_failure("sensecheck", exc, context=str(on))
 
     recorded = 0
     for f in findings:
