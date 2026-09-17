@@ -15,6 +15,10 @@ Three hard limits, all enforced after the call rather than asked for politely:
   * **It may not upgrade confidence.** Only a tap makes a block a `fact`.
   * **It may not invent a code.** Every venture, work type and project it
     returns must already exist.
+  * **It may not quote another block.** A reasoning line may only put a
+    calendar title or an evidence subject/counterpart in quotes when that
+    text belongs to THIS block — otherwise a 07:00 block can read as though a
+    14:45 meeting happened inside it. See `_cites_other_block`.
 
 Any violation, any timeout, any malformed JSON — the deterministic day stands
 and `llm=False` is recorded on every block, so a later reader can tell which
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from ..config import settings
 
@@ -56,6 +61,12 @@ report was written. You may improve its reasoning line and nothing else.
 A block whose line shows `evidence=silent` has signals with no readable text —
 messages that render as nothing but a name. Those show he was present and
 nothing more. Do not give such a block a work type or a project.
+
+When your reasoning line puts something in double quotes, it must be THIS
+block's own calendar title or something from THIS block's own evidence —
+never another block's. A reasoning that quotes a title or subject that does
+not belong to the block it is attached to is rejected outright and the
+computed line is kept instead.
 
 Return only JSON: {"blocks": [{"i": <index>, "venture": <code|null>,
 "work_type": <code|null>, "project": <code|null>, "reasoning": "<=120 chars"}]}
@@ -211,6 +222,7 @@ Evidence behind them:
         text = text.split("```")[1].removeprefix("json").strip()
     return apply_patch(
         rows, json.loads(text), ventures, work_types, projects, quality=quality,
+        signals=signals,
     )
 
 
@@ -227,6 +239,46 @@ def _rejected_language(text: str) -> bool:
     return bool(violations)
 
 
+_QUOTE_RE = re.compile(r'"([^"]+)"')
+
+
+def _own_quotes(block: dict, signals: list[dict]) -> set[str]:
+    """Everything this block is allowed to put in quotes: its own intent
+    title, and the subject/counterpart of its own evidence."""
+    quotes: set[str] = set()
+    if block.get("intent_title"):
+        quotes.add(block["intent_title"])
+    by_id = {s["id"]: s for s in signals}
+    for sid in (block.get("evidence") or []):
+        s = by_id.get(sid)
+        if not s:
+            continue
+        for value in (s.get("subject"), s.get("counterpart")):
+            if value:
+                quotes.add(value)
+    return quotes
+
+
+def _cites_other_block(text: str, block: dict, signals: list[dict] | None) -> bool:
+    """True when `text` double-quotes something that is not this block's own.
+
+    `signals=None` (the default for callers that pass no evidence, mirroring
+    `quality`'s back-compat rule) skips the check entirely rather than reject
+    everything with a quote in it.
+    """
+    if signals is None:
+        return False
+    quoted = _QUOTE_RE.findall(text)
+    if not quoted:
+        return False
+    own = _own_quotes(block, signals)
+    for q in quoted:
+        if any(q == o or q in o for o in own):
+            continue
+        return True
+    return False
+
+
 def apply_patch(
     rows: list[dict],
     payload: dict,
@@ -234,6 +286,7 @@ def apply_patch(
     work_types: list[str],
     projects: list[str],
     quality: list[str] | None = None,
+    signals: list[dict] | None = None,
 ) -> list[dict]:
     """Merge the judge's corrections, dropping anything it was not allowed to say.
 
@@ -285,7 +338,14 @@ def apply_patch(
             # email subjects, so an inbound subject line is an untrusted input
             # with a path to this string. A rejected line simply keeps the
             # computed one.
-            if _rejected_language(str(patch["reasoning"])):
+            reasoning_text = str(patch["reasoning"])
+            if _cites_other_block(reasoning_text, block, signals):
+                logger.info(
+                    "judge: reasoning for block %d quoted text outside its own "
+                    "block — keeping the computed line", i,
+                )
+                continue
+            if _rejected_language(reasoning_text):
                 continue
             # The duration is arithmetic and stays IBLU's; the judge supplies
             # only the "why". Letting it rewrite the whole line lost the

@@ -155,6 +155,57 @@ class Settings:
                 out.append(acct)
         return out
 
+    # --- Intent calendars beyond each account's primary (analyst) ---
+    #
+    # `load_intents` always reads every configured account's primary calendar.
+    # This is for the calendars that are NOT anyone's Workspace primary but
+    # still say something about the intended day — a shared family calendar,
+    # a personal Gmail calendar — read through whichever account already has
+    # access, with no new OAuth scope and no new consent screen.
+    #
+    # Format: `venture:calendar_id[|account_alias]`, comma-separated entries.
+    # The account suffix is separated by `|`, not `@` — a calendar id is
+    # itself an email-shaped string (`...@group.calendar.google.com`), so `@`
+    # cannot also be the delimiter. Omitting `|account` defaults to the
+    # primary account. Example:
+    #     INTENT_CALENDARS=family:abc123@group.calendar.google.com|blt,family:ignas.personal@gmail.com|blt
+    #
+    # CAUTION, the mistake HANDOFF §23 is named after: `family` and `personal`
+    # are NOT interchangeable ventures here. `personal` means "own tooling &
+    # infra" — work — and `family` means family & personal life. A shared
+    # family calendar or a personal Gmail calendar belongs under `family:`,
+    # never `personal:`.
+    intent_calendars: str = field(
+        default_factory=lambda: os.getenv("INTENT_CALENDARS", "")
+    )
+
+    @property
+    def intent_calendars_parsed(self) -> list[dict[str, str]]:
+        """`INTENT_CALENDARS` parsed into `{venture, calendar_id, account}` dicts.
+
+        Deliberately permissive here — an unparsable or unknown-venture entry
+        is the caller's problem to validate against the actual venture
+        registry (a DB round trip config.py has no business making); this
+        property only does the string surgery.
+        """
+        out: list[dict[str, str]] = []
+        for entry in self.intent_calendars.split(","):
+            entry = entry.strip()
+            if not entry or ":" not in entry:
+                continue
+            venture, rest = entry.split(":", 1)
+            venture = venture.strip()
+            if "|" in rest:
+                calendar_id, account = rest.rsplit("|", 1)
+            else:
+                calendar_id, account = rest, self.primary_alias
+            calendar_id = calendar_id.strip()
+            account = account.strip().lower() or self.primary_alias
+            if not venture or not calendar_id:
+                continue
+            out.append({"venture": venture, "calendar_id": calendar_id, "account": account})
+        return out
+
     # --- Slack workspaces (week 3) ---
     #
     # Slack scopes `search.messages` to a USER token (xoxp-) — a bot token

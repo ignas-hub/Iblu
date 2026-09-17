@@ -143,6 +143,7 @@ def _registry() -> list[tuple[str, Callable, str]]:
     """
     from .calendar_changes import collect as calendar_collect
     from .chat_sent import collect as chat_collect
+    from .git_commits import collect as git_collect
     from .gmail_sent import collect as gmail_collect
     from .slack_sent import collect as slack_collect
 
@@ -151,6 +152,7 @@ def _registry() -> list[tuple[str, Callable, str]]:
         ("chat_sent", chat_collect, "google"),
         ("calendar_changes", calendar_collect, "google"),
         ("slack_sent", slack_collect, "slack"),
+        ("git_commits", git_collect, "primary"),
     ]
 
 

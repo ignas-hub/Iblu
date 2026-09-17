@@ -33,8 +33,8 @@ def signal(n: int, when: datetime, venture="blt", confidence="inferred",
     }
 
 
-def intent(start: datetime, end: datetime, venture=None, title="Meeting", event_id="e1"):
-    return B.Interval(start=start, end=end, event_id=event_id, title=title, venture=venture)
+def intent(start: datetime, end: datetime, venture=None, title="Meeting", event_id="e1", **kw):
+    return B.Interval(start=start, end=end, event_id=event_id, title=title, venture=venture, **kw)
 
 
 # --- clustering -----------------------------------------------------------
@@ -456,3 +456,424 @@ def test_a_partially_overlapping_event_still_reports_the_part_that_is_its_own():
     assert "first" in titles and "second" in titles
     for first, second in zip(blocks, blocks[1:]):
         assert first["ends_at"] <= second["starts_at"]
+
+
+# --- label thresholds instead of bare majorities (item C) ------------------
+
+
+def test_a_mixed_cluster_gets_no_project_when_nothing_has_a_real_majority():
+    """The Email Writer smear: a 135-minute block of "invoices, ITIN/company
+    setup, a client thread" got tagged project 'email-writer' because that was
+    the single most common Chat space among many unrelated ones — a plurality
+    of one, not agreement."""
+    rows = [
+        signal(1, at(9, 0), project="invoices"),
+        signal(2, at(9, 10), project="itin-setup"),
+        signal(3, at(9, 20), project="client-thread"),
+        signal(4, at(9, 30), project="email-writer"),
+    ]
+    [block] = B.build(B.cluster_signals(rows), [])
+    assert block["project"] is None
+
+
+def test_project_below_coverage_threshold_is_none_even_with_full_agreement():
+    """One signal naming a project out of three who bothered to is not the
+    same as three out of thirty — LABEL_COVERAGE, not just LABEL_AGREEMENT."""
+    rows = [
+        signal(1, at(9, 0), project="machina"),
+        signal(2, at(9, 10)),
+        signal(3, at(9, 20)),
+    ]
+    [block] = B.build(B.cluster_signals(rows), [])
+    assert block["project"] is None
+
+
+def test_project_assigned_when_it_clears_both_thresholds():
+    rows = [
+        signal(1, at(9, 0), project="machina"),
+        signal(2, at(9, 10), project="machina"),
+        signal(3, at(9, 20)),
+    ]
+    [block] = B.build(B.cluster_signals(rows), [])
+    assert block["project"] == "machina"
+
+
+def test_venture_is_none_when_it_is_an_exact_tie():
+    """VENTURE_AGREEMENT is 'more than 50%' — an exact tie is not a winner."""
+    rows = [signal(1, at(9, 0), venture="blt"), signal(2, at(9, 10), venture="choco")]
+    [block] = B.build(B.cluster_signals(rows), [])
+    assert block["venture"] is None
+
+
+def test_thresholds_are_applied_per_slice_not_per_cluster():
+    """A cluster cut at an intent boundary must not let one slice's evidence
+    decide another slice's label."""
+    rows = [
+        signal(1, at(9, 40), project="machina"),
+        signal(2, at(9, 45), project="machina"),
+        signal(3, at(10, 5), project="other-thing"),
+    ]
+    intents = [intent(at(10, 0), at(11, 0), venture="blt")]
+    blocks = B.build(B.cluster_signals(rows), intents)
+    before = [b for b in blocks if b["ends_at"] <= at(10, 0)]
+    after = [b for b in blocks if b["starts_at"] >= at(10, 0)]
+    assert before and before[0]["project"] == "machina"
+    # One lone signal in the after-slice: it has 100% agreement of the votes
+    # that exist, but that is not what breaks it — there is nothing here that
+    # should leak "machina" across the boundary.
+    assert after and after[0]["project"] != "machina"
+
+
+# --- zero-signal slice inside an intent (item D) ---------------------------
+
+
+def test_zero_signal_slice_inside_an_intent_is_ambiguous_not_present():
+    """11:00-11:15 during "Alexan Ignas Emory sync" had evidence=[] yet
+    attention=present, inherited from the surrounding cluster widened by
+    TAIL/flooring and then cut at the intent boundary. That inheritance is
+    only honest when nothing claims the time; here the intent does."""
+    clusters = B.cluster_signals([signal(1, at(10, 5), venture="blt")])
+    intents = [intent(at(10, 10), at(10, 15), venture="family", title="Alexan Ignas Emory sync",
+                       event_id="sync1")]
+    blocks = B.build(clusters, intents)
+    tail = [b for b in blocks if b["starts_at"] == at(10, 10)]
+    assert len(tail) == 1
+    [b] = tail
+    assert b["evidence"] == []
+    assert b["attention"] == "ambiguous"
+    assert b["venture"] == "family"
+    assert b["work_type"] is None
+    assert b["project"] is None
+    assert 'was on the calendar' in b["reasoning"]
+
+
+def test_a_zero_signal_slice_not_inside_any_intent_keeps_todays_behaviour():
+    rows = [signal(n, at(9, n * 10)) for n in range(6)]
+    [block] = B.build(B.cluster_signals(rows), [])
+    assert block["attention"] == "present"
+
+
+# --- context intents never create blocks or cause displacement (real-data
+#     follow-up: shared family calendars, whereabouts markers, travel
+#     markers) -------------------------------------------------------------
+
+
+def test_a_spouse_created_family_event_is_context_only():
+    """A shared family calendar holds other people's plans too — every event
+    on it becoming Ignas's intent would mark his work 'displaced' whenever
+    his wife has an appointment."""
+    iv = intent(at(10, 0), at(11, 0), venture="family", title="Greta nicoj",
+                event_id="g1", is_context=True, needs_commitment_check=True)
+    clusters = B.cluster_signals([signal(1, at(10, 5), venture="blt")])
+    blocks = B.build(clusters, [iv])
+    assert all(b["intent_event_id"] != "g1" for b in blocks)
+    assert all(b["attention"] != "displaced" for b in blocks)
+    [block] = blocks
+    assert block["attention"] == "present"
+
+
+def test_an_ignas_commitment_family_event_causes_displacement():
+    iv = intent(at(10, 0), at(11, 0), venture="family", title="Futbolas",
+                event_id="f1", is_context=False, needs_commitment_check=True)
+    clusters = B.cluster_signals([signal(1, at(10, 5), venture="blt")])
+    block, *_ = B.build(clusters, [iv])
+    assert block["attention"] == "displaced"
+
+
+def test_a_very_long_event_produces_no_block():
+    """"Ignas LT Fri 12h - Sun 17h" is a three-day travel marker; taken as an
+    intent it would claim every waking hour of three days."""
+    iv = intent(at(7, 0), at(20, 0), venture="family", title="Ignas LT Fri-Sun",
+                event_id="long1", is_context=True, is_context_locked=True)
+    blocks = B.build([], [iv])
+    assert blocks == []
+
+
+def test_compact_intent_marks_an_event_over_twelve_hours_as_locked_context():
+    from zoneinfo import ZoneInfo
+
+    event = {
+        "id": "e1",
+        "summary": "Ignas LT Fri 12h - Sun 17h",
+        "start": {"dateTime": "2026-09-11T12:00:00+02:00"},
+        "end": {"dateTime": "2026-09-13T17:00:00+02:00"},
+    }
+    iv = B._compact_intent(
+        event, calendar_id="fam", account="blt", default_venture="family",
+        needs_commitment_check=True, tz=ZoneInfo("Europe/Zagreb"),
+        window=(at(0, 0) - timedelta(days=10), at(0, 0) + timedelta(days=10)),
+    )
+    assert iv.is_context_locked is True
+    assert iv.is_context is True
+
+
+# --- family-presence inference (item: "assume the family event happened") --
+
+
+def test_quiet_family_span_is_inferred_present():
+    outside = signal(0, at(7, 0), venture="blt")
+    clusters = B.cluster_signals([outside])
+    fam = intent(at(10, 0), at(10, 40), venture="family", title="Futbolas", event_id="fut1")
+    blocks = B.build(clusters, [fam])
+    [b] = [x for x in blocks if x["intent_event_id"] == "fut1"]
+    assert b["attention"] == "present"
+    assert b["venture"] == "family"
+    assert b["confidence"] == "inferred"
+    assert "assumed it happened" in b["reasoning"]
+
+
+def test_family_span_mostly_covered_by_work_is_not_inferred():
+    """"If most of the time I was on Claude Code or email, maybe it didn't
+    happen." FAMILY_INFERENCE_MAX_WORK_SHARE."""
+    outside = signal(0, at(7, 0), venture="blt")
+    work1 = signal(1, at(10, 0), venture="blt")
+    work2 = signal(2, at(10, 25), venture="blt")
+    clusters = B.cluster_signals([outside, work1, work2])
+    fam = intent(at(10, 0), at(11, 10), venture="family", title="Futbolas", event_id="fut3")
+    blocks = B.build(clusters, [fam])
+    fam_blocks = [b for b in blocks if b["intent_event_id"] == "fut3"]
+    remainder = [b for b in fam_blocks if b["attention"] != "displaced"]
+    assert remainder, "expected an ambiguous remainder to still exist"
+    assert all(b["attention"] == "ambiguous" for b in remainder)
+
+
+def test_the_three_part_family_example_breaks_down_correctly():
+    """Ignas's own illustration: quiet, then working, then quiet again — the
+    Secretary calendar should show all three, not one flat 'ambiguous'."""
+    outside = signal(0, at(7, 0), venture="blt")
+    work1 = signal(1, at(11, 0), venture="blt")
+    work2 = signal(2, at(11, 10), venture="blt")
+    clusters = B.cluster_signals([outside, work1, work2])
+    fam = intent(at(10, 0), at(13, 0), venture="family", title="Futbolas", event_id="fut4")
+    blocks = B.build(clusters, [fam])
+    fam_blocks = sorted(
+        (b for b in blocks if b["intent_event_id"] == "fut4"),
+        key=lambda b: b["starts_at"],
+    )
+    assert [b["attention"] for b in fam_blocks] == ["present", "displaced", "present"]
+    assert fam_blocks[0]["venture"] == "family" and "assumed" in fam_blocks[0]["reasoning"]
+    assert fam_blocks[1]["venture"] == "blt"
+    assert fam_blocks[2]["venture"] == "family" and "assumed" in fam_blocks[2]["reasoning"]
+
+
+def test_a_short_quiet_gap_is_not_inferred_as_family():
+    """FAMILY_INFERENCE_MIN_MINUTES: a gap between two bursts of chat is not
+    family time."""
+    outside = signal(0, at(7, 0), venture="blt")
+    clusters = B.cluster_signals([outside])
+    fam = intent(at(10, 0), at(10, 15), venture="family", title="Futbolas", event_id="fut5")
+    blocks = B.build(clusters, [fam])
+    [b] = [x for x in blocks if x["intent_event_id"] == "fut5"]
+    assert b["attention"] == "ambiguous"
+
+
+def test_no_signal_outside_the_family_span_leaves_it_ambiguous():
+    """A quiet afternoon and a dead collector look identical unless there is
+    a signal somewhere else that day proving the recorder was running."""
+    fam = intent(at(10, 0), at(10, 40), venture="family", title="Futbolas", event_id="fut6")
+    blocks = B.build([], [fam])
+    [b] = blocks
+    assert b["attention"] == "ambiguous"
+
+
+def test_family_inference_does_not_reach_past_the_data_horizon():
+    outside = signal(0, at(7, 0), venture="blt")
+    clusters = B.cluster_signals([outside])
+    fam = intent(at(10, 0), at(10, 40), venture="family", title="Futbolas", event_id="fut7")
+    blocks = B.build(clusters, [fam], horizon=at(10, 20))
+    [b] = [x for x in blocks if x["intent_event_id"] == "fut7"]
+    assert b["attention"] == "ambiguous"
+
+
+def test_family_inference_applies_fully_before_the_horizon():
+    outside = signal(0, at(7, 0), venture="blt")
+    clusters = B.cluster_signals([outside])
+    fam = intent(at(10, 0), at(10, 40), venture="family", title="Futbolas", event_id="fut8")
+    blocks = B.build(clusters, [fam], horizon=at(11, 0))
+    [b] = [x for x in blocks if x["intent_event_id"] == "fut8"]
+    assert b["attention"] == "present" and b["venture"] == "family"
+
+
+def test_a_work_meeting_with_no_signals_stays_ambiguous_not_inferred():
+    """Unchanged: family-presence inference never applies to a non-family
+    intent."""
+    outside = signal(0, at(7, 0), venture="blt")
+    clusters = B.cluster_signals([outside])
+    meeting = intent(at(10, 0), at(10, 40), venture="blt", title="BLT standup", event_id="wm1")
+    blocks = B.build(clusters, [meeting])
+    [b] = [x for x in blocks if x["intent_event_id"] == "wm1"]
+    assert b["attention"] == "ambiguous"
+
+
+# --- displacement now works for family time (item F) ------------------------
+
+
+def test_family_intent_causes_displacement_for_blt_signals_end_to_end():
+    """Once "Go school" is a `family` intent (item B), BLT chat during it must
+    produce `attention='displaced'` — the whole point of the fix."""
+    clusters = B.cluster_signals([signal(1, at(14, 50), venture="blt")])
+    intents = [intent(at(14, 45), at(15, 15), venture="family", title="Go school",
+                       event_id="school1")]
+    block, *_ = B.build(clusters, intents)
+    assert block["attention"] == "displaced"
+
+
+# --- load_intents: reading every account's primary, plus INTENT_CALENDARS --
+
+
+class _FakeAccountSettings:
+    """Stands in for the module-level `settings` inside `blocks.py` — never
+    the frozen `Settings` dataclass itself."""
+
+    def __init__(self, accounts, intent_calendars=(), primary_alias="blt"):
+        self._accounts = accounts
+        self._intent_calendars = list(intent_calendars)
+        self.primary_alias = primary_alias
+        self.iblu_timezone = "UTC"
+
+    def configured_accounts(self):
+        return self._accounts
+
+    @property
+    def intent_calendars_parsed(self):
+        return self._intent_calendars
+
+
+class _FakeVenturesConn:
+    """Answers only `SELECT code FROM ventures` — everything `load_intents`
+    needs from a connection for calendar-source validation."""
+
+    def __init__(self, ventures=("blt", "choco", "deadlift", "family", "jakusi", "personal")):
+        self._ventures = ventures
+
+    def execute(self, sql, params=None):
+        return self
+
+    def fetchall(self):
+        return [{"code": v} for v in self._ventures]
+
+    def rollback(self):
+        pass
+
+
+def gevent(event_id, title, start, end, *, ical_uid=None, attendees=None):
+    body = {
+        "id": event_id,
+        "summary": title,
+        "start": {"dateTime": start.isoformat()},
+        "end": {"dateTime": end.isoformat()},
+    }
+    if ical_uid:
+        body["iCalUID"] = ical_uid
+    if attendees:
+        body["attendees"] = [{"email": a} for a in attendees]
+    return body
+
+
+def test_load_intents_dedupes_the_same_meeting_on_two_calendars(monkeypatch):
+    from iblu_keeper import google_auth
+    from iblu_keeper.tools import calendar_manage
+
+    monkeypatch.setattr(
+        B, "settings", _FakeAccountSettings([{"alias": "blt"}, {"alias": "choco"}])
+    )
+    ev = gevent("abc", "Sync", at(10, 0), at(11, 0), ical_uid="uid-1")
+    monkeypatch.setattr(google_auth, "build_service", lambda *a, **k: object())
+    monkeypatch.setattr(calendar_manage, "_fetch_events", lambda *a, **k: [ev])
+
+    intents = B.load_intents(_FakeVenturesConn(), at(0, 0), at(0, 0) + timedelta(days=1))
+    assert len(intents) == 1
+
+
+def test_unreadable_intent_calendar_does_not_lose_the_others(monkeypatch):
+    from iblu_keeper import google_auth
+    from iblu_keeper.store import observations as obs
+    from iblu_keeper.tools import calendar_manage
+
+    monkeypatch.setattr(
+        B, "settings",
+        _FakeAccountSettings(
+            [{"alias": "blt"}],
+            intent_calendars=[{"venture": "family", "calendar_id": "shared-fam", "account": "blt"}],
+        ),
+    )
+    good_event = gevent("g1", "Roditelsku sastanak", at(9, 0), at(9, 30))
+
+    def fake_fetch(service, calendar_id, start, end):
+        if calendar_id == "shared-fam":
+            raise RuntimeError("403 not shared")
+        return [good_event]
+
+    monkeypatch.setattr(google_auth, "build_service", lambda *a, **k: object())
+    monkeypatch.setattr(calendar_manage, "_fetch_events", fake_fetch)
+    recorded = []
+    monkeypatch.setattr(obs, "record_safe", lambda **kw: recorded.append(kw) or 1)
+
+    intents = B.load_intents(_FakeVenturesConn(), at(0, 0), at(0, 0) + timedelta(days=1))
+    assert [iv.event_id for iv in intents] == ["g1"]
+    assert recorded and recorded[0]["kind"] == "intent_calendar_unreadable"
+
+
+def test_blt_primary_gets_no_default_venture_while_choco_primary_does(monkeypatch):
+    from iblu_keeper import google_auth
+    from iblu_keeper.tools import calendar_manage
+
+    monkeypatch.setattr(
+        B, "settings", _FakeAccountSettings([{"alias": "blt"}, {"alias": "choco"}])
+    )
+    blt_event = gevent("b1", "Go school", at(9, 0), at(9, 30))
+    choco_event = gevent("c1", "Weekly", at(9, 0), at(9, 30))
+
+    def fake_fetch(service, calendar_id, start, end):
+        if service == "blt":
+            return [blt_event]
+        if service == "choco":
+            return [choco_event]
+        return []
+
+    monkeypatch.setattr(google_auth, "build_service", lambda api, ver, account=None: account)
+    monkeypatch.setattr(calendar_manage, "_fetch_events", fake_fetch)
+
+    intents = B.load_intents(_FakeVenturesConn(), at(0, 0), at(0, 0) + timedelta(days=1))
+    by_id = {iv.event_id: iv for iv in intents}
+    assert by_id["b1"].venture is None
+    assert by_id["c1"].venture == "choco"
+
+
+def test_intent_calendars_entry_with_unknown_venture_is_skipped(monkeypatch):
+    from iblu_keeper import google_auth
+    from iblu_keeper.tools import calendar_manage
+
+    monkeypatch.setattr(
+        B, "settings",
+        _FakeAccountSettings(
+            [], intent_calendars=[{"venture": "nonexistent", "calendar_id": "cal1", "account": "blt"}],
+        ),
+    )
+    called = []
+
+    def fake_fetch(service, calendar_id, start, end):
+        called.append(calendar_id)
+        return []
+
+    monkeypatch.setattr(google_auth, "build_service", lambda *a, **k: object())
+    monkeypatch.setattr(calendar_manage, "_fetch_events", fake_fetch)
+
+    intents = B.load_intents(_FakeVenturesConn(ventures=("blt", "choco")), at(0, 0), at(0, 0) + timedelta(days=1))
+    assert intents == []
+    assert called == []
+
+
+def test_unattributed_work_still_counts_against_family_inference():
+    """Work with no clear venture is never marked `displaced` (displacement
+    needs a known venture), so a density check that counted only displaced
+    slices let an afternoon of unattributable work be claimed as family time."""
+    outside = signal(0, at(7, 0), venture="blt")
+    work = [signal(n, at(10, 0) + timedelta(minutes=10 * n), venture=None) for n in range(1, 6)]
+    clusters = B.cluster_signals([outside, *work])
+    fam = intent(at(10, 0), at(11, 10), venture="family", title="Futbolas", event_id="fut9")
+    blocks = B.build(clusters, [fam])
+    fam_blocks = [b for b in blocks if b["intent_event_id"] == "fut9"]
+    assert not any(
+        b["attention"] == "present" and b["venture"] == "family" for b in fam_blocks
+    ), "a busy span was claimed as family time"

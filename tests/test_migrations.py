@@ -209,3 +209,22 @@ def test_blocks_supersede_rather_than_delete():
     sql = (db.MIGRATIONS_DIR / "005_blocks.sql").read_text()
     assert "superseded_by" in sql
     assert "ON DELETE CASCADE" not in sql
+
+
+def test_migrate_only_rejects_an_unknown_version():
+    """`--only` exists so a reviewed migration can be applied without dragging
+    along a draft that another session is still writing (2026-09-17)."""
+    import pytest as _pytest
+
+    if not db.is_configured():
+        _pytest.skip("DATABASE_URL not set")
+    with _pytest.raises(ValueError, match="no migration named"):
+        db.migrate(only="999_does_not_exist")
+
+
+def test_migrate_only_on_an_applied_version_does_nothing():
+    import pytest as _pytest
+
+    if not db.is_configured():
+        _pytest.skip("DATABASE_URL not set")
+    assert db.migrate(only="001_phase2_recording") == []

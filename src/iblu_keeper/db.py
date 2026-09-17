@@ -144,8 +144,16 @@ def pending_migrations() -> list[Path]:
     return [p for p in _migration_files() if p.stem not in done]
 
 
-def migrate() -> list[str]:
+def migrate(only: str | None = None) -> list[str]:
     """Apply every pending migration in order. Returns versions applied.
+
+    `only` applies exactly one pending migration, by version (the file stem,
+    e.g. "011_git_signals"). It exists because "apply everything pending" is
+    the wrong default whenever more than one person — or more than one Claude
+    session — is writing migrations: on 2026-09-17 applying a finished 011 also
+    applied a 012 that was still being written in the same tree. A draft
+    migration reaching the live schema is exactly the failure DEBUG_FINDINGS
+    records from 2026-09-13, arriving by a different route.
 
     Each file runs in its own transaction: a failing migration leaves the
     database exactly as it was before that file. Each migration is expected to
@@ -160,6 +168,17 @@ def migrate() -> list[str]:
     applied: list[str] = []
     with get_conn() as conn:
         done = applied_versions(conn)
+
+    if only is not None:
+        known = {path.stem for path in files}
+        if only not in known:
+            raise ValueError(
+                f"no migration named {only!r} — expected one of: {', '.join(sorted(known))}"
+            )
+        if only in done:
+            logger.info("db: %s already applied", only)
+            return []
+        files = [path for path in files if path.stem == only]
 
     for path in files:
         version = path.stem
@@ -298,7 +317,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if command == "migrate":
-            applied = migrate()
+            only = args[args.index("--only") + 1] if "--only" in args else None
+            if only is None and len(status()["pending"]) > 1:
+                # More than one pending means more than one author may be
+                # mid-draft. Say so rather than silently applying them all.
+                print("note: more than one migration is pending — "
+                      "use `migrate --only <version>` to apply just the one you reviewed")
+            applied = migrate(only=only)
             print(
                 f"applied: {', '.join(applied)}" if applied else "nothing to apply"
             )

@@ -271,6 +271,15 @@ formulas and any raw Sheets `batchUpdate` request. No new OAuth scope — the
 `drive` scope covers Sheets — but the Sheets API must be enabled in each
 account's Cloud project. 42 tools.
 
+**Where the day's plan comes from (2026-09-17):** all three workspace
+calendars plus `INTENT_CALENDARS` (the shared family calendar and his personal
+Gmail calendar, both venture `family`). An Opus classifier labels events and
+decides which family-calendar entries are Ignas's own commitments — the rest
+are context and claim no time. Quiet stretches of a family commitment are
+inferred as family time under four guard-rails (HANDOFF §24). Git commits are
+evidence (migration 011); `GIT_AUTHOR_EMAILS` must list every address he
+commits from. Use `python -m iblu_keeper.db migrate --only <version>`.
+
 **Known open items:** external DM partners who are not in Google Contacts
 cannot be named by the People API, so their `counterpart` stays `users/<id>`
 (1 space today). Phase 3 (goals/priorities) not started. Remaining week-2 backlog (plan §12): the mobile web app,

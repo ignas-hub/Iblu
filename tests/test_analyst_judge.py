@@ -232,3 +232,60 @@ def test_without_a_quality_list_the_judge_is_unrestricted():
     out = J.apply_patch([block(evidence=[])], patch(venture="blt"),
                         VENTURES, WORK_TYPES, PROJECTS)
     assert out[0]["venture"] == "blt"
+
+
+# --- the judge may only cite its own block (item E, 2026-09-16) -----------
+#
+# Found in the diagnosis: a 07:00 block's reasoning said 'Only a calendar
+# title ("Go school")' although "Go school" was a 14:45 intent that this
+# block had nothing to do with.
+
+
+def test_reasoning_citing_another_blocks_calendar_title_is_rejected():
+    rows = [block(intent_title=None, evidence=[])]
+    signals: list[dict] = []
+    out = J.apply_patch(
+        rows,
+        patch(reasoning='Only a calendar title ("Go school")'),
+        VENTURES, WORK_TYPES, PROJECTS,
+        quality=J.evidence_quality(rows, signals),
+        signals=signals,
+    )
+    assert out[0]["reasoning"] == rows[0]["reasoning"]
+
+
+def test_reasoning_citing_its_own_intent_title_is_allowed():
+    rows = [block(intent_title="Go school", evidence=[])]
+    signals: list[dict] = []
+    out = J.apply_patch(
+        rows,
+        patch(reasoning='calendar said "Go school"; nothing recorded'),
+        VENTURES, WORK_TYPES, PROJECTS,
+        quality=J.evidence_quality(rows, signals),
+        signals=signals,
+    )
+    assert "Go school" in out[0]["reasoning"]
+
+
+def test_reasoning_citing_its_own_evidence_subject_is_allowed():
+    rows = [block(evidence=[1])]
+    signals = [sig(1, subject="Dokumenti mjesec 08. Blank Label d.o.o.")]
+    out = J.apply_patch(
+        rows,
+        patch(reasoning='replying to "Dokumenti mjesec 08. Blank Label d.o.o."'),
+        VENTURES, WORK_TYPES, PROJECTS,
+        quality=J.evidence_quality(rows, signals),
+        signals=signals,
+    )
+    assert "Dokumenti" in out[0]["reasoning"]
+
+
+def test_without_signals_the_citation_guard_is_skipped():
+    """Back-compatible: callers that pass no signals get the old behaviour —
+    mirrors the `quality` back-compat rule above."""
+    rows = [block(evidence=[])]
+    out = J.apply_patch(
+        rows, patch(reasoning='calendar said "Someone else\'s meeting"'),
+        VENTURES, WORK_TYPES, PROJECTS,
+    )
+    assert "Someone else's meeting" in out[0]["reasoning"]

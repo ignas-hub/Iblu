@@ -64,6 +64,7 @@ def _summary(results: dict) -> str:
         "chat_sent": "chat",
         "calendar_changes": "cal",
         "slack_sent": "slack",
+        "git_commits": "git",
     }
     parts = []
     for name, value in results.items():

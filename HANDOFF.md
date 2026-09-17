@@ -686,3 +686,75 @@ Four things about it are deliberate:
 
 The tick is Mon–Fri 07:00–19:50, so `check_tick_freshness` only complains
 inside that window. A quiet Sunday is the timer working.
+
+### 24. Where a day's plan comes from, and when silence counts as family time
+
+Built 2026-09-17, after Ignas looked at the Secretary calendar and judged about
+half of it wrong or unaccounted. Measured on 2026-09-16: 210–270 unaccounted
+minutes a day, and nearly all evidence was BLT chat and BLT mail.
+
+**Intents now come from every calendar that describes his plan.** The three
+workspace primaries, plus `INTENT_CALENDARS` (format
+`venture:calendar_id[|account]`, comma-separated — `|` because calendar ids
+contain `@`). Both configured calendars are `family`, never `personal`:
+`personal` is the venture "Own tooling & infra", which is work. That mix-up has
+now been caught twice.
+
+The Deadlift and Choco primaries default to their own venture — they are work
+calendars. **The BLT primary gets no account default**, because it holds
+flights and school runs; an event there has a venture only if its title,
+attendees or the classifier say so. The same meeting on two calendars counts
+once (same `iCalUID`, or same title and times; primaries win).
+
+**An Opus classifier labels events nothing else could** (`analyst/intents.py`):
+venture, whether it is work, and — for the family calendars — whether it is
+Ignas's own commitment. Results are cached in `intent_labels`, keyed on
+calendar + event + title, so a rebuild cannot flip a label.
+
+**A shared family calendar is mostly other people's plans.** "Greta nicoj" is
+his wife's; "Futbolas" is his son's football; "Ignas LT" is a note of where he
+is. None of those is an activity he committed to, and treating them as intents
+would mark his work `displaced` whenever his wife had an appointment. So every
+`INTENT_CALENDARS` event is *context* — no block, no displacement, no minutes —
+unless the classifier says, at high confidence, that it is an activity he takes
+part in. Whereabouts markers stay context even when they name him. Any event
+longer than 12 hours is context on every calendar.
+
+**The one place IBLU turns silence into presence** — Ignas's rule, and the
+mission now says so: a family commitment, on a day the recorder was watching,
+with little or no work during it, is inferred to have happened. The quiet parts
+of the span become `present / family / inferred`, reasoning always saying
+"assumed". Four guard-rails, each of which leaves the remainder `ambiguous`:
+
+- work covering 60% or more of the span (then it probably did not happen) —
+  counting every non-family slice with evidence, not only `displaced` ones,
+  because work with no clear venture is never marked displaced;
+- a remainder under 20 minutes (a gap between two bursts of chat);
+- no work signal anywhere else that day (a quiet afternoon and a dead
+  collector look identical);
+- anything after the newest collected signal (the evening may not be in yet —
+  which is also why the analyst now rebuilds yesterday as well as today).
+
+Work meetings are untouched: silence during one stays `ambiguous`.
+
+**Labels need agreement, not a plurality.** A project or work type needs 60%
+of the slice's opinions and those opinions must cover half the slice; venture
+needs a real majority. A 135-minute stretch of invoices, company setup and one
+client thread had been tagged `email-writer` because that was the busiest chat
+space. A zero-signal slice inside a meeting is `ambiguous`, not an inherited
+`present`. And the judge may not quote a calendar title that is neither its own
+block's intent nor in its own evidence.
+
+**Git commits are evidence** (`collectors/git_commits.py`, migration 011):
+local checkouts and GitHub, author-matched against `GIT_AUTHOR_EMAILS` — which
+must include `ignas.ignas@gmail.com`, an address that is not one of his Google
+accounts. Venture comes from the repo (`REPO_VENTURES`), confidence fact.
+Commits AUTHORED by an agent (`noreply@anthropic.com`) are skipped — a cloud
+session committing at 03:00 is output, not attention — while commits he made
+with a Claude co-author are kept and flagged. A commit marks the END of a
+stretch, so coding time is still under-counted; that is known.
+
+**And a migration lesson, the second of its kind.** `db migrate` applied every
+pending file, so applying a finished 011 also applied a 012 another worker was
+still writing. `migrate --only <version>` now exists and `migrate` warns when
+more than one is pending.

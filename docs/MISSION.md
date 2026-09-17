@@ -27,7 +27,7 @@ Ignas has limited capacity for attention and deep thinking, and the daily noise 
 
 ## Principles — never violated
 
-- Attention, not location. Silence is never presence. A tracker that flatters is worse than none.
+- Attention, not location. Silence is never presence at work. The one exception runs the other way: a family commitment, on a day the recorder was watching, with little or no work during it, is inferred to have happened — always marked as inferred, never as fact. A tracker that flatters is worse than none.
 - Scripts fetch; the LLM judges. Iblu is not a pile of scripts.
 - Storage is durable-only; live data is fetched fresh and never stored as memory.
 - Corrections supersede, never delete.

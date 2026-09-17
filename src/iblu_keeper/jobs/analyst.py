@@ -122,9 +122,15 @@ def main(argv: list[str] | None = None) -> int:
         description="Reconstruct the day from signals and mirror it onto the Secretary calendar.",
     )
     parser.add_argument("--date", help="local date to rebuild (default: today)")
+    # Two by default: today AND yesterday. Yesterday's evening is never seen by
+    # yesterday's last run (20:15), so a family event at 21:00, or a chat sent
+    # after the last tick, would otherwise stay judged on incomplete data
+    # forever. The family-presence inference in particular refuses to guess
+    # past the data horizon, so without this second pass those evenings would
+    # stay "unknown" for good.
     parser.add_argument(
-        "--days", type=int, default=1,
-        help="rebuild this many days ending at --date (default 1)",
+        "--days", type=int, default=2,
+        help="rebuild this many days ending at --date (default 2: today and yesterday)",
     )
     parser.add_argument(
         "--dry", action="store_true",
