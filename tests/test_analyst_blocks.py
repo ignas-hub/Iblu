@@ -877,3 +877,12 @@ def test_unattributed_work_still_counts_against_family_inference():
     assert not any(
         b["attention"] == "present" and b["venture"] == "family" for b in fam_blocks
     ), "a busy span was claimed as family time"
+
+
+def test_a_confident_analyst_block_is_not_mistaken_for_a_tap():
+    """`fact` confidence means the evidence agrees — a git commit in a repo that
+    names its venture produces exactly that. Protecting every `fact` block froze
+    the analyst's own earlier git-backed blocks as if Ignas had confirmed them."""
+    assert B._is_confirmed({"source": "ping", "confidence": "fact"})
+    assert B._is_confirmed({"source": "human", "confidence": "inferred"})
+    assert not B._is_confirmed({"source": "analyst", "confidence": "fact"})

@@ -61,7 +61,7 @@ def test_overlapping_blocks_are_an_error_not_a_warning():
 def test_a_confirmed_block_replaced_by_a_guess_is_an_error():
     """A tap is truth. If a reconstruction superseded one, something regressed."""
     found = S.run_rules(
-        _Conn({"confidence = 'fact' AND superseded_by IS NOT NULL": [{"id": 9}]}), DAY
+        _Conn({"old.source IN ('ping', 'human')": [{"id": 9}]}), DAY
     )
     [f] = [f for f in found if f["kind"] == "fact_block_superseded"]
     assert f["severity"] == "error"
@@ -284,3 +284,15 @@ def test_a_crashed_rules_pass_retires_nothing():
     """An empty findings list from a crash looks exactly like a clean day."""
     assert S.dry_run_like([{"kind": "_rules_pass_failed", "detected_by": "rule"}])
     assert not S.dry_run_like([])
+
+
+
+def test_the_rule_is_about_who_made_the_block_not_its_confidence():
+    """An analyst block can be `fact` — every signal agrees and the repo names
+    the venture — and superseding it on a rebuild is normal. Keying this rule
+    on confidence would raise an error every time a git-backed day is rebuilt."""
+    import inspect
+
+    source = inspect.getsource(S.run_rules)
+    assert "old.source IN ('ping', 'human')" in source
+    assert "confidence = 'fact' AND superseded_by IS NOT NULL" not in source

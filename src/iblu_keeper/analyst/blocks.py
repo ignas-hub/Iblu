@@ -922,13 +922,21 @@ def _supersede(conn, on: date, previous_ids: list[int], new_ids: list[int]) -> N
     )
 
 
+# The only block sources a reconstruction may never overwrite.
+CONFIRMED_SOURCES = frozenset({"ping", "human"})
+
+
+def _is_confirmed(block: dict) -> bool:
+    return block.get("source") in CONFIRMED_SOURCES
+
+
 def live_blocks(conn, on: date) -> list[dict]:
     """The current reconstruction of a day."""
     return conn.execute(
         """
         SELECT id, starts_at, ends_at, venture, work_type, project, attention,
                confidence, evidence, reasoning, calendar_event_id,
-               intent_event_id, intent_title
+               intent_event_id, intent_title, source
           FROM blocks
          WHERE local_date = %s AND superseded_by IS NULL
          ORDER BY starts_at
@@ -973,7 +981,15 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
     # Anything Ignas confirmed by tapping is a fact, and a later reconstruct is
     # a guess. The guess never overwrites the fact: confirmed blocks are held
     # out of the rebuild entirely and the new timeline is cut around them.
-    confirmed = [b for b in live_blocks(conn, on) if b["confidence"] == "fact"]
+    #
+    # "Confirmed" means WHO made the block, not how confident it is. The first
+    # version protected every `confidence='fact'` block — but `fact` also means
+    # "all the evidence agrees and the source identifies the venture", which is
+    # exactly what a git commit produces (a repo genuinely names its venture).
+    # So a rebuild froze its own earlier git-backed blocks as if Ignas had
+    # tapped them: never revised again, and silently left out of the new run's
+    # totals. Only a tap or a human edit is a confirmation.
+    confirmed = [b for b in live_blocks(conn, on) if _is_confirmed(b)]
     workday = workday_bounds(on)
     # Family-presence inference (see the module docstring) must never reach
     # into a stretch that simply has not been collected yet — the newest
@@ -1024,7 +1040,7 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
 
     # `confirmed` rows stay live — they are not superseded and not rewritten.
     previous = [
-        b["id"] for b in live_blocks(conn, on) if b["confidence"] != "fact"
+        b["id"] for b in live_blocks(conn, on) if not _is_confirmed(b)
     ]
     new_ids = _insert(conn, on, rows)
     _supersede(conn, on, previous, new_ids)

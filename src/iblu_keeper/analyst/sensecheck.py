@@ -86,9 +86,15 @@ def run_rules(conn, on: date) -> list[dict]:
     # 2. A confirmed block must never be replaced by a guess.
     clobbered = conn.execute(
         """
-        SELECT id FROM blocks
-         WHERE local_date = %s AND confidence = 'fact' AND superseded_by IS NOT NULL
-           AND source <> 'ping'
+        -- A block Ignas confirmed (a tap or a human edit) that a
+        -- reconstruction has replaced. Keyed on WHO made each block, not on
+        -- confidence: an analyst block can legitimately be `fact` (all its
+        -- evidence agrees), and superseding it on a rebuild is normal.
+        SELECT old.id FROM blocks old
+          JOIN blocks new ON new.id = old.superseded_by
+         WHERE old.local_date = %s
+           AND old.source IN ('ping', 'human')
+           AND new.source = 'analyst'
         """,
         (on,),
     ).fetchall()
