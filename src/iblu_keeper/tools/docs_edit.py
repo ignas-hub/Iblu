@@ -415,6 +415,303 @@ def highlight(
 
 
 # --------------------------------------------------------------------------- #
+# Table insertion + fill — insertTable creates EMPTY cells; filling them
+# requires knowing each cell's document index after the table exists, which
+# a model cannot compute. This does that index work server-side.
+# --------------------------------------------------------------------------- #
+_MAX_TABLE_COLUMNS = 20
+_MAX_TABLE_ROWS = 200
+
+
+def _normalize_table_rows(rows: list) -> list[list[str]]:
+    """Validate + coerce ``rows`` into a rectangular list of strings.
+
+    Every cell is converted with ``str()``; ``None`` becomes ``""``. Ragged
+    rows are padded with ``""`` up to the widest row.
+    """
+    if not rows:
+        raise ValueError("gdoc_insert_table: `rows` must be a non-empty list of rows.")
+    if len(rows) > _MAX_TABLE_ROWS:
+        raise ValueError(
+            f"gdoc_insert_table: {len(rows)} rows exceeds the {_MAX_TABLE_ROWS}-row limit."
+        )
+
+    normalized: list[list[str]] = []
+    width = 0
+    for row in rows:
+        if not isinstance(row, (list, tuple)):
+            raise ValueError("gdoc_insert_table: each row must be a list of cell values.")
+        cells = ["" if v is None else str(v) for v in row]
+        width = max(width, len(cells))
+        normalized.append(cells)
+
+    if width == 0:
+        raise ValueError("gdoc_insert_table: `rows` must contain at least one column.")
+    if width > _MAX_TABLE_COLUMNS:
+        raise ValueError(
+            f"gdoc_insert_table: {width} columns exceeds the {_MAX_TABLE_COLUMNS}-column limit."
+        )
+
+    return [row + [""] * (width - len(row)) for row in normalized]
+
+
+def _find_paragraph_end_containing(doc: dict, index: int) -> int:
+    """The ``endIndex`` of the paragraph (body or table cell) that contains ``index``."""
+    found: list[int] = []
+
+    def walk(elements: list[dict]) -> None:
+        for el in elements:
+            if "paragraph" in el:
+                start, end = el.get("startIndex"), el.get("endIndex")
+                if start is not None and end is not None and start <= index < end:
+                    found.append(end)
+                continue
+            if "table" in el:
+                for row in el["table"].get("tableRows", []):
+                    for cell in row.get("tableCells", []):
+                        walk(cell.get("content", []))
+                continue
+            if "tableOfContents" in el:
+                walk(el["tableOfContents"].get("content", []))
+
+    walk(doc.get("body", {}).get("content", []))
+    if not found:
+        raise RuntimeError(
+            "gdoc_insert_table: could not locate the paragraph containing the anchor text."
+        )
+    return found[0]
+
+
+def _find_inserted_table(doc: dict, min_start: int) -> dict:
+    """The ``table`` structural element with the smallest ``startIndex`` >= ``min_start``.
+
+    Never assumes the new table is the first or last table in the document —
+    the document may already contain other tables before and after it.
+    """
+    tables: list[dict] = []
+
+    def walk(elements: list[dict]) -> None:
+        for el in elements:
+            if "table" in el:
+                if el.get("startIndex") is not None:
+                    tables.append(el)
+                for row in el["table"].get("tableRows", []):
+                    for cell in row.get("tableCells", []):
+                        walk(cell.get("content", []))
+                continue
+            if "tableOfContents" in el:
+                walk(el["tableOfContents"].get("content", []))
+
+    walk(doc.get("body", {}).get("content", []))
+    candidates = [t for t in tables if t["startIndex"] >= min_start]
+    if not candidates:
+        raise RuntimeError(
+            "gdoc_insert_table: could not find the newly inserted table after insertion."
+        )
+    return min(candidates, key=lambda t: t["startIndex"])
+
+
+def _send_docs_batch(docs, doc_id: str, requests: list[dict], account: str | None) -> dict:
+    with drive_tools.friendly_google_errors(account, "this Google Doc"):
+        return docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": requests},
+        ).execute()
+
+
+def insert_table(
+    doc_id_or_url: str,
+    rows: list,
+    after_text: str | None = None,
+    occurrence: int = 1,
+    header: bool = True,
+    account: str | None = None,
+) -> dict:
+    """Insert a table into a Google Doc AND fill it with ``rows`` in one call.
+
+    Unlike a raw ``insertTable`` request through `batch_update`, this fills
+    every cell — the index of each cell only exists after the table has
+    actually been inserted, so this fetches the document again to find them
+    rather than asking the caller to guess.
+
+    ``rows`` is a list of lists of cell values (``str()``-converted; ``None``
+    becomes ``""``); ragged rows are padded with ``""`` to the widest row.
+
+    Placement: with ``after_text``, the table is inserted immediately after
+    the END of the paragraph containing that text (``occurrence`` is
+    1-based, like the anchors `batch_update` accepts; a missing anchor
+    raises, naming the text). Without ``after_text``, the table is appended
+    at the end of the document.
+
+    If ``header`` is true (default) and there is more than one row, the
+    first row's text is bolded automatically. For any other formatting —
+    borders, cell background, column widths, alignment — follow up with
+    `batch_update`, after reading the table's cell positions with
+    `gdoc_read(structure=True)`.
+
+    ``account`` — which Drive to edit: ``blt`` (default), ``deadlift``,
+    ``choco``.
+    """
+    account = resolve_account(account)
+    normalized = _normalize_table_rows(rows)
+    num_rows = len(normalized)
+    num_cols = len(normalized[0])
+
+    if settings.use_mock:
+        return drive_tools._mock({
+            "doc_id": doc_id_or_url, "rows": num_rows, "columns": num_cols,
+            "table_start_index": None, "status": "not_modified_mock",
+        })
+
+    doc_id = drive_tools._file_id(doc_id_or_url)
+    docs = drive_tools._docs(account)
+
+    def fetch_doc() -> dict:
+        with drive_tools.friendly_google_errors(account, "this Google Doc"):
+            return docs.documents().get(documentId=doc_id).execute()
+
+    if after_text:
+        doc = fetch_doc()
+        segments = _build_segments(doc)
+        prefix = _prefix_offsets(segments)
+        full_text = "".join(s["text"] for s in segments)
+        all_matches = _find_matches(full_text, after_text)
+        if not all_matches:
+            raise ValueError(
+                f"gdoc_insert_table: anchor text not found in document: {after_text!r}"
+            )
+        try:
+            occ_idx = int(occurrence) - 1
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"gdoc_insert_table: invalid occurrence {occurrence!r} — "
+                "use a 1-based integer."
+            )
+        if occ_idx < 0 or occ_idx >= len(all_matches):
+            raise ValueError(
+                f"gdoc_insert_table: occurrence {occurrence!r} out of range for "
+                f"anchor text {after_text!r} ({len(all_matches)} match(es) found)."
+            )
+        foff_start, _foff_end = all_matches[occ_idx]
+        doc_start = _map_offset(segments, prefix, foff_start, end=False)
+        insertion_index = _find_paragraph_end_containing(doc, doc_start)
+        body = doc.get("body", {}).get("content", [])
+        body_end = max((seg.get("endIndex", 1) for seg in body), default=1)
+        if insertion_index >= body_end:
+            # The anchor is in the LAST paragraph, so "the end of its
+            # paragraph" is also the end of the document — and Google rejects
+            # that as a location ("Index 105 must be less than the end index of
+            # the referenced segment, 105"). Found on the first live test.
+            # Appending at the end of the body is the same place, expressed the
+            # way the API accepts.
+            insert_request = {
+                "insertTable": {
+                    "rows": num_rows, "columns": num_cols,
+                    "endOfSegmentLocation": {},
+                }
+            }
+            min_start = body_end - 1
+        else:
+            insert_request = {
+                "insertTable": {
+                    "rows": num_rows, "columns": num_cols,
+                    "location": {"index": insertion_index},
+                }
+            }
+            min_start = insertion_index
+    else:
+        before_doc = fetch_doc()
+        body = before_doc.get("body", {}).get("content", [])
+        min_start = max((seg.get("endIndex", 1) for seg in body), default=1) - 1
+        insert_request = {
+            "insertTable": {
+                "rows": num_rows, "columns": num_cols,
+                "endOfSegmentLocation": {},
+            }
+        }
+
+    _send_docs_batch(docs, doc_id, [insert_request], account)
+
+    doc_after_insert = fetch_doc()
+    table_el = _find_inserted_table(doc_after_insert, min_start)
+    table_start = table_el["startIndex"]
+    table = table_el["table"]
+
+    fill: list[tuple[int, str]] = []
+    for row_idx, row in enumerate(table.get("tableRows", [])):
+        if row_idx >= num_rows:
+            break
+        for col_idx, cell in enumerate(row.get("tableCells", [])):
+            if col_idx >= num_cols:
+                break
+            value = normalized[row_idx][col_idx]
+            if not value:
+                continue
+            content = cell.get("content", [])
+            if not content:
+                continue
+            start = content[0].get("startIndex")
+            if start is None:
+                continue
+            fill.append((start, value))
+
+    # Descending index order — inserting text at a higher index never shifts
+    # a lower index still waiting to be used, within this same batch.
+    fill.sort(key=lambda item: item[0], reverse=True)
+    if fill:
+        fill_requests = [
+            {"insertText": {"location": {"index": start}, "text": value}}
+            for start, value in fill
+        ]
+        _send_docs_batch(docs, doc_id, fill_requests, account)
+
+    if header and num_rows > 1:
+        doc_after_fill = fetch_doc()
+        table_el2 = _find_inserted_table(doc_after_fill, min_start)
+        header_row = table_el2["table"].get("tableRows", [])
+        style_requests = []
+        if header_row:
+            for cell in header_row[0].get("tableCells", []):
+                content = cell.get("content", [])
+                if not content:
+                    continue
+                first = content[0]
+                para = first.get("paragraph")
+                if para is None:
+                    continue
+                start, end = first.get("startIndex"), first.get("endIndex")
+                if start is None or end is None:
+                    continue
+                text = "".join(
+                    pel["textRun"].get("content", "")
+                    for pel in para.get("elements", [])
+                    if pel.get("textRun") is not None
+                )
+                text_len = len(text.rstrip("\n"))
+                if text_len <= 0:
+                    continue
+                range_end = start + text_len
+                if range_end <= start:
+                    continue
+                style_requests.append({
+                    "updateTextStyle": {
+                        "range": {"startIndex": start, "endIndex": range_end},
+                        "textStyle": {"bold": True},
+                        "fields": "bold",
+                    }
+                })
+        if style_requests:
+            _send_docs_batch(docs, doc_id, style_requests, account)
+
+    return {
+        "doc_id": doc_id,
+        "rows": num_rows,
+        "columns": num_cols,
+        "table_start_index": table_start,
+        "url": drive_tools._viewable_url(doc_id, "application/vnd.google-apps.document"),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Structure read — used by gdoc_read(structure=True)
 # --------------------------------------------------------------------------- #
 def _extract_color(color_style: dict | None) -> str | None:

@@ -30,7 +30,7 @@ Phase 2 is being built to the plan in
 Two components, one repo:
 
 ### 1. MCP server (Python, FastMCP)
-Remote MCP server Claude connects to over HTTPS. **42 tools** organised by
+Remote MCP server Claude connects to over HTTPS. **43 tools** organised by
 service, with MCP tool annotations (`readOnlyHint` / `destructiveHint`) so
 Claude.ai picks safe permission defaults automatically:
 
@@ -54,6 +54,7 @@ Claude.ai picks safe permission defaults automatically:
 | `gmail_mark_read` / `gmail_mark_unread` | Toggle UNREAD label | auto-allow |
 | `gdoc_read` | Fetch a Google Doc / Sheet / Slides as plain text (URL or ID); `structure=True` for indexed paragraphs/runs/styles | auto-allow |
 | `gdoc_batch_update` | Full Google Docs API access — raw `batchUpdate` requests (highlight, bold, headings, lists, tables, images, links) with text-anchor resolution | auto-allow |
+| `gdoc_insert_table` | Insert a table into a Doc and fill it with values in one call (finds each cell's index server-side; bolds the header row) | auto-allow |
 | `sheets_read` | Full Google Sheets read — metadata, values, and cell formatting | auto-allow |
 | `sheets_write` | Full Google Sheets write — values, formulas, and raw `batchUpdate` formatting/structure requests | auto-allow |
 | `calendar` | See and manage the calendar: list / find free time / create / move / update / delete | auto-allow |

@@ -757,6 +757,48 @@ def gdoc_batch_update(
     return docs_edit.batch_update(doc_id_or_url, requests, account)
 
 
+@mcp.tool(name="gdoc_insert_table", annotations={"title": "Insert Table into Google Doc", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("gdoc_insert_table")
+@with_retry("gdoc_insert_table")
+def gdoc_insert_table(
+    doc_id_or_url: Annotated[str, Field(min_length=1, description="Doc ID or sharing URL")],
+    rows: Annotated[list[list], Field(min_length=1, description="List of rows, each a list of cell values (str()-converted; None becomes ''). Ragged rows are padded to the widest row. Max 20 columns, 200 rows.")],
+    after_text: Annotated[str | None, Field(default=None, description="Insert the table right after the end of the paragraph containing this text. Omit to append the table at the end of the document.")] = None,
+    occurrence: Annotated[int, Field(default=1, ge=1, description="Which match of after_text to use, 1-based, if it appears more than once")] = 1,
+    header: Annotated[bool, Field(default=True, description="Bold the first row's text (only when there is more than one row)")] = True,
+    account: Annotated[str | None, Field(default=None, description="Which Google Drive/Docs to edit: blt (default), deadlift, or choco")] = None,
+) -> dict:
+    """Insert a table into a Google Doc AND fill it with values, in one call.
+
+    `batch_update` can already send a raw `insertTable` request, but that
+    creates EMPTY cells — filling them afterwards needs each cell's document
+    index, which only exists once the table is actually in the document and
+    which a model can't compute in advance. This tool does that index work
+    server-side: it inserts the table, re-fetches the document to find it
+    (even if the document already has other tables before or after it),
+    then fills every non-empty cell in one batch.
+
+    Example:
+        rows=[["Venture", "Minutes"], ["blt", "240"]], after_text="Weekly summary"
+
+    inserts a 2x2 table right after the paragraph containing "Weekly
+    summary", with the header row ("Venture", "Minutes") bolded by default.
+    Omit ``after_text`` to append the table at the end of the doc instead.
+    Ragged rows are padded with empty cells to the widest row; a missing
+    ``after_text`` anchor raises a clear error naming the text.
+
+    For formatting beyond the bold header — borders, cell shading, column
+    widths, alignment — follow up with `gdoc_batch_update`, after reading the
+    table's cell positions with `gdoc_read(structure=True)`.
+
+    ``account`` — which Drive to edit: ``blt`` (default), ``deadlift``,
+    ``choco``.
+    """
+    from .tools import docs_edit
+    return docs_edit.insert_table(doc_id_or_url, rows, after_text, occurrence, header, account)
+
+
 @mcp.tool(name="sheets_read", annotations={"title": "Read Google Sheet (full API access)", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("sheets_read")
