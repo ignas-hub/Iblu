@@ -154,6 +154,94 @@ def test_gap_question_options_and_shape():
 
 
 # ---------------------------------------------------------------------------
+# attended — "did you actually go?" for a MAYBE family intent (item 4)
+# ---------------------------------------------------------------------------
+
+
+def _maybe_event(key="k1", title="Futbolas", start=None, end=None):
+    return {
+        "instance_key": key, "title": title,
+        "start": start or at(17), "end": end or at(18, 30),
+    }
+
+
+def test_attended_question_shape_and_payload():
+    q = compose.compose_attended_question([_maybe_event()])
+    assert q["qid"] == "attended"
+    assert q["text"] == "Did you go to Futbolas (17:00–18:30)?"
+    labels = [o["label"] for o in q["options"]]
+    assert labels == ["Yes", "Part of it", "No"]
+    verdicts = [o["payload"]["verdict"] for o in q["options"]]
+    assert verdicts == ["yes", "part", "no"]
+    for option in q["options"]:
+        assert option["payload"]["instance_key"] == "k1"
+        assert option["payload"]["event_title"] == "Futbolas"
+        assert option["payload"]["starts_at"] == at(17).isoformat()
+        assert option["payload"]["ends_at"] == at(18, 30).isoformat()
+
+
+def test_attended_question_passes_the_question_and_option_validators():
+    q = compose.compose_attended_question([_maybe_event()])
+    question = compose.Question.model_validate(q)
+    assert question.qid == "attended"
+
+
+def test_attended_question_picks_the_longest_unanswered_candidate():
+    events = [
+        _maybe_event("short", "Piano", at(9), at(9, 30)),
+        _maybe_event("long", "Futbolas", at(17), at(18, 30)),
+    ]
+    q = compose.compose_attended_question(events)
+    assert q["options"][0]["payload"]["instance_key"] == "long"
+
+
+def test_attended_question_is_not_offered_when_already_answered():
+    events = [_maybe_event("k1")]
+    assert compose.compose_attended_question(events, answered={"k1"}) is None
+
+
+def test_attended_question_is_none_with_no_maybe_events():
+    assert compose.compose_attended_question([]) is None
+
+
+def test_attended_counts_as_an_attention_question_and_competes_for_slots():
+    questions = [_q("sink"), _q("displaced"), compose.Question.model_validate(
+        compose.compose_attended_question([_maybe_event()])
+    )]
+    kept = compose.enforce_tap_budget("evening", questions)
+    qids = [q.qid for q in kept]
+    # sink and displaced already fill both attention slots, in order — the
+    # third attention candidate (attended) does not survive, proving it
+    # really does compete rather than getting a slot of its own.
+    assert qids == ["sink", "displaced"]
+    assert "attended" in compose._ATTENTION_QIDS
+
+
+def test_attended_takes_a_slot_when_it_is_the_only_attention_candidate():
+    questions = [compose.Question.model_validate(
+        compose.compose_attended_question([_maybe_event()])
+    )]
+    kept = compose.enforce_tap_budget("evening", questions)
+    assert [q.qid for q in kept] == ["attended"]
+
+
+def test_compose_wires_the_attended_card_in_end_to_end(monkeypatch):
+    monkeypatch.setattr(compose, "settings", type(
+        "S", (), {"anthropic_api_key": "", "iblu_timezone": settings.iblu_timezone},
+    )())
+    gain_evidence = {
+        "learned": [{"label": "Logged a decision", "evidence_ids": ["1"]}],
+        "progressed": [], "experienced": [],
+    }
+    qs, composer = compose.compose(
+        [], [], at(7), at(20), [], [],
+        kind="evening", maybe_events=[_maybe_event()], gain_evidence=gain_evidence,
+    )
+    assert composer == "fallback"
+    assert "attended" in [q.qid for q in qs.questions]
+
+
+# ---------------------------------------------------------------------------
 # split — block-based confirmation (plan §3.3)
 # ---------------------------------------------------------------------------
 
@@ -251,7 +339,7 @@ def test_compose_gains_question_offers_only_the_reply_without_evidence():
     for empty in ({}, None):
         card = compose.compose_gains_question(empty)
         assert card is not None
-        assert [o["label"] for o in card["options"]] == ["Add one → reply"]
+        assert [o["label"] for o in card["options"]] == ["Add one → reply", "Nothing today"]
 
 
 def test_compose_gains_question_builds_one_option_per_kind_plus_escape():
@@ -445,6 +533,54 @@ def test_a_second_gap_tap_supersedes_the_first_answer_not_the_original():
     assert second_block["superseded_by"] is None
 
 
+def _attended_question(instance_key="ik1", title="Futbolas"):
+    base = {
+        "kind": "attended", "instance_key": instance_key, "event_title": title,
+        "starts_at": at(17).isoformat(), "ends_at": at(18, 30).isoformat(),
+    }
+    return {
+        "qid": "attended",
+        "text": f"Did you go to {title} (17:00–18:30)?",
+        "options": [
+            {"key": "A", "label": "Yes", "payload": {**base, "verdict": "yes"}},
+            {"key": "B", "label": "Part of it", "payload": {**base, "verdict": "part"}},
+            {"key": "C", "label": "No", "payload": {**base, "verdict": "no"}},
+        ],
+    }
+
+
+def test_attended_tap_writes_the_expected_tags_and_meta():
+    conn = FakeConn(pings={1: _make_ping("evening", [_attended_question()])})
+    result = answers.record_tap(conn, tokens.make_token(1, "attended", "A", SECRET))
+    assert result["qid"] == "attended"
+
+    [row] = conn.context_entries
+    assert row["tags"] == ["ping", "evening", "attendance"]
+    meta = row["meta"]
+    assert meta["qid"] == "attended"
+    assert meta["instance_key"] == "ik1"
+    assert meta["event_title"] == "Futbolas"
+    assert meta["starts_at"] == at(17).isoformat()
+    assert meta["ends_at"] == at(18, 30).isoformat()
+    assert meta["attended"] == "yes"
+    # never a block correction — that is what the analyst's next reconstruct
+    # is for, not this tap.
+    assert result["block_id"] is None
+
+
+def test_retapping_attended_supersedes_the_previous_answer():
+    conn = FakeConn(pings={1: _make_ping("evening", [_attended_question()])})
+    first = answers.record_tap(conn, tokens.make_token(1, "attended", "A", SECRET))
+    second = answers.record_tap(conn, tokens.make_token(1, "attended", "C", SECRET))
+
+    assert first["entry_id"] != second["entry_id"]
+    live = [r for r in conn.context_entries if r["superseded_by"] is None]
+    assert len(live) == 1
+    assert live[0]["meta"]["attended"] == "no"
+    superseded = [r for r in conn.context_entries if r["id"] == int(first["entry_id"])][0]
+    assert superseded["superseded_by"] == int(second["entry_id"])
+
+
 def test_gains_taps_are_independent_not_a_supersede_chain():
     question = {
         "qid": "gains", "text": "What moved today?",
@@ -596,14 +732,15 @@ def test_a_quiet_day_still_asks_what_moved():
     card = compose_gains_question({"learned": [], "progressed": [], "experienced": []})
     assert card is not None
     assert "moved today" in card["text"]
-    assert [o["label"] for o in card["options"]] == ["Add one → reply"]
+    assert [o["label"] for o in card["options"]] == ["Add one → reply", "Nothing today"]
 
 
 def test_the_gains_card_never_invents_a_gain():
     from iblu_keeper.pings.compose import compose_gains_question
 
     card = compose_gains_question(None)
-    assert all(o["payload"]["verdict"] == "other" for o in card["options"])
+    # Neither remaining option claims anything happened.
+    assert all(o["payload"]["verdict"] in ("other", "none") for o in card["options"])
 
 
 # --- the truncation bypass (found in review, 2026-09-13) -------------------
@@ -618,7 +755,7 @@ def test_a_gain_is_validated_before_it_is_truncated():
         "evidence_ids": ["1"],
     }], "progressed": [], "experienced": []}
     card = compose.compose_gains_question(evidence)
-    assert [o["label"] for o in card["options"]] == ["Add one → reply"], (
+    assert [o["label"] for o in card["options"]] == ["Add one → reply", "Nothing today"], (
         "a future-tense option survived truncation"
     )
 
@@ -737,7 +874,7 @@ def test_the_full_sentence_is_validated_not_the_shortened_button():
         "evidence_ids": ["1"],
     }], "progressed": [], "experienced": []}
     card = compose.compose_gains_question(evidence)
-    assert [o["label"] for o in card["options"]] == ["Add one → reply"]
+    assert [o["label"] for o in card["options"]] == ["Add one → reply", "Nothing today"]
 
 
 def test_a_shortened_button_whose_full_text_is_a_real_gain_is_kept():
@@ -835,6 +972,17 @@ def test_an_attention_question_answered_in_words_is_not_a_gain():
         _ReplyConn("sink"), {"id": 78, "kind": "evening"}, "it was Ante, not me",
     )
     assert tags == ["attention", "reply"]
+
+
+def test_a_reply_answering_the_attended_escape_is_tagged_attendance():
+    """`REPLY_TAG_BY_QID["attended"]` — a typed reply after tapping the
+    `attended` card's escape must be filed as an attendance answer, not a
+    generic reply."""
+    tags, meta, _ = answers._classify_reply(
+        _ReplyConn("attended"), {"id": 78, "kind": "evening"}, "half of it, then left",
+    )
+    assert tags == ["attendance", "reply"]
+    assert meta["answers_qid"] == "attended"
 
 
 def test_the_body_mind_escape_shows_the_number_format():
@@ -946,3 +1094,49 @@ def test_a_missing_project_registry_does_not_break_the_card():
             return super().execute(sql, params)
 
     assert _gain_evidence(_Conn(), date(2026, 9, 15))["progressed"] == []
+
+
+# --- a quiet evening must still produce a valid ping (2026-09-16) ---------
+
+
+def test_a_quiet_evening_composes_a_valid_ping_end_to_end(monkeypatch):
+    """The gains card had only its escape option on a quiet evening, so the
+    Question validator (>=2 options) raised and the whole evening ping failed
+    on every tick. The earlier test only checked the card as a dict — this one
+    goes through compose(), which is where it actually broke."""
+    monkeypatch.setattr(compose, "settings", type(
+        "S", (), {"anthropic_api_key": "", "iblu_timezone": settings.iblu_timezone},
+    )())
+    qs, _ = compose.compose(
+        [], [], at(7), at(20), [], [],
+        kind="evening", blocks=[], gain_evidence={"learned": [], "progressed": [], "experienced": []},
+    )
+    gains = next(q for q in qs.questions if q.qid == "gains")
+    assert len(gains.options) >= 2
+    assert "Nothing today" in [o.label for o in gains.options]
+
+
+def test_nothing_today_is_an_answer_not_a_gain():
+    card = compose.compose_gains_question(None)
+    nothing = next(o for o in card["options"] if o["label"] == "Nothing today")
+    assert nothing["payload"]["verdict"] == "none"
+    # And it survives the schema, which exempts it from the gains validator.
+    compose.Option.model_validate(nothing)
+
+
+def test_one_ping_failing_does_not_stop_the_other(monkeypatch):
+    from iblu_keeper.pings import runner
+
+    seen = []
+
+    def _fake(kind, *, dry=False, force=False):
+        seen.append(kind)
+        if kind == "midday":
+            raise RuntimeError("boom")
+        return f"{kind}:ok"
+
+    monkeypatch.setattr(runner, "run_one", _fake)
+    monkeypatch.setattr("iblu_keeper.store.observations.record_safe", lambda **kw: None)
+    assert runner._run_one_safely("midday", dry=True) == "midday:failed"
+    assert runner._run_one_safely("evening", dry=True) == "evening:ok"
+    assert seen == ["midday", "evening"]

@@ -1353,6 +1353,12 @@ async def ping_tap(request: Request) -> HTMLResponse:
         )
 
     sub = "Updated your earlier answer." if result["superseded"] else ""
+    if result.get("qid") == "attended":
+        # This tap does not rebuild the day itself (analyst/blocks.py only
+        # reads it on the next reconstruct) — say so, or the Secretary
+        # calendar looking unchanged right after tapping reads as a bug.
+        note = "The Secretary calendar updates at the next analyst run."
+        sub = f"{sub} {note}".strip() if sub else note
     return _tap_response(f"✓ Saved — {result['key']} · {result['label']}", sub)
 
 

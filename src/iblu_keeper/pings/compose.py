@@ -35,14 +35,16 @@ MAX_OPTIONS = 5
 MAX_TEXT = 160
 MAX_LABEL = 40
 
-QIDS = ("sink", "displaced", "split", "work_type", "gap", "gains", "body_mind")
+QIDS = ("sink", "displaced", "split", "work_type", "gap", "gains", "body_mind", "attended")
 VERDICTS = (
     "planned_mine", "unplanned_mine", "someone_else", "one_off",
     "did_it", "other", "right", "more", "way_off",
     "classify",   # answer to the work_type question: the tapped option IS the answer
     "meeting", "deep_work", "personal_life",           # gap (§3.3)
     "learned", "progressed", "experienced",            # gains (§4.1)
+    "none",                                            # gains: "Nothing today"
     "strong_excited", "strong_tired", "weak_excited", "weak_exhausted",  # body_mind (§4.2)
+    "yes", "part", "no",                               # attended (item 4)
 )
 
 # Plan §4.6 — carried verbatim on every LLM call this module makes.
@@ -56,7 +58,9 @@ GAIN_SYSTEM_RULE = (
 class Payload(BaseModel):
     """The structured meaning behind an option — this is what gets analysed."""
 
-    kind: Literal["sink", "displaced", "split", "work_type", "gap", "gains", "body_mind"]
+    kind: Literal[
+        "sink", "displaced", "split", "work_type", "gap", "gains", "body_mind", "attended",
+    ]
     verdict: Literal[VERDICTS]  # type: ignore[valid-type]
     venture: str | None = None
     work_type: str | None = None
@@ -80,6 +84,18 @@ class Payload(BaseModel):
     # body_mind (§4.2): the 1-5 numbers IBLU stores and nothing else.
     body: int | None = None
     mind: int | None = None
+
+    # attended (item 4): which ONE occurrence of a `maybe` family intent a tap
+    # answers, and what it said. `instance_key` is
+    # `analyst.intents.instance_key(calendar_id, event_id, local_date)` —
+    # what `analyst.blocks._apply_attendance_answers` looks the answer up by.
+    # `starts_at`/`ends_at` are ISO strings, not datetimes: a Payload is
+    # stored as plain JSONB on the `pings` row, and a python `datetime` does
+    # not round-trip through that without help.
+    instance_key: str | None = None
+    event_title: str | None = None
+    starts_at: str | None = None
+    ends_at: str | None = None
 
     @field_validator("body", "mind")
     @classmethod
@@ -127,7 +143,7 @@ class Option(BaseModel):
         # tense, or a goal not yet reached." The escape hatch ("Add one →
         # reply") records no claim of its own, so it is exempt — the claim it
         # eventually carries is validated on the reply, not on the button.
-        if self.payload.kind == "gains" and self.payload.verdict != "other":
+        if self.payload.kind == "gains" and self.payload.verdict not in ("other", "none"):
             # A truncated gain cannot be checked. `_short` is a field validator
             # and runs BEFORE this one, so by the time we get here the label is
             # already cut to 40 characters — and the disqualifying word is very
@@ -205,7 +221,9 @@ def _names_something(text: str) -> bool:
 
 
 class Question(BaseModel):
-    qid: Literal["sink", "displaced", "split", "work_type", "gap", "gains", "body_mind"]
+    qid: Literal[
+        "sink", "displaced", "split", "work_type", "gap", "gains", "body_mind", "attended",
+    ]
     text: str
     options: list[Option] = Field(min_length=2, max_length=MAX_OPTIONS)
     # gains (§4.1) is not a supersede chain: Ignas can tap more than one of
@@ -312,7 +330,7 @@ TAP_BUDGET: dict[str, dict[str, int]] = {
 }
 TAP_BUDGET["test"] = TAP_BUDGET["evening"]
 
-_ATTENTION_QIDS = {"sink", "displaced", "split", "work_type", "gap"}
+_ATTENTION_QIDS = {"sink", "displaced", "split", "work_type", "gap", "attended"}
 
 
 def _bucket(qid: str) -> str:
@@ -459,6 +477,55 @@ def compose_gap_question(blocks: list[dict], top_venture: str | None) -> dict | 
 
 
 # --------------------------------------------------------------------------
+# attended — "did you actually go?" for a MAYBE family intent (item 4)
+# --------------------------------------------------------------------------
+#
+# A `maybe` intent ("sometimes I go, sometimes I don't" — Futbolas, a school
+# parents' meeting) is never assumed either way by `build()`
+# (`analyst.blocks._apply_maybe_family_inference`). This is the one place
+# Ignas can say which, for ONE specific occurrence — his answer overrides the
+# classifier for that instance only (`analyst.blocks._apply_attendance_
+# answers`), looked up by `instance_key`.
+
+
+def compose_attended_question(
+    maybe_events: list[dict], answered: set[str] | None = None,
+) -> dict | None:
+    """Ask about one still-unanswered `maybe` family event from today.
+
+    `maybe_events` items are `{"instance_key", "title", "start", "end"}` —
+    gathered by `pings.runner` from today's classified intents. `answered` is
+    the set of `instance_key`s that already have a live answer; those are
+    never re-offered. At most one question is ever returned — the longest
+    unanswered event, so a single tap resolves the most consequential guess.
+    """
+    answered = answered or set()
+    candidates = [e for e in maybe_events if e.get("instance_key") not in answered]
+    if not candidates:
+        return None
+    event = max(candidates, key=lambda e: e["end"] - e["start"])
+
+    title = event.get("title") or "that"
+    span = f"{_local(event['start'])}–{_local(event['end'])}"
+    base = {
+        "kind": "attended",
+        "instance_key": event["instance_key"],
+        "event_title": event.get("title"),
+        "starts_at": event["start"].isoformat(),
+        "ends_at": event["end"].isoformat(),
+    }
+    return {
+        "qid": "attended",
+        "text": f"Did you go to {title} ({span})?",
+        "options": [
+            {"key": "A", "label": "Yes", "payload": {**base, "verdict": "yes"}},
+            {"key": "B", "label": "Part of it", "payload": {**base, "verdict": "part"}},
+            {"key": "C", "label": "No", "payload": {**base, "verdict": "no"}},
+        ],
+    }
+
+
+# --------------------------------------------------------------------------
 # gains — "what moved today?" (plan §4.1)
 # --------------------------------------------------------------------------
 #
@@ -541,6 +608,16 @@ def compose_gains_question(evidence: dict[str, list[dict]] | None) -> dict | Non
         "key": chr(65 + len(options)), "label": "Add one → reply",
         "payload": {"kind": "gains", "verdict": "other"},
     })
+    if len(options) < 2:
+        # A question needs two options, and on a quiet evening the escape was
+        # the only one — so building the card raised, and on 2026-09-16 the
+        # whole evening ping failed on every tick from 17:10. "Nothing today"
+        # is also a real answer: it counts toward the answer rate and says the
+        # card was seen, where silence says nothing.
+        options.append({
+            "key": chr(65 + len(options)), "label": "Nothing today",
+            "payload": {"kind": "gains", "verdict": "none"},
+        })
     return {
         "qid": "gains",
         # Says what a tap MEANS and that more than one is allowed. The header
@@ -930,16 +1007,20 @@ def compose(
     blocks: list[dict] | None = None,
     gain_evidence: dict[str, list[dict]] | None = None,
     top_venture: str | None = None,
+    maybe_events: list[dict] | None = None,
+    answered_instance_keys: set[str] | None = None,
 ) -> tuple[QuestionSet, str]:
     """Return `(questions, composer)` where composer is 'llm' or 'fallback'.
 
     `kind` decides the binding tap budget (plan §0): midday gets attention
     questions only; evening (and 'test') additionally gets the deterministic
-    gains and body/mind cards. `blocks` is the day's current reconstruction
-    (`analyst.blocks.live_blocks`) for the split/gap questions; `gain_evidence`
-    is what `pings.runner` gathered for the gains card. Both default to
-    "nothing available" so a caller that only wants the old signal-based
-    questions (or a unit test) does not need to supply them.
+    gains, body/mind and attended cards. `blocks` is the day's current
+    reconstruction (`analyst.blocks.live_blocks`) for the split/gap
+    questions; `gain_evidence` is what `pings.runner` gathered for the gains
+    card; `maybe_events`/`answered_instance_keys` are what it gathered for
+    the `attended` card (item 4). All default to "nothing available" so a
+    caller that only wants the old signal-based questions (or a unit test)
+    does not need to supply them.
     """
     blocks = blocks or []
 
@@ -992,11 +1073,16 @@ def compose(
         if gap_q:
             questions.append(Question.model_validate(gap_q))
 
-    # gains and body/mind are evening-only cards (plan §4.1/§4.2) — never
-    # part of the midday budget, never LLM-composed (see compose_llm's
-    # prompt): they are either grounded in today's evidence or they are the
-    # fixed body/mind options, and neither benefits from an LLM's phrasing.
+    # attended, gains and body/mind are evening-only cards (plan §4.1/§4.2,
+    # item 4) — never part of the midday budget, never LLM-composed (see
+    # compose_llm's prompt): each is either grounded in today's own record
+    # (a `maybe` intent, today's evidence) or is the fixed body/mind options,
+    # and none of them benefits from an LLM's phrasing.
     if kind in ("evening", "test"):
+        if maybe_events:
+            attended_q = compose_attended_question(maybe_events, answered_instance_keys)
+            if attended_q:
+                questions.append(Question.model_validate(attended_q))
         gains_q = compose_gains_question(gain_evidence)
         if gains_q:
             questions.append(Question.model_validate(gains_q))

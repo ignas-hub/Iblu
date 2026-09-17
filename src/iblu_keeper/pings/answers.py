@@ -234,8 +234,14 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
     tags = ["ping", ping["kind"]]
     meta_extra: dict = {}
     if kind == "gains":
-        tags.append("gain")
-        meta_extra["kind"] = payload.get("gain_kind")
+        if payload.get("verdict") == "none":
+            # "Nothing today" is an answer, not a gain. It must never be
+            # counted by anything that sums gains.
+            tags.append("no_gain")
+            meta_extra["kind"] = None
+        else:
+            tags.append("gain")
+            meta_extra["kind"] = payload.get("gain_kind")
         meta_extra["evidence_ids"] = payload.get("evidence_ids") or []
     elif kind == "body_mind":
         # Plan §4.2, hard rule: the numbers and nothing else. No inferred
@@ -243,6 +249,17 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
         tags.append("health")
         meta_extra["body"] = payload.get("body")
         meta_extra["mind"] = payload.get("mind")
+    elif kind == "attended":
+        # Item 4: which ONE event instance this answers, and what he said.
+        # `analyst.blocks._apply_attendance_answers` reads this back by
+        # `instance_key`, not by ping — a "yes" here is ground truth for that
+        # occurrence, every day it is asked about again.
+        tags.append("attendance")
+        meta_extra["instance_key"] = payload.get("instance_key")
+        meta_extra["event_title"] = payload.get("event_title")
+        meta_extra["starts_at"] = payload.get("starts_at")
+        meta_extra["ends_at"] = payload.get("ends_at")
+        meta_extra["attended"] = payload.get("verdict")
     elif kind in ("split", "gap"):
         tags.append(kind)
 
@@ -314,6 +331,7 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
     )
     return {
         "entry_id": str(new_id),
+        "qid": qid,
         "key": key,
         "label": option.get("label", ""),
         "question": question.get("text", ""),
@@ -332,6 +350,7 @@ REPLY_TAG_BY_QID = {
     "split": "attention",
     "work_type": "attention",
     "gap": "attention",
+    "attended": "attendance",
 }
 
 

@@ -176,6 +176,21 @@ class Interval:
     # be un-set by a classification, which is what `is_context_locked` guards.
     is_context: bool = False
     is_context_locked: bool = False
+    # Only meaningful when `needs_commitment_check` is True. "his" | "maybe" |
+    # "not_his" — the classifier's (or `INTENT_MAYBE_TITLES`'s) three-way
+    # answer to "does Ignas attend this?" (analyst/intents.py). "maybe" is a
+    # family activity he sometimes joins (a child's sport, a school event) —
+    # never a commitment (`is_context` stays True, same as "not_his"), but
+    # `build()` still reads its silence the same cautious way a confirmed
+    # commitment's is (`_apply_maybe_family_inference`). None means "no
+    # attendance concept applies" (a workspace primary) or "not yet decided".
+    attendance: str | None = None
+    # Set by `_apply_attendance_answers` from Ignas's own tap on the evening
+    # `attended` question (plan item 3/4) — "yes"/"part"/"no" for THIS one
+    # instance, overriding whatever `attendance` says. Ground truth, not a
+    # guess: a "yes" skips the family-inference guard-rails other than the
+    # data horizon and marks its remainder `confidence='fact'`.
+    attendance_answer: str | None = None
 
 
 @dataclass
@@ -268,7 +283,18 @@ def cluster_signals(rows: list[dict]) -> list[Cluster]:
         c.start, c.end = _floor(c.start), _ceil(c.end + TAIL)
         if c.end - c.start < FLOOR:
             c.end = c.start + FLOOR
-    return _merge_overlaps(clusters)
+    merged = _merge_overlaps(clusters)
+
+    # A calendar EDIT (`source='calendar'`, from `calendar_changes`) is real
+    # activity, but on its own it is not evidence of a STRETCH of attention —
+    # Ignas edited "Go school" three times at 07:05 (2026-09-16) and it became
+    # a 30-minute `present / blt` block for ten seconds of calendar admin. A
+    # calendar signal may still join a cluster something else formed (it IS
+    # real activity, just not enough on its own); only a cluster made of
+    # NOTHING BUT calendar signals is dropped here, so its span falls back to
+    # whatever `build()` would make of it with no evidence — untracked, or an
+    # intent's own `ambiguous`/inferred handling.
+    return [c for c in merged if not all(s == "calendar" for s in c.sources)]
 
 
 def _merge_overlaps(clusters: list[Cluster]) -> list[Cluster]:
@@ -343,6 +369,17 @@ def build(
     default) means no restriction, which is what every test that does not
     care about it wants.
     """
+    # A `maybe` family intent ("sometimes I go, sometimes I don't" — Futbolas,
+    # a parents' meeting) is `is_context` too — it must never cut a cluster,
+    # cause `displaced`, or grow its own `ambiguous` block, exactly like a
+    # whereabouts marker (below). But unlike one, its silence is still worth
+    # reading (`_apply_maybe_family_inference`), so it is captured here,
+    # BEFORE the context filter drops it from `intents` for everything else.
+    maybe_intents = [
+        i for i in intents
+        if i.venture == "family" and i.attendance == "maybe" and i.event_id
+    ]
+
     # A context intent (a whereabouts marker, someone else's plan on a shared
     # calendar, a multi-day travel marker) is informative but is never allowed
     # to create a block or cause `displaced` — see `Interval.is_context`.
@@ -455,6 +492,7 @@ def build(
             )
 
     _apply_family_inference(blocks, intents, clusters, horizon)
+    _apply_maybe_family_inference(blocks, maybe_intents, clusters, horizon)
 
     blocks += _untracked(blocks, workday)
 
@@ -468,6 +506,7 @@ def build(
         block["untracked"] = bool(block.pop("_untracked", False))
         block.pop("_sources", None)
         block.pop("_family_inferred", None)
+        block.pop("_maybe_inferred", None)
     return merged
 
 
@@ -477,7 +516,7 @@ def _apply_family_inference(
     clusters: list[Cluster],
     horizon: datetime | None,
 ) -> None:
-    """Turn a family intent's silent remainder into `present`/`family`/`inferred`.
+    """Turn a family intent's silent remainder into `present`/`family`.
 
     Mutates `blocks` in place. Only ever touches blocks that are already
     `ambiguous` with no evidence and whose `intent_event_id` names a `family`
@@ -486,6 +525,14 @@ def _apply_family_inference(
     `INTENT_CALENDARS` event the classifier confirmed, at high confidence, is
     something Ignas himself attends, never a whereabouts marker). See the
     module docstring for why this exists and the four guard-rails below.
+
+    A CONFIRMED instance (`Interval.attendance_answer == "yes"` — Ignas
+    tapped the evening `attended` question) skips guard-rails (a)/(b)/(c):
+    he said he was there, so there is nothing left to guess about density,
+    length or whether the recorder was even running. Only (d), the data
+    horizon, still applies — a tap cannot make data exist that has not been
+    collected yet. Its remainder is `confidence='fact'`, not `'inferred'`:
+    this one is not a guess.
     """
     family_intents = {
         i.event_id: i for i in intents if i.venture == "family" and i.event_id
@@ -501,29 +548,102 @@ def _apply_family_inference(
 
     for eid, intent_blocks in by_intent.items():
         intent = family_intents[eid]
+        confirmed = intent.attendance_answer == "yes"
         span_minutes = (intent.end - intent.start).total_seconds() / 60
         if span_minutes <= 0:
             continue
 
-        # (a) Density: a span mostly covered by evidence of DISPLACED work
-        # probably means the family event did not happen, not that it
-        # happened silently alongside a busy inbox.
-        #
-        # Counts every slice with evidence that is not itself family, not only
-        # `displaced` ones: a work slice is only marked displaced when its
-        # venture is known, and the label thresholds now leave venture unset
-        # on a mixed stretch. Counting only `displaced` let an afternoon of
-        # unattributable work be claimed as family time.
-        work_minutes = sum(
-            (b["ends_at"] - b["starts_at"]).total_seconds() / 60
-            for b in intent_blocks
-            if b.get("evidence") and b.get("venture") != "family"
-        )
+        if not confirmed:
+            # (a) Density: a span mostly covered by evidence of DISPLACED work
+            # probably means the family event did not happen, not that it
+            # happened silently alongside a busy inbox.
+            #
+            # Counts every slice with evidence that is not itself family, not
+            # only `displaced` ones: a work slice is only marked displaced
+            # when its venture is known, and the label thresholds now leave
+            # venture unset on a mixed stretch. Counting only `displaced` let
+            # an afternoon of unattributable work be claimed as family time.
+            work_minutes = sum(
+                (b["ends_at"] - b["starts_at"]).total_seconds() / 60
+                for b in intent_blocks
+                if b.get("evidence") and b.get("venture") != "family"
+            )
+            if work_minutes / span_minutes >= FAMILY_INFERENCE_MAX_WORK_SHARE:
+                continue
+
+            # (c) The recorder must have been demonstrably running that day —
+            # otherwise a quiet afternoon and a dead collector look identical.
+            watched_elsewhere = any(
+                t < intent.start or t >= intent.end
+                for c in clusters
+                for t in c.times
+            )
+            if not watched_elsewhere:
+                continue
+
+        for b in intent_blocks:
+            if b.get("evidence") or b["attention"] != "ambiguous":
+                continue  # a slice with its own evidence, not a remainder
+
+            if not confirmed:
+                # (b) Minimum length: a gap between two bursts of chat is not
+                # family time.
+                minutes = (b["ends_at"] - b["starts_at"]).total_seconds() / 60
+                if minutes < FAMILY_INFERENCE_MIN_MINUTES:
+                    continue
+
+            # (d) Data horizon: do not infer into a stretch that may simply
+            # not have been collected yet. Deliberately not split at the
+            # horizon — a remainder that only PARTLY fits would leave a
+            # sliver behind, which is its own kind of misleading. Applies
+            # even to a confirmed instance.
+            if horizon is not None and b["ends_at"] > horizon:
+                continue
+
+            b["attention"] = "present"
+            b["venture"] = "family"
+            b["confidence"] = "fact" if confirmed else "inferred"
+            b["_family_inferred"] = True
+
+
+def _apply_maybe_family_inference(
+    blocks: list[dict],
+    maybe_intents: list[Interval],
+    clusters: list[Cluster],
+    horizon: datetime | None,
+) -> None:
+    """Turn a MAYBE family intent's quiet span into `present`/`family`/`inferred`.
+
+    A `maybe` intent ("sometimes I go, sometimes I don't" — Futbolas, a
+    parents' meeting) is never a commitment: `build()`'s top-level filter
+    treats it as context, so it produces no block of its own — no `displaced`,
+    no `ambiguous` remainder to convert the way `_apply_family_inference`
+    converts one. Its silence is still worth reading the same cautious way, so
+    this reads the span directly instead, appending NEW blocks rather than
+    flipping existing ones. Same four guard-rails, same module docstring.
+    """
+    if not maybe_intents:
+        return
+
+    for intent in maybe_intents:
+        span_minutes = (intent.end - intent.start).total_seconds() / 60
+        if span_minutes <= 0:
+            continue
+
+        # (a) Density — see `_apply_family_inference`. A `maybe` intent adds
+        # no cut points, so work signals inside it are ordinary `present`
+        # blocks by the time this runs; they count against it the same way.
+        work_minutes = 0.0
+        for b in blocks:
+            if not b.get("evidence") or b.get("venture") == "family":
+                continue
+            overlap = min(b["ends_at"], intent.end) - max(b["starts_at"], intent.start)
+            if overlap.total_seconds() > 0:
+                work_minutes += overlap.total_seconds() / 60
         if work_minutes / span_minutes >= FAMILY_INFERENCE_MAX_WORK_SHARE:
             continue
 
-        # (c) The recorder must have been demonstrably running that day —
-        # otherwise a quiet afternoon and a dead collector look identical.
+        # (c) The recorder must have been demonstrably running that day.
         watched_elsewhere = any(
             t < intent.start or t >= intent.end
             for c in clusters
@@ -532,27 +652,41 @@ def _apply_family_inference(
         if not watched_elsewhere:
             continue
 
-        for b in intent_blocks:
-            if b.get("evidence") or b["attention"] != "ambiguous":
-                continue  # a slice with its own evidence, not a remainder
-
+        # The quiet remainder: whatever of the span no block (evidence-based
+        # or otherwise) has already claimed. Recomputed fresh per intent so
+        # two overlapping `maybe` intents never double-claim the same minutes
+        # — the same reasoning as the `covered` list in `build()` itself.
+        covered = [(b["starts_at"], b["ends_at"]) for b in blocks]
+        for start, end in _subtract((intent.start, intent.end), covered):
             # (b) Minimum length: a gap between two bursts of chat is not
             # family time.
-            minutes = (b["ends_at"] - b["starts_at"]).total_seconds() / 60
+            minutes = (end - start).total_seconds() / 60
             if minutes < FAMILY_INFERENCE_MIN_MINUTES:
                 continue
 
-            # (d) Data horizon: do not infer into a stretch that may simply
-            # not have been collected yet. Deliberately not split at the
-            # horizon — a remainder that only PARTLY fits would leave a
-            # sliver behind, which is its own kind of misleading.
-            if horizon is not None and b["ends_at"] > horizon:
+            # (d) Data horizon — see `_apply_family_inference`. Not split at
+            # the horizon for the same reason: a partial remainder would
+            # leave a misleading sliver behind.
+            if horizon is not None and end > horizon:
                 continue
 
-            b["attention"] = "present"
-            b["venture"] = "family"
-            b["confidence"] = "inferred"
-            b["_family_inferred"] = True
+            blocks.append(
+                {
+                    "starts_at": start,
+                    "ends_at": end,
+                    "venture": "family",
+                    "work_type": None,
+                    "project": None,
+                    "attention": "present",
+                    "confidence": "inferred",
+                    "evidence": [],
+                    "intent_event_id": intent.event_id,
+                    "_sources": {},
+                    "_intent_title": intent.title,
+                    "_family_inferred": True,
+                    "_maybe_inferred": True,
+                }
+            )
 
 
 def _merge_adjacent(blocks: list[dict]) -> list[dict]:
@@ -573,6 +707,7 @@ def _merge_adjacent(blocks: list[dict]) -> list[dict]:
             # real evidence-based one, even when every other field matches —
             # they must never silently merge into one reasoning line.
             and prev.get("_family_inferred") == b.get("_family_inferred")
+            and prev.get("_maybe_inferred") == b.get("_maybe_inferred")
             and all(
                 prev[k] == b[k]
                 for k in ("venture", "work_type", "project", "attention", "confidence")
@@ -607,8 +742,14 @@ def _reasoning(block: dict) -> str:
 
     if block.get("_family_inferred"):
         # The one place IBLU turns silence into presence — the wording must
-        # say "assumed" every time so it is never mistaken for a recording.
-        return f'{minutes} min · nothing else recorded during "{title}" — assumed it happened'
+        # say "assumed" every time so it is never mistaken for a recording,
+        # UNLESS Ignas himself confirmed it by tapping the `attended`
+        # question: that block is `confidence='fact'` and gets an honest line
+        # instead, never "assumed".
+        if block.get("confidence") == "fact":
+            return f'{minutes} min · you said you went to "{title}" — nothing else recorded'
+        verb = "assumed you went" if block.get("_maybe_inferred") else "assumed it happened"
+        return f'{minutes} min · nothing else recorded during "{title}" — {verb}'
 
     if block["attention"] == "ambiguous":
         if not title:
@@ -945,6 +1086,83 @@ def live_blocks(conn, on: date) -> list[dict]:
     ).fetchall()
 
 
+def _apply_attendance_answers(conn, on: date, intents: list[Interval]) -> list[Interval]:
+    """Overlay Ignas's own answers to the evening `attended` question.
+
+    An answer is scoped to ONE instance (`analyst.intents.instance_key`) —
+    "did you go to Futbolas TODAY", not "do you ever go to Futbolas" — so it
+    only ever touches the `Interval`s for that exact calendar+event+date,
+    never a different day's occurrence of the same recurring event.
+
+    `yes` -> `his` (a commitment: work inside is `displaced`, remainder is a
+    confirmed `present`/`family`/`fact` — see `_apply_family_inference`).
+    `no` -> `not_his` (context; nothing built for it, same as today).
+    `part` -> `maybe` (unchanged from the classifier's own cautious state).
+
+    Never raises: a bad query here must not cost the day's reconstruction —
+    it simply leaves every intent exactly as the classifier left it, same
+    discipline as `classify_missing`.
+    """
+    if conn is None:
+        return intents
+
+    from .intents import instance_key
+
+    candidates: dict[str, Interval] = {}
+    for iv in intents:
+        if not getattr(iv, "needs_commitment_check", False):
+            continue
+        if getattr(iv, "is_context_locked", False):
+            continue
+        if not iv.event_id:
+            continue
+        candidates[instance_key(iv.calendar_id or "", iv.event_id, on)] = iv
+
+    if not candidates:
+        return intents
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT meta ->> 'instance_key' AS instance_key,
+                   meta ->> 'attended' AS attended
+              FROM context_entries
+             WHERE type = 'work_log'
+               AND 'attendance' = ANY(tags)
+               AND superseded_by IS NULL
+               AND meta ->> 'instance_key' = ANY(%s)
+            """,
+            (list(candidates),),
+        ).fetchall()
+    except Exception as exc:  # noqa: BLE001 — the day stands without the answer
+        logger.warning("analyst: attendance answers unavailable for %s (%s)", on, exc)
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return intents
+
+    for row in rows:
+        iv = candidates.get(row["instance_key"])
+        if iv is None:
+            continue
+        answer = row["attended"]
+        if answer == "yes":
+            iv.attendance = "his"
+            iv.is_context = False
+            iv.attendance_answer = "yes"
+        elif answer == "no":
+            iv.attendance = "not_his"
+            iv.is_context = True
+            iv.attendance_answer = "no"
+        elif answer == "part":
+            iv.attendance = "maybe"
+            iv.is_context = True
+            iv.attendance_answer = "part"
+
+    return intents
+
+
 def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> dict:
     """Rebuild one local day. Returns a summary of what it decided."""
     if settings.use_mock:
@@ -977,6 +1195,11 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
             intents = classify_missing(conn, intents, _load_ventures(conn))
         except Exception as exc:  # noqa: BLE001 — a bad classifier must not break the day
             logger.warning("analyst: intent classifier unavailable for %s (%s)", on, exc)
+
+        # Ignas's own tap on the evening `attended` question is ground truth
+        # for that ONE instance and overrides whatever the classifier (or
+        # `INTENT_MAYBE_TITLES`) decided — see `_apply_attendance_answers`.
+        intents = _apply_attendance_answers(conn, on, intents)
 
     # Anything Ignas confirmed by tapping is a fact, and a later reconstruct is
     # a guess. The guess never overwrites the fact: confirmed blocks are held

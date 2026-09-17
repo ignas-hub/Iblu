@@ -225,6 +225,60 @@ def _local_day_bounds(day):
     return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
 
 
+def _maybe_events_today(conn: psycopg.Connection, day, ventures: list[dict]) -> list[dict]:
+    """Today's MAYBE-attendance family intents, for the `attended` evening
+    card (item 4).
+
+    Reuses `analyst.blocks.load_intents` and `analyst.intents.classify_missing`
+    — the same `intent_labels` cache the analyst's own reconstruct already
+    warmed, so this is normally a cache hit and never a second Opus call for
+    an event the day has already classified. Never raises: a calendar or
+    classifier hiccup must not cost the whole ping, so a failure here just
+    means the card is omitted, same as `_day_blocks`.
+    """
+    try:
+        from ..analyst.blocks import day_bounds, load_intents
+        from ..analyst.intents import classify_missing, instance_key
+
+        start, end = day_bounds(day)
+        intents = load_intents(conn, start, end)
+        intents = classify_missing(conn, intents, ventures)
+    except Exception as exc:  # noqa: BLE001 - the ping must not break over this
+        logger.warning("pings: maybe-intents unavailable for %s (%s)", day, exc)
+        return []
+
+    return [
+        {
+            "instance_key": instance_key(iv.calendar_id or "", iv.event_id, day),
+            "title": iv.title,
+            "start": iv.start,
+            "end": iv.end,
+        }
+        for iv in intents
+        if iv.venture == "family" and iv.attendance == "maybe" and iv.event_id
+    ]
+
+
+def _answered_instance_keys(conn: psycopg.Connection, keys: list[str]) -> set[str]:
+    """Which of `keys` already has a live `attended` answer — never re-offer
+    a question Ignas already answered (item 4)."""
+    if not keys:
+        return set()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT meta ->> 'instance_key' AS instance_key "
+            "FROM context_entries "
+            "WHERE type = 'work_log' AND 'attendance' = ANY(tags) "
+            "AND superseded_by IS NULL "
+            "AND meta ->> 'instance_key' = ANY(%s)",
+            (keys,),
+        ).fetchall()
+    except Exception as exc:  # noqa: BLE001 - offering it again beats a broken ping
+        logger.warning("pings: attendance-answer lookup failed (%s)", exc)
+        return set()
+    return {r["instance_key"] for r in rows if r.get("instance_key")}
+
+
 def _gain_evidence(conn: psycopg.Connection, day) -> dict[str, list[dict]]:
     """Evidence for the gains card (plan §4.1) — dated, already-happened only.
 
@@ -396,11 +450,45 @@ def run_one(kind: str, *, dry: bool = False, force: bool = False) -> str:
             b["venture"] for b in day_blocks if b.get("venture")
         ).most_common(1)), (None,))[0]
 
-        questions, composer = compose(
-            signals, events, covers_from, covers_to, ventures, work_types,
-            kind=kind, blocks=day_blocks, gain_evidence=gain_evidence,
-            top_venture=top_venture,
-        )
+        maybe_events: list[dict] = []
+        answered_keys: set[str] = set()
+        if kind in ("evening", "test"):
+            maybe_events = _maybe_events_today(conn, day, ventures)
+            # Only one from THIS ping's window — item 4.
+            maybe_events = [
+                e for e in maybe_events if covers_from <= e["start"] <= covers_to
+            ]
+            answered_keys = _answered_instance_keys(
+                conn, [e["instance_key"] for e in maybe_events]
+            )
+
+        try:
+            questions, composer = compose(
+                signals, events, covers_from, covers_to, ventures, work_types,
+                kind=kind, blocks=day_blocks, gain_evidence=gain_evidence,
+                top_venture=top_venture, maybe_events=maybe_events,
+                answered_instance_keys=answered_keys,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # The optional cards (gains, body/mind, attendance, block
+            # confirmations) are where new code lives, and on 2026-09-16 one
+            # of them raised on every tick and cost Ignas the whole evening
+            # ping. Retry with only the core attention questions; a smaller
+            # ping beats no ping. Record it either way — this was invisible.
+            from ..store import observations as obs
+
+            obs.record_safe(
+                source="composer", kind="ping_compose_failed", severity="error",
+                summary=f"the {kind} ping could not be composed with all its cards",
+                detail=f"{type(exc).__name__}: {str(exc)[:600]}",
+                evidence={"kind": kind, "date": str(day)},
+                fp=obs.fingerprint("composer", "compose_failed", kind, day),
+            )
+            logger.exception("pings: %s composition failed — retrying with core questions", kind)
+            questions, composer = compose(
+                signals, events, covers_from, covers_to, ventures, work_types,
+                kind=kind,
+            )
 
         if dry:
             import json
@@ -480,6 +568,31 @@ def run_one(kind: str, *, dry: bool = False, force: bool = False) -> str:
     return f"{kind}:sent"
 
 
+def _run_one_safely(kind: str, *, dry: bool) -> str:
+    """One ping kind, isolated from the other and from the tick.
+
+    A failure used to propagate out of the tick: the midday ping raising meant
+    the evening one never ran, and the collectors had already finished, so the
+    watchdog — which judges freshness from collector_state — saw a healthy
+    system while no ping went out.
+    """
+    try:
+        return run_one(kind, dry=dry)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("pings: %s failed", kind)
+        from ..store import observations as obs
+
+        obs.record_safe(
+            source="composer", kind="ping_failed", severity="error",
+            summary=f"the {kind} ping failed and was not sent",
+            detail=f"{type(exc).__name__}: {str(exc)[:600]}",
+            evidence={"kind": kind, "date": str(datetime.now(_tz()).date())},
+            fp=obs.fingerprint("composer", "ping_failed", kind,
+                               datetime.now(_tz()).date()),
+        )
+        return f"{kind}:failed"
+
+
 def run_pings(*, dry: bool = False, force_kind: str | None = None) -> str:
     """Decide and send for this tick. Returns the log fragment."""
     if force_kind:
@@ -498,7 +611,7 @@ def run_pings(*, dry: bool = False, force_kind: str | None = None) -> str:
     if not schedule.is_ping_day(datetime.now(tz).date(), settings.ping_day_set):
         return "not-a-ping-day"
 
-    notes = [run_one(kind, dry=dry) for kind in ("midday", "evening")]
+    notes = [_run_one_safely(kind, dry=dry) for kind in ("midday", "evening")]
     # Collapse the common "nothing to do yet" cases into one quiet word so the
     # journal line stays readable across ~78 ticks a day.
     interesting = [n for n in notes if not n.endswith((":early", ":done"))]

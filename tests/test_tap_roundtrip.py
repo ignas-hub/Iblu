@@ -178,6 +178,57 @@ def test_gains_taps_do_not_supersede_each_other_against_real_sql(live_answers):
 
 
 @requires_db
+def test_attended_retap_leaves_exactly_one_live_answer_against_real_sql(live_answers):
+    """The `attended` card (item 4) uses the normal per-question supersede
+    chain — NOT the gains-style independent rows — proven against the real
+    UPDATE the same way `test_retapping_a_question_leaves_exactly_one_live_
+    answer` proves it for `sink`."""
+    import psycopg
+
+    answers, tokens, secret = live_answers
+    payload_extra = {
+        "instance_key": "roundtrip-instance-1", "event_title": "Futbolas",
+        "starts_at": "2026-09-15T17:00:00+02:00", "ends_at": "2026-09-15T18:30:00+02:00",
+    }
+    questions = [{
+        "qid": "attended",
+        "text": "Did you go to Futbolas (17:00–18:30)?",
+        "options": [
+            {"key": "A", "label": "Yes",
+             "payload": {"kind": "attended", "verdict": "yes", **payload_extra}},
+            {"key": "B", "label": "Part of it",
+             "payload": {"kind": "attended", "verdict": "part", **payload_extra}},
+            {"key": "C", "label": "No",
+             "payload": {"kind": "attended", "verdict": "no", **payload_extra}},
+        ],
+    }]
+    with db.get_conn() as conn:
+        # `conn.transaction()` swallows Rollback itself — that is how it is
+        # meant to be used, and it means nothing here reaches the database.
+        with conn.transaction() as tx:
+            ping_id = _make_ping(conn, questions)
+
+            for key in ("A", "B", "C"):
+                answers.record_tap(
+                    conn,
+                    tokens.make_token(ping_id=ping_id, qid="attended", key=key, secret=secret),
+                )
+
+            live = _live_answers(conn, ping_id, "attended")
+            assert len(live) == 1, f"{len(live)} live answers after three taps"
+            assert live[0]["meta"]["choice_key"] == "C", "the last tap should win"
+            assert live[0]["meta"]["attended"] == "no"
+            assert live[0]["meta"]["instance_key"] == "roundtrip-instance-1"
+
+            row = conn.execute(
+                "SELECT tags FROM context_entries WHERE id = %s", (live[0]["id"],),
+            ).fetchone()
+            assert row["tags"] == ["ping", "test", "attendance"]
+
+            raise psycopg.Rollback(tx)
+
+
+@requires_db
 def test_a_forged_token_writes_nothing(live_answers):
     import psycopg
 

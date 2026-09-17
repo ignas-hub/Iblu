@@ -7,7 +7,7 @@ what these tests pin down.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -71,6 +71,30 @@ def test_clusters_that_touch_after_flooring_are_merged():
 
 def test_no_signals_no_clusters():
     assert B.cluster_signals([]) == []
+
+
+# --- a cluster of ONLY calendar-edit signals is not evidence of a stretch of
+#     attention (real case: three edits to "Go school" at 07:05, 2026-09-16,
+#     became a 30-minute `present` block for ten seconds of calendar admin) -
+
+
+def test_a_cluster_of_only_calendar_signals_produces_no_block():
+    rows = [signal(n, at(7, 5), source="calendar") for n in range(3)]
+    assert B.cluster_signals(rows) == []
+    assert B.build(B.cluster_signals(rows), []) == []
+
+
+def test_a_calendar_signal_still_joins_a_cluster_something_else_formed():
+    rows = [
+        signal(0, at(7, 5), source="calendar"),
+        signal(1, at(7, 6), source="calendar"),
+        signal(2, at(7, 7), source="calendar"),
+        signal(3, at(7, 10), source="gmail"),
+    ]
+    [c] = B.cluster_signals(rows)
+    assert c.signal_ids == [0, 1, 2, 3]
+    [block] = B.build(B.cluster_signals(rows), [])
+    assert block["evidence"] == [0, 1, 2, 3]
 
 
 # --- attention ------------------------------------------------------------
@@ -703,6 +727,199 @@ def test_a_work_meeting_with_no_signals_stays_ambiguous_not_inferred():
     blocks = B.build(clusters, [meeting])
     [b] = [x for x in blocks if x["intent_event_id"] == "wm1"]
     assert b["attention"] == "ambiguous"
+
+
+# --- the third attendance state: `maybe` ("sometimes I go, sometimes I
+#     don't") — never a commitment, but its silence is still read carefully -
+
+
+def maybe_intent(start, end, *, title="Futbolas", event_id="fut-maybe"):
+    """A `maybe` family intent exactly as `classify_missing` would leave one:
+    `is_context=True` (never a commitment), `attendance='maybe'`."""
+    return intent(
+        start, end, venture="family", title=title, event_id=event_id,
+        needs_commitment_check=True, is_context=True, attendance="maybe",
+    )
+
+
+def test_a_maybe_intent_quiet_span_is_inferred_present_assumed_you_went():
+    outside = signal(0, at(7, 0), venture="blt")
+    clusters = B.cluster_signals([outside])
+    fam = maybe_intent(at(10, 0), at(10, 40), event_id="fut-m1")
+    blocks = B.build(clusters, [fam])
+    [b] = [x for x in blocks if x["intent_event_id"] == "fut-m1"]
+    assert b["attention"] == "present"
+    assert b["venture"] == "family"
+    assert b["confidence"] == "inferred"
+    assert "assumed you went" in b["reasoning"]
+
+
+def test_a_maybe_intent_full_of_work_is_present_not_displaced_and_claims_no_family():
+    outside = signal(0, at(7, 0), venture="blt")
+    work1 = signal(1, at(10, 0), venture="blt")
+    work2 = signal(2, at(10, 25), venture="blt")
+    clusters = B.cluster_signals([outside, work1, work2])
+    fam = maybe_intent(at(10, 0), at(11, 10), event_id="fut-m2")
+    blocks = B.build(clusters, [fam])
+    # A `maybe` intent adds no cut points, so the work signals inside it are
+    # ordinary evidence-based blocks claimed by no intent at all — never
+    # `intent_event_id == "fut-m2"` (that's the whole point: nothing here is
+    # attributed to the family event).
+    assert all(b.get("intent_event_id") != "fut-m2" for b in blocks)
+    work_blocks = [b for b in blocks if b["venture"] == "blt" and b.get("evidence")]
+    assert work_blocks, "the work signals should still produce ordinary blocks"
+    # never displaced — a `maybe` intent can never cause displacement.
+    assert all(b["attention"] == "present" for b in work_blocks)
+    assert all(b["attention"] != "displaced" for b in blocks)
+    # and no family time claimed anywhere in the span.
+    assert not any(
+        b["venture"] == "family" and at(10, 0) <= b["starts_at"] < at(11, 10)
+        for b in blocks
+    )
+
+
+def test_a_maybe_intent_never_produces_an_ambiguous_block_of_its_own():
+    """No evidence anywhere that day -> guard-rail (c) (watched elsewhere)
+    fails, so nothing is claimed — and, unlike a real commitment, nothing
+    `ambiguous` is left behind either."""
+    fam = maybe_intent(at(10, 0), at(10, 40), event_id="fut-m3")
+    blocks = B.build([], [fam])
+    assert blocks == []
+
+
+def test_a_maybe_intent_short_remainder_is_not_claimed_as_family():
+    outside = signal(0, at(7, 0), venture="blt")
+    clusters = B.cluster_signals([outside])
+    fam = maybe_intent(at(10, 0), at(10, 15), event_id="fut-m4")
+    blocks = B.build(clusters, [fam])
+    assert all(b.get("intent_event_id") != "fut-m4" for b in blocks)
+
+
+def test_a_maybe_intent_density_guard_still_applies():
+    outside = signal(0, at(7, 0), venture="blt")
+    work1 = signal(1, at(10, 0), venture="blt")
+    work2 = signal(2, at(10, 25), venture="blt")
+    clusters = B.cluster_signals([outside, work1, work2])
+    fam = maybe_intent(at(10, 0), at(11, 10), event_id="fut-m5")
+    blocks = B.build(clusters, [fam])
+    fam_blocks = [b for b in blocks if b["intent_event_id"] == "fut-m5"]
+    remainder = [b for b in fam_blocks if not b.get("evidence")]
+    assert not any(b["venture"] == "family" for b in remainder)
+
+
+# --- per-day attendance answers override the classifier (yes / no / part) --
+
+
+def test_apply_attendance_answers_maps_yes_no_and_part(monkeypatch):
+    class _FakeRowsConn:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def execute(self, sql, params=None):
+            return self
+
+        def fetchall(self):
+            return self._rows
+
+        def rollback(self):
+            pass
+
+    from iblu_keeper.analyst.intents import instance_key
+
+    on = date(2026, 9, 15)
+    iv_yes = intent(at(17, 0), at(18, 30), venture="family", title="Futbolas",
+                     event_id="e-yes", calendar_id="cal1", needs_commitment_check=True,
+                     is_context=True, attendance="maybe")
+    iv_no = intent(at(9, 0), at(9, 30), venture="family", title="Greta nicoj",
+                    event_id="e-no", calendar_id="cal1", needs_commitment_check=True,
+                    is_context=True)
+    iv_part = intent(at(15, 0), at(16, 0), venture="family", title="Roditeljsku sastanak",
+                      event_id="e-part", calendar_id="cal1", needs_commitment_check=True,
+                      is_context=True, attendance="maybe")
+
+    rows = [
+        {"instance_key": instance_key("cal1", "e-yes", on), "attended": "yes"},
+        {"instance_key": instance_key("cal1", "e-no", on), "attended": "no"},
+        {"instance_key": instance_key("cal1", "e-part", on), "attended": "part"},
+    ]
+    conn = _FakeRowsConn(rows)
+    out = B._apply_attendance_answers(conn, on, [iv_yes, iv_no, iv_part])
+    assert out is not None
+
+    assert iv_yes.attendance == "his" and iv_yes.is_context is False
+    assert iv_yes.attendance_answer == "yes"
+
+    assert iv_no.attendance == "not_his" and iv_no.is_context is True
+    assert iv_no.attendance_answer == "no"
+
+    assert iv_part.attendance == "maybe" and iv_part.is_context is True
+    assert iv_part.attendance_answer == "part"
+
+
+def test_confirmed_yes_causes_displacement_and_a_fact_family_remainder():
+    outside = signal(0, at(7, 0), venture="blt")
+    work1 = signal(1, at(10, 5), venture="blt")
+    clusters = B.cluster_signals([outside, work1])
+    fam = intent(
+        at(10, 0), at(10, 40), venture="family", title="Futbolas", event_id="fut-y1",
+        needs_commitment_check=True, is_context=False, attendance="his",
+        attendance_answer="yes",
+    )
+    blocks = B.build(clusters, [fam])
+    fam_blocks = sorted(
+        (b for b in blocks if b["intent_event_id"] == "fut-y1"),
+        key=lambda b: b["starts_at"],
+    )
+    assert [b["attention"] for b in fam_blocks] == ["displaced", "present"]
+    assert fam_blocks[0]["venture"] == "blt"
+    assert fam_blocks[1]["venture"] == "family"
+    assert fam_blocks[1]["confidence"] == "fact"
+    assert "you said you went" in fam_blocks[1]["reasoning"]
+
+
+def test_confirmed_yes_skips_the_density_and_watched_elsewhere_guard_rails():
+    """No other signal anywhere that day (guard-rail (c) would normally
+    fail) — a confirmed 'yes' does not need it."""
+    fam = intent(
+        at(10, 0), at(10, 40), venture="family", title="Futbolas", event_id="fut-y2",
+        needs_commitment_check=True, is_context=False, attendance="his",
+        attendance_answer="yes",
+    )
+    blocks = B.build([], [fam])
+    [b] = blocks
+    assert b["attention"] == "present"
+    assert b["venture"] == "family"
+    assert b["confidence"] == "fact"
+
+
+def test_confirmed_no_treats_the_instance_as_context():
+    outside = signal(0, at(7, 0), venture="blt")
+    work1 = signal(1, at(10, 5), venture="blt")
+    clusters = B.cluster_signals([outside, work1])
+    fam = intent(
+        at(10, 0), at(10, 40), venture="family", title="Futbolas", event_id="fut-n1",
+        needs_commitment_check=True, is_context=True, attendance="not_his",
+        attendance_answer="no",
+    )
+    blocks = B.build(clusters, [fam])
+    assert all(b.get("intent_event_id") != "fut-n1" for b in blocks)
+    assert any(
+        b["venture"] == "blt" and b["attention"] == "present" for b in blocks
+    )
+
+
+def test_confirmed_part_keeps_maybe_semantics():
+    outside = signal(0, at(7, 0), venture="blt")
+    clusters = B.cluster_signals([outside])
+    fam = intent(
+        at(10, 0), at(10, 40), venture="family", title="Futbolas", event_id="fut-p1",
+        needs_commitment_check=True, is_context=True, attendance="maybe",
+        attendance_answer="part",
+    )
+    blocks = B.build(clusters, [fam])
+    [b] = [x for x in blocks if x["intent_event_id"] == "fut-p1"]
+    assert b["attention"] == "present" and b["venture"] == "family"
+    assert b["confidence"] == "inferred", "'part' is not a confirmed 'yes'"
 
 
 # --- displacement now works for family time (item F) ------------------------
