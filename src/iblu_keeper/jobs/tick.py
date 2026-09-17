@@ -90,6 +90,25 @@ def run(dry: bool = False, force_ping: str | None = None, assume_yes: bool = Fal
         results = run_all(conn, dry=dry)
 
     failed = [name for name, value in results.items() if not isinstance(value, int)]
+
+    # A collector that ran cleanly this tick clears its own earlier failure.
+    # A single network blip on one Deadlift tick (SSLEOFError, recovered ten
+    # minutes later) otherwise stayed an open error and was re-announced.
+    succeeded = [name for name, value in results.items() if isinstance(value, int)]
+    if succeeded and not dry:
+        from ..store import observations as obs
+
+        try:
+            with db.get_conn() as conn:
+                for name in succeeded:
+                    row = conn.execute(
+                        "SELECT id FROM observations WHERE status = 'open' AND fingerprint = %s",
+                        (obs.fingerprint("tick", "collector_failed", name),),
+                    ).fetchone()
+                    if row:
+                        obs.resolve(conn, row["id"], "cleared: the collector ran cleanly on a later tick")
+        except Exception:  # noqa: BLE001 — bookkeeping must not fail the tick
+            logger.warning("tick: could not clear recovered collector failures", exc_info=True)
     for name in failed:
         logger.error("tick: collector %s failed: %s", name, results[name])
         # One collector failing never stops the others, which is exactly why it

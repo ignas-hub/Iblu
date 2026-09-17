@@ -124,10 +124,21 @@ def check_disk() -> list[dict]:
 
 
 def _tick_is_due(now_local: datetime) -> bool:
-    """Should a tick have run by now? Mon–Fri 07:00–19:50 (deploy/iblu-tick.timer)."""
+    """Should a tick have run by now? Mon–Fri 07:00–19:50 (deploy/iblu-tick.timer).
+
+    "Due" starts one cadence plus the grace AFTER 07:00, not at 07:00. The
+    watchdog fires on the hour and half hour, which is exactly when the day's
+    first tick is scheduled — so at 07:00 it saw "last tick: yesterday 19:50,
+    during working hours" and raised an error that was re-announced every six
+    hours for two days. Until the first tick has had time to run, the gap
+    since last night is not a gap.
+    """
     if now_local.weekday() > 4:
         return False
-    return 7 <= now_local.hour < 20
+    day_start = now_local.replace(hour=7, minute=0, second=0, microsecond=0)
+    return day_start + timedelta(minutes=10) + TICK_GRACE <= now_local < now_local.replace(
+        hour=20, minute=0, second=0, microsecond=0
+    )
 
 
 def check_tick_freshness(conn, now: datetime | None = None) -> list[dict]:
@@ -227,6 +238,34 @@ def check_database(conn) -> list[dict]:
             fp_parts=("analyst",),
         )]
     return []
+
+
+# Every kind this module records, so it only ever retires its own findings.
+WATCHDOG_KINDS = (
+    "unit_down", "disk_full", "disk_filling", "tick_never_ran", "tick_stale",
+    "backups_unreadable", "backups_missing", "backups_stale",
+    "google_auth_failed", "analyst_stale",
+)
+
+
+def retire_cleared(conn, found: list[dict]) -> int:
+    """Resolve open watchdog findings that this run did not see again."""
+    still_true = {f["fp"] for f in found}
+    rows = conn.execute(
+        """
+        SELECT id, fingerprint FROM observations
+         WHERE status = 'open' AND detected_by = 'rule'
+           AND kind = ANY(%s)
+        """,
+        (list(WATCHDOG_KINDS),),
+    ).fetchall()
+    retired = 0
+    for row in rows:
+        if row["fingerprint"] in still_true:
+            continue
+        if obs.resolve(conn, row["id"], "cleared: the watchdog checked again and it no longer holds"):
+            retired += 1
+    return retired
 
 
 def run_checks(conn) -> list[dict]:
@@ -346,6 +385,15 @@ def run(dry: bool = False, alert: bool = True) -> int:
                     obs.record(conn, **finding)
                 except Exception:  # noqa: BLE001
                     logger.warning("watchdog: could not record %s", finding["kind"], exc_info=True)
+
+        # A watchdog finding that this run did not reproduce has cleared. The
+        # first version never closed them, so a one-off stayed "open" and was
+        # re-announced every six hours — six alerts in two days, several of
+        # them the same false alarm.
+        if not dry:
+            retired = retire_cleared(conn, found)
+            if retired:
+                logger.info("watchdog: %d finding(s) cleared", retired)
 
         # Housekeeping: leads that stopped recurring stop being shown. Never
         # errors, and never rule findings — those retire only by not

@@ -230,3 +230,42 @@ def test_the_alert_refuses_to_send_without_a_webhook(monkeypatch):
     monkeypatch.setattr(W, "settings", _NoHook())
     with pytest.raises(RuntimeError, match="nowhere to alert"):
         W.send_alert("anything")
+
+
+# --- no false alarms, and findings clear themselves (2026-09-17) ----------
+
+
+def test_the_first_tick_of_the_day_is_not_overdue_at_the_moment_it_is_due():
+    """At 07:00 the watchdog saw "last tick: yesterday 19:50" and raised an
+    error that was re-announced every six hours for two days."""
+    now = datetime(2026, 9, 17, 7, 0, tzinfo=TZ).astimezone(UTC)
+    conn = _Conn({"max(last_run_at)": [{"at": now - timedelta(hours=11)}]})
+    assert W.check_tick_freshness(conn, now=now) == []
+
+
+def test_monday_morning_is_not_a_stale_tick_either():
+    now = datetime(2026, 9, 14, 7, 30, tzinfo=TZ).astimezone(UTC)   # Monday
+    conn = _Conn({"max(last_run_at)": [{"at": now - timedelta(days=2, hours=12)}]})
+    assert W.check_tick_freshness(conn, now=now) == []
+
+
+def test_a_morning_with_no_tick_at_all_is_still_caught():
+    now = datetime(2026, 9, 17, 8, 30, tzinfo=TZ).astimezone(UTC)
+    conn = _Conn({"max(last_run_at)": [{"at": now - timedelta(hours=12)}]})
+    assert W.check_tick_freshness(conn, now=now)[0]["kind"] == "tick_stale"
+
+
+def test_a_finding_that_no_longer_holds_is_retired(monkeypatch):
+    resolved = []
+    monkeypatch.setattr(W.obs, "resolve", lambda conn, oid, note: resolved.append(oid) or True)
+    conn = _Conn({"FROM observations": [{"id": 931, "fingerprint": "old"},
+                                        {"id": 932, "fingerprint": "still"}]})
+    retired = W.retire_cleared(conn, [{"fp": "still"}])
+    assert retired == 1 and resolved == [931]
+
+
+def test_the_watchdog_only_retires_its_own_kinds():
+    conn = _Conn({"FROM observations": []})
+    W.retire_cleared(conn, [])
+    assert "kind = ANY" in conn.executed[0]
+    assert "sensecheck" not in conn.executed[0]
