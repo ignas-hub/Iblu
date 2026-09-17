@@ -308,10 +308,18 @@ keeping straight:
    above is the right shape: it keeps every read in the group Ignas can allow
    once. `tests/test_tool_permissions.py` keeps the annotations honest; it
    cannot enforce client behaviour and says so.
-3. **When a new tool ships, say so in the handover**, with the words "you will
+3. **Changing an existing tool's definition appears to reset it to Ask, too.**
+   Observed 2026-09-17: after a restart, Ignas's "needs approval" list held
+   the three genuinely new tools *and* seven old ones — `gdoc_read`,
+   `get_context`, `gmail_list_attachments`, `gmail_read_attachment`,
+   `gmail_mark_unread`, `chat_mark_read`, `server_health`. Every one of those
+   had a changed schema or docstring since it was last approved (the
+   `account` parameter, `structure`, the priorities in `get_context`). Treat a
+   parameter change as costing the same click as a new tool, and say so.
+4. **When a tool ships or changes, say so in the handover**, with the words "you will
    need to set this to Always allow in Settings > Connectors", rather than
    claiming a restart or reconnect will apply it. It will not.
-4. **Three tools ask**, and only these three, because each puts a message in
+5. **Three tools ask**, and only these three, because each puts a message in
    front of another human and cannot be taken back: `gmail_send_email`,
    `chat_send_message`, `gmail_reply`. A threaded reply lands in someone's inbox
    exactly as a new mail does — the thread makes it more likely to be read, not
