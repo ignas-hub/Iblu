@@ -259,6 +259,18 @@ every one of them logged the error correctly.
     python -m iblu_keeper.jobs.watchdog --dry        # check, write nothing
     python -m iblu_keeper.jobs.watchdog --no-alert   # record, stay quiet
 
+**Docs and Sheets — full API access (2026-09-17).** `gdoc_batch_update`
+passes any Google Docs `batchUpdate` request through unmodified (highlight,
+bold, fonts, headings, lists, tables, images, links), and accepts
+`{"text": "...", "occurrence": 1 | "all"}` in place of an index, resolved
+against the document before the batch. A batch that changes the document's
+length is applied bottom-up so anchors stay correct; an anchor therefore always
+refers to text that existed BEFORE the batch. `gdoc_read(structure=True)` shows
+positions and current formatting. `sheets_read` / `sheets_write` cover values,
+formulas and any raw Sheets `batchUpdate` request. No new OAuth scope — the
+`drive` scope covers Sheets — but the Sheets API must be enabled in each
+account's Cloud project. 42 tools.
+
 **Known open items:** external DM partners who are not in Google Contacts
 cannot be named by the People API, so their `counterpart` stays `users/<id>`
 (1 space today). Phase 3 (goals/priorities) not started. Remaining week-2 backlog (plan §12): the mobile web app,

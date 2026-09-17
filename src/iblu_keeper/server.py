@@ -526,6 +526,7 @@ def gdoc_read(
     url_or_id: Annotated[str, Field(min_length=1, description="Sharing URL or raw Drive file id")],
     max_chars: Annotated[int, Field(default=20000, ge=100, le=200_000)] = 20000,
     account: Annotated[str | None, Field(default=None, description="Which Google Drive to read from: blt (default), deadlift, or choco")] = None,
+    structure: Annotated[bool, Field(default=False, description="Also return the document's structure (paragraphs/tables/styles/runs with indices) — Google Docs only. Default False keeps the plain-text output unchanged.")] = False,
 ) -> dict:
     """Fetch a Google Doc, Sheet, or Slides file as plain text.
 
@@ -534,9 +535,17 @@ def gdoc_read(
     link the user wants to read or summarize. ``account`` — which Drive to
     read from: ``blt`` (default), ``deadlift``, ``choco``.
 
+    Set ``structure=True`` to also get a ``structure`` field — the document
+    body as a list of elements (paragraph/table/sectionBreak/...) with
+    ``start_index``/``end_index``, a paragraph's ``named_style_type``, and
+    each text run's text + style (bold, italic, backgroundColor,
+    foregroundColor, fontSize, link). Use this to find exact text and
+    existing formatting before calling `gdoc_batch_update`. Google Docs only
+    (a Sheet/Slides file gets ``structure: None`` and a note).
+
     Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
     """
-    return gmail_tools.read_gdoc(url_or_id, max_chars, account)
+    return gmail_tools.read_gdoc(url_or_id, max_chars, account, structure)
 
 
 # --------------------------------------------------------------------------- #
@@ -700,6 +709,131 @@ def drive_create_file(
     """
     from .tools import drive as drive_tools
     return drive_tools.drive_create_file(filename, content, folder_id_or_url, mime_type)
+
+
+@mcp.tool(name="gdoc_batch_update", annotations={"title": "Batch-Update Google Doc (full API access)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("gdoc_batch_update")
+@with_retry("gdoc_batch_update")
+def gdoc_batch_update(
+    doc_id_or_url: Annotated[str, Field(min_length=1, description="Doc ID or sharing URL")],
+    requests: Annotated[list[dict], Field(min_length=1, description="Raw Google Docs API batchUpdate request objects, applied in order")],
+    account: Annotated[str | None, Field(default=None, description="Which Google Drive/Docs to edit: blt (default), deadlift, or choco")] = None,
+) -> dict:
+    """Send raw Google Docs API batchUpdate requests — full API access.
+
+    Everything `batchUpdate` supports is passed through unmodified:
+    `updateTextStyle` (bold, italic, highlight/backgroundColor, fonts,
+    links), `updateParagraphStyle` (headings), `createParagraphBullets`
+    (lists), `insertTable`, `insertInlineImage`, `deleteContentRange`,
+    `insertText`, `replaceAllText`, `updateDocumentStyle`,
+    `createNamedRange` — the entire Docs API, not a curated subset.
+
+    You cannot know character indices in advance, so anywhere a request
+    needs a `range` (`{startIndex, endIndex}`) or `location` (`{index}`) you
+    may instead give a text anchor: `{"text": "exact text", "occurrence": 1}`
+    (occurrence is 1-based; `occurrence: "all"` applies the request once per
+    match, safely, in descending index order so earlier edits never shift
+    later ones). The document is fetched once and searched for you. For a
+    `location` anchor, add `"position": "after"` to insert after the match
+    instead of before it (the default). A missing anchor raises a clear
+    error naming the text that was not found — nothing is silently skipped.
+    Call `gdoc_read` with `structure=True` first if you need to see exact
+    existing text/formatting before editing.
+
+    Example — highlight the words "final draft" in yellow:
+        requests=[{
+          "updateTextStyle": {
+            "range": {"text": "final draft", "occurrence": 1},
+            "textStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1, "green": 1, "blue": 0}}}},
+            "fields": "backgroundColor"
+          }
+        }]
+
+    ``account`` — which Drive to edit: ``blt`` (default), ``deadlift``,
+    ``choco``.
+    """
+    from .tools import docs_edit
+    return docs_edit.batch_update(doc_id_or_url, requests, account)
+
+
+@mcp.tool(name="sheets_read", annotations={"title": "Read Google Sheet (full API access)", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("sheets_read")
+@with_retry("sheets_read")
+def sheets_read(
+    spreadsheet_id_or_url: Annotated[str, Field(min_length=1, description="Spreadsheet ID or sharing URL")],
+    ranges: Annotated[list[str] | None, Field(default=None, description="A1 ranges to read, e.g. ['Sheet1!A1:D20']. Omit for the first sheet's whole used range.")] = None,
+    include_formatting: Annotated[bool, Field(default=False, description="Also return per-cell formatting (number format, colors, borders, ...) for the requested ranges. Capped at ~5,000 cells — narrow `ranges` if you hit the limit.")] = False,
+    account: Annotated[str | None, Field(default=None, description="Which Google Drive to read from: blt (default), deadlift, or choco")] = None,
+) -> dict:
+    """Read a Google Sheet — full API access: metadata, values, or formatting.
+
+    Returns the spreadsheet title, every sheet's title/sheetId/gridProperties
+    /frozen-row-and-column counts, and either `values` (plain cell values for
+    the requested ranges) or, with `include_formatting=True`, `sheets_data`
+    (full grid data including cell formats) for those ranges.
+
+    ``account`` — which Drive to read from: ``blt`` (default), ``deadlift``,
+    ``choco``.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
+    from .tools import sheets
+    return sheets.read(spreadsheet_id_or_url, ranges, include_formatting, account)
+
+
+@mcp.tool(name="sheets_write", annotations={"title": "Write Google Sheet (full API access)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("sheets_write")
+@with_retry("sheets_write")
+def sheets_write(
+    action: Annotated[str, Field(default="update_values", pattern="^(update_values|append_values|clear_values|batch_update|create)$", description="update_values | append_values | clear_values | batch_update | create")] = "update_values",
+    spreadsheet_id_or_url: Annotated[str | None, Field(default=None, description="Spreadsheet ID or sharing URL (omit only for action='create')")] = None,
+    range: Annotated[str | None, Field(default=None, description="A1 range, e.g. 'Sheet1!A1:C1' (required for update_values / append_values / clear_values)")] = None,
+    values: Annotated[list[list] | None, Field(default=None, description="2D array of row values (required for update_values/append_values; optional initial data for create)")] = None,
+    value_input_option: Annotated[str, Field(default="USER_ENTERED", pattern="^(USER_ENTERED|RAW)$", description="USER_ENTERED (default) parses formulas/dates as if typed into the UI; RAW stores values verbatim")] = "USER_ENTERED",
+    requests: Annotated[list[dict] | None, Field(default=None, description="Raw Sheets API batchUpdate request objects for action='batch_update' — repeatCell, addSheet, mergeCells, addConditionalFormatRule, addChart, setDataValidation, updateBorders, everything, passed through unmodified")] = None,
+    title: Annotated[str | None, Field(default=None, description="New spreadsheet title (required for action='create')")] = None,
+    folder_id: Annotated[str | None, Field(default=None, description="Drive folder ID or URL to move a newly created spreadsheet into")] = None,
+    account: Annotated[str | None, Field(default=None, description="Which Google Drive to write to: blt (default), deadlift, or choco")] = None,
+) -> dict:
+    """Write a Google Sheet — full API access: values, formulas, and raw batchUpdate.
+
+    ``action``:
+      - ``update_values``  — overwrite `range` with `values` (a 2D array).
+      - ``append_values``  — append `values` as new rows after the range's table.
+      - ``clear_values``   — clear `range`'s values (formatting is untouched).
+      - ``batch_update``   — send raw `requests` (Sheets API request
+        objects), passed through unmodified — bold headers, merges, borders,
+        conditional formatting, charts, data validation, add/delete sheets,
+        everything the Sheets API supports.
+      - ``create``         — new spreadsheet named `title`, optional initial
+        `values` written to A1, optionally moved into `folder_id`.
+
+    Example — bold, white-on-blue header row via `batch_update`:
+        requests=[{
+          "repeatCell": {
+            "range": {"sheetId": 0, "startRowIndex": 0, "endRowIndex": 1},
+            "cell": {"userEnteredFormat": {
+              "textFormat": {"bold": true, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+              "backgroundColor": {"red": 0.2, "green": 0.4, "blue": 0.8}
+            }},
+            "fields": "userEnteredFormat(textFormat,backgroundColor)"
+          }
+        }]
+
+    ``value_input_option='USER_ENTERED'`` (default) means a value like
+    ``=SUM(A1:A5)`` is stored as a live formula, not literal text.
+    ``account`` — which Drive to write to: ``blt`` (default), ``deadlift``,
+    ``choco``.
+    """
+    from .tools import sheets
+    return sheets.write(
+        spreadsheet_id_or_url=spreadsheet_id_or_url, action=action, range=range,
+        values=values, value_input_option=value_input_option, requests=requests,
+        title=title, folder_id=folder_id, account=account,
+    )
 
 
 # --------------------------------------------------------------------------- #

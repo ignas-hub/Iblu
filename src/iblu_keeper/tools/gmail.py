@@ -482,21 +482,37 @@ def _gdoc_id(url_or_id: str) -> str:
     return url_or_id.strip()
 
 
-def read_gdoc(url_or_id: str, max_chars: int = 20000, account: str | None = None) -> dict:
+def read_gdoc(
+    url_or_id: str,
+    max_chars: int = 20000,
+    account: str | None = None,
+    structure: bool = False,
+) -> dict:
     """Fetch a Google Doc (or Sheet/Slides) as plain text via Drive Export.
 
     Accepts either a full sharing URL (e.g. https://docs.google.com/document/d/<ID>/edit)
     or a raw file ID. For Docs we export as text/plain; for Sheets we use CSV;
     for Slides we fall back to text/plain. ``account`` — which Drive to read
     from: ``blt`` (default), ``deadlift``, ``choco``.
+
+    ``structure=True`` additionally returns a ``structure`` field: the
+    document body as a list of elements (paragraph/table/sectionBreak/...)
+    with indices, paragraph ``named_style_type``, and each text run's text +
+    style (bold, italic, backgroundColor, foregroundColor, fontSize, link).
+    Only available for Google Docs — a Sheet/Slides file gets
+    ``structure: None`` and a note instead. Leaving ``structure`` at its
+    default ``False`` keeps this tool's output identical to before.
     """
     account = resolve_account(account)
     file_id = _gdoc_id(url_or_id)
     if settings.use_mock:
-        return {
+        result = {
             "file_id": file_id, "name": "Mock Doc", "text": "Mock document content.",
             "truncated": False, "mock": True,
         }
+        if structure:
+            result["structure"] = []
+        return result
 
     from ..google_auth import build_service
 
@@ -517,13 +533,27 @@ def read_gdoc(url_or_id: str, max_chars: int = 20000, account: str | None = None
         text = raw.decode("utf-8-sig", errors="replace")  # strip UTF-8 BOM if present
     else:
         text = str(raw)
-    return {
+    result = {
         "file_id": file_id,
         "name": meta.get("name", ""),
         "mime_type": mime,
         "text": text[:max_chars],
         "truncated": len(text) > max_chars,
     }
+    if structure:
+        if mime != "application/vnd.google-apps.document":
+            result["structure"] = None
+            result["structure_note"] = (
+                "structure is only available for Google Docs "
+                f"(this file's mime type is {mime!r})."
+            )
+        else:
+            from .docs_edit import extract_structure
+
+            docs = build_service("docs", "v1", account=account)
+            doc = docs.documents().get(documentId=file_id).execute()
+            result["structure"] = extract_structure(doc)
+    return result
 
 
 def reply(

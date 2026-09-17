@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import logging
 import re
+from contextlib import contextmanager
 
 from ..config import resolve_account, settings
 
@@ -65,6 +66,87 @@ def _viewable_url(file_id: str, mime_type: str = "") -> str:
 
 def _mock(payload: dict) -> dict:
     return {"_mock": True, "note": "MOCK MODE — Drive operation NOT performed.", **payload}
+
+
+# --------------------------------------------------------------------------- #
+# Shared friendly-error helpers for Docs/Sheets full-power tools
+# --------------------------------------------------------------------------- #
+def _http_status(exc) -> int:
+    try:
+        status = getattr(getattr(exc, "resp", None), "status", None) or getattr(
+            exc, "status_code", None
+        )
+        return int(status) if status is not None else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _http_detail(exc) -> str:
+    try:
+        import json as _json
+
+        content = getattr(exc, "content", None)
+        body = _json.loads(content.decode("utf-8")) if content else {}
+        return ((body.get("error") or {}).get("message")) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def friendly_access_error(exc: Exception, account: str | None, what: str) -> RuntimeError:
+    """Turn a Drive/Docs/Sheets HttpError into a message that names the account.
+
+    ``what`` is a short noun phrase for the resource being accessed (e.g.
+    "this Google Doc", "this spreadsheet"). Two cases get a specific,
+    actionable message:
+
+    - The API required for this call is not enabled in that account's Cloud
+      project (Google's own 403 body says so) — tell the human which account
+      and that the API needs enabling.
+    - A plain 403/404 on the file — the account may simply not have access
+      to it (it may live in a different Workspace) — name the alias and
+      suggest the ``account`` parameter.
+
+    Anything else falls back to a generic, still-actionable message. Never
+    raises itself — always returns a RuntimeError for the caller to raise.
+    """
+    alias = account or settings.primary_alias
+    status = _http_status(exc)
+    detail = _http_detail(exc)
+    low = detail.lower()
+    if status == 403 and ("has not been used in project" in low or "it is disabled" in low):
+        api_name = "The Google Sheets API" if "sheets" in low else "A required Google API"
+        return RuntimeError(
+            f"{api_name} needs to be enabled in the '{alias}' account's Google "
+            f"Cloud project before this will work. Google said: {detail}"
+        )
+    if status in (403, 404):
+        return RuntimeError(
+            f"The '{alias}' account may not have access to {what} (HTTP {status}). "
+            "The file may belong to a different Google Workspace — pass the "
+            "`account` parameter (blt, deadlift, or choco) to try another account."
+        )
+    return RuntimeError(
+        f"Google API error accessing {what} (HTTP {status or '?'}): {detail or exc}"
+    )
+
+
+@contextmanager
+def friendly_google_errors(account: str | None, what: str):
+    """Context manager: turn any HttpError raised inside into `friendly_access_error`.
+
+    Use around individual Docs/Sheets/Drive API calls in the full-power
+    tools, so a disabled-API or access-denied 403 gets a message naming the
+    account instead of a generic stack trace.
+    """
+    try:
+        from googleapiclient.errors import HttpError  # type: ignore
+    except Exception:  # pragma: no cover
+        HttpError = Exception  # type: ignore[assignment]  # noqa: N806
+
+    try:
+        yield
+    except HttpError as exc:  # type: ignore[misc]
+        raise friendly_access_error(exc, account, what) from exc
 
 
 # --------------------------------------------------------------------------- #
