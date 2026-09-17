@@ -337,3 +337,35 @@ def test_a_quiet_mailbox_still_advances_its_watermark():
         # Taken before the read, not after — otherwise a message arriving
         # mid-run is skipped rather than re-read.
         assert source.index("read_through =") < source.index("max(newest, read_through)")
+
+
+def test_a_blt_calendar_change_gets_no_account_default_venture():
+    """Editing "Go school" at 07:05 was recorded as BLT work: the BLT calendar
+    holds school runs and flights, so the account says nothing about venture."""
+    from iblu_keeper.collectors.calendar_changes import _venture_account
+    from iblu_keeper.collectors.venture_hints import infer
+
+    assert infer(_venture_account("ignas@blanklabel.team"), subject="Go school")[0] is None
+    # Work calendars keep their workspace default.
+    assert _venture_account("admin@deadlift.io") == "admin@deadlift.io"
+    # An event that names a venture is still attributed.
+    assert infer(_venture_account("ignas@blanklabel.team"),
+                 counterpart="someone@deadlift.io", subject="sync")[0] == "deadlift"
+
+
+def test_a_registered_project_names_its_venture():
+    """With no account default, "womanizer report" still reads as BLT work,
+    because Womanizer is a BLT project in the registry."""
+    from iblu_keeper.collectors.venture_hints import infer
+
+    venture, project = infer("", subject="womanizer report")
+    assert (venture, project) == ("blt", "womanizer")
+
+
+def test_the_company_name_identifies_blt():
+    from iblu_keeper.collectors.venture_hints import infer
+
+    assert infer("", subject="BLT Intros +")[0] == "blt"
+    assert infer("", subject="Weekly sync BLT")[0] == "blt"
+    assert infer("", subject="Blank Label x Temu AUNZ")[0] == "blt"
+    assert infer("", subject="Subtle changes")[0] is None

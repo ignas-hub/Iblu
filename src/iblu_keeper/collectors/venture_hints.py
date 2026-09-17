@@ -43,6 +43,14 @@ SPACE_KEYWORDS: dict[str, str] = {
     # GoStellar/Kassari — Greta's agency. Added 2026-09-13 with the venture.
     # Her email domain is not known to IBLU yet, so the name is all there is;
     # once the domain is known it belongs in DOMAINS above, which is stronger.
+    # Temu is a Blank Label client ("Blank Label x Temu AUNZ Contract") with no
+    # project of its own in the registry yet.
+    "temu": "blt",
+    # The company's own name. Never needed while every BLT-account signal fell
+    # back to `blt` by default; once calendar changes stopped doing that,
+    # "BLT Intros +" came out as unknown.
+    "blank label": "blt",
+    "blt ": "blt",
     "gostellar": "gostellar",
     "kassari": "gostellar",
 }
@@ -77,6 +85,17 @@ def _project_keywords() -> dict[str, str]:
 # extends aliases in store/projects.py; this map picks them up automatically.
 PROJECT_KEYWORDS: dict[str, str] = _project_keywords()
 
+
+def _project_ventures() -> dict[str, str]:
+    try:
+        from ..store.projects import SEED_PROJECTS
+    except Exception:  # noqa: BLE001 — hints must never fail to import
+        return {}
+    return {p["code"]: p["venture"] for p in SEED_PROJECTS if p.get("venture")}
+
+
+PROJECT_VENTURES: dict[str, str] = _project_ventures()
+
 # Fallback when nothing else matches: whose mailbox produced the signal.
 DEFAULT_BY_ACCOUNT: dict[str, str] = {
     "ignas@blanklabel.team": "blt",
@@ -103,7 +122,9 @@ def infer(
     the email subject / space display name / event title; `text` is the snippet.
     """
     haystack = " ".join(p for p in (counterpart, subject, text) if p)
-    lowered = haystack.lower()
+    # Padded so a keyword written with a trailing space to stay whole-word
+    # ("blt ") still matches when it is the last word of a title.
+    lowered = haystack.lower() + " "
 
     venture: str | None = None
     project: str | None = None
@@ -143,6 +164,13 @@ def infer(
             if keyword in lowered:
                 project = PROJECT_KEYWORDS[keyword]
                 break
+
+    # 3.75 — a registered project names its venture. "womanizer report" is BLT
+    # work because Womanizer is a BLT project, and the registry says so; with
+    # no account default to lean on (calendar events on the BLT primary), this
+    # is what keeps client work from dropping to "unknown".
+    if venture is None and project is not None:
+        venture = PROJECT_VENTURES.get(project)
 
     # 4 — fall back to whose account this came from.
     if venture is None:

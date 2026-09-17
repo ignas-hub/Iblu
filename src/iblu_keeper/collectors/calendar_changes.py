@@ -21,7 +21,20 @@ from psycopg.types.json import Jsonb
 
 from ..config import settings
 from . import get_cursor, insert_signal, set_state
-from .venture_hints import infer
+from .venture_hints import DEFAULT_BY_ACCOUNT, infer
+
+
+def _venture_account(me: str) -> str:
+    """Which account's default venture a calendar change may fall back to.
+
+    A change to an event on the BLT primary gets NO account default: that
+    calendar holds school runs, flights and family, so "it happened in the BLT
+    account" says nothing about the venture. Editing "Go school" at 07:05 was
+    recorded as BLT work and became a 30-minute present/blt block (2026-09-16).
+    The Deadlift and Choco calendars are work calendars and keep their default
+    — the same rule the analyst applies to intents (HANDOFF §24).
+    """
+    return "" if DEFAULT_BY_ACCOUNT.get(me) == "blt" else me
 
 logger = logging.getLogger("iblu_keeper.collectors.calendar_changes")
 
@@ -174,7 +187,7 @@ def collect(
             is_new = created is not None and (now - created) <= FRESHLY_CREATED
             if seeded and is_new and not dry:
                 venture, project = infer(
-                    account=me,
+                    account=_venture_account(me),
                     counterpart=" ".join(payload["attendees"]),
                     subject=payload["summary"],
                 )
@@ -201,7 +214,7 @@ def collect(
             before = known["payload"]
             if seeded and not dry:
                 venture, project = infer(
-                    account=me,
+                    account=_venture_account(me),
                     counterpart=" ".join(payload["attendees"]),
                     subject=payload["summary"],
                 )
