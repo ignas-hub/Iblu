@@ -103,6 +103,12 @@ def _window_signals(conn: psycopg.Connection, frm: datetime, to: datetime) -> li
         "SELECT id, source, occurred_at, counterpart, container, subject, "
         "       snippet, ask_snippet, initiator, venture, work_type "
         "FROM signals WHERE occurred_at >= %s AND occurred_at <= %s "
+        # Only what HE wrote. Inbound mail is demand, not attention, and the
+        # review has always separated the two — the ping composer never did, so
+        # twelve PandaDoc notifications to the contracts@ group became "the
+        # Opera/DixiVobis contract thread took most of your window. Was that
+        # yours to do?" It was not his; he had not touched it.
+        "  AND actor = 'me' AND excluded_reason IS NULL "
         "ORDER BY occurred_at",
         (frm, to),
     ).fetchall()

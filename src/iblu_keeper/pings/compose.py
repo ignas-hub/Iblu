@@ -296,7 +296,9 @@ def signal_lines(signals: list[dict], limit: int = 120) -> str:
     """Compact one-line-per-signal rendering for the model (plan §7.3)."""
     lines = []
     for sig in signals[:limit]:
-        when = sig["occurred_at"].strftime("%H:%M")
+        # `occurred_at` comes out of Postgres in UTC; the model then wrote
+        # "13:10-13:41" for messages that arrived at 15:10-15:41 in Zagreb.
+        when = _local(sig["occurred_at"])
         who = sig.get("counterpart") or "?"
         subject = (sig.get("subject") or "")[:60]
         snippet = (sig.get("snippet") or "")[:120]
@@ -715,7 +717,7 @@ def compose_fallback(
         questions.append({
             "qid": "sink",
             "text": (
-                f"{name} — {len(rows)} msgs since {rows[0]['occurred_at']:%H:%M}. "
+                f"{name} — {len(rows)} msgs since {_local(rows[0]['occurred_at'])}. "
                 "Was that yours to do?"
             ),
             "options": [

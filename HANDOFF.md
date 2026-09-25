@@ -758,3 +758,40 @@ stretch, so coding time is still under-counted; that is known.
 pending file, so applying a finished 011 also applied a 012 another worker was
 still writing. `migrate --only <version>` now exists and `migrate` warns when
 more than one is pending.
+
+### 25. The ping asked about other people's mail, in the wrong timezone
+
+Found 2026-09-25 by Ignas: the midday ping asked "Opera/DixiVobis contract
+thread (PandaDoc, Sofie, 13:10–13:41) … Was that yours to do?" It was not his.
+Two independent bugs in one question.
+
+**Inbound mail counted as his attention.** `pings.runner._window_signals`
+selected every signal in the window with no `actor = 'me'` filter. Twelve
+PandaDoc notifications to the `contracts@blanklabel.team` group — all recorded
+correctly as `actor='other'` by the collector, which did its job — became the
+biggest "thread" of his window. The review has separated demand from attention
+since it was written (`WHERE actor = 'me'`, and a separate `inbound_demand`);
+the composer never did. Roughly 50 of 794 signals a week were other people's,
+and they were competing to be the day's headline.
+
+> **Rule: anything that claims to describe HIS attention filters
+> `actor = 'me'`.** The collectors label it correctly; every consumer must
+> honour the label.
+
+**Times were rendered in UTC.** `signal_lines` formatted `occurred_at`
+straight from Postgres, so the model was told 13:10 for a message that arrived
+at 15:10 in Zagreb — and wrote that time into the question. `_local()` already
+existed and was used elsewhere.
+
+Three of his tapped answers rest on questions built this way. Today's was
+superseded by a `correction` entry rather than deleted; the two from 09-15 were
+left for him to judge, since "was chasing that signature yours to do?" may
+still be a question he meant to answer.
+
+**And a test that aged out.** Every test in `tests/test_git_commits.py` failed
+on 2026-09-25 without anyone touching the code: the fixtures used hard-coded
+mid-September dates and the collector only looks back seven days. Fixture
+timestamps are now relative to `now`.
+
+> **Rule: a fixture that carries a date is a fixture with an expiry.** Anchor
+> it to `now` unless the test is specifically about a fixed point in time.

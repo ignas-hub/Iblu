@@ -70,6 +70,20 @@ class _Proc:
         self.stderr = stderr
 
 
+
+# Fixture timestamps are RELATIVE to now. The first version hard-coded
+# 2026-09-16, and the collector only looks back FIRST_RUN_HOURS (7 days) — so on
+# 2026-09-25 every one of these tests failed, a week after anyone touched the
+# code. A test that passes only in the week it was written is a trap.
+def _hours_ago(hours: float) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+RECENT = _hours_ago(24)          # inside every look-back window
+RECENT_LATER = _hours_ago(23)    # an hour after RECENT
+
 def _log_entry(
     sha, email, author_iso, committer_iso=None, parents="", branch="main",
     subject="did a thing", body="", stat=None, name="Ignas Gee",
@@ -124,8 +138,8 @@ SINCE = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
 def test_only_his_commits_are_recorded(monkeypatch, one_email, no_github, one_repo):
     log = (
-        _log_entry("a" * 40, ME, "2026-09-16T10:00:00+00:00")
-        + _log_entry("b" * 40, SOMEONE_ELSE, "2026-09-16T11:00:00+00:00")
+        _log_entry("a" * 40, ME, RECENT)
+        + _log_entry("b" * 40, SOMEONE_ELSE, RECENT_LATER)
     )
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"iblu": log}))
     conn = FakeConn()
@@ -144,7 +158,7 @@ def test_claude_coauthored_commit_is_kept_and_flagged(monkeypatch, one_email, no
     """A Claude Code co-authored commit is still his work — kept, not dropped,
     and flagged in `meta` rather than silently attributed to no one."""
     log = _log_entry(
-        "c" * 40, ME, "2026-09-16T10:00:00+00:00",
+        "c" * 40, ME, RECENT,
         body="\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
     )
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"iblu": log}))
@@ -160,7 +174,7 @@ def test_claude_coauthored_commit_is_kept_and_flagged(monkeypatch, one_email, no
 
 
 def test_ordinary_commit_is_not_flagged(monkeypatch, one_email, no_github, one_repo):
-    log = _log_entry("d" * 40, ME, "2026-09-16T10:00:00+00:00", body="no trailer here")
+    log = _log_entry("d" * 40, ME, RECENT, body="no trailer here")
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"iblu": log}))
     conn = FakeConn()
 
@@ -176,7 +190,7 @@ def test_ordinary_commit_is_not_flagged(monkeypatch, one_email, no_github, one_r
 
 
 def test_merge_commit_is_skipped(monkeypatch, one_email, no_github, one_repo):
-    log = _log_entry("e" * 40, ME, "2026-09-16T10:00:00+00:00", parents="p1 p2")
+    log = _log_entry("e" * 40, ME, RECENT, parents="p1 p2")
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"iblu": log}))
     conn = FakeConn()
 
@@ -194,7 +208,7 @@ def test_rebase_redated_commit_is_skipped(monkeypatch, one_email, no_github, one
     log = _log_entry(
         "f" * 40, ME,
         author_iso="2026-09-06T10:00:00+00:00",
-        committer_iso="2026-09-16T10:00:00+00:00",
+        committer_iso=RECENT,
     )
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"iblu": log}))
     conn = FakeConn()
@@ -207,8 +221,8 @@ def test_rebase_redated_commit_is_skipped(monkeypatch, one_email, no_github, one
 def test_commit_within_the_rebase_threshold_is_kept(monkeypatch, one_email, no_github, one_repo):
     log = _log_entry(
         "1" * 40, ME,
-        author_iso="2026-09-16T10:00:00+00:00",
-        committer_iso="2026-09-16T12:00:00+00:00",
+        author_iso=RECENT,
+        committer_iso=_hours_ago(21),
     )
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"iblu": log}))
     conn = FakeConn()
@@ -223,14 +237,14 @@ def test_commit_within_the_rebase_threshold_is_kept(monkeypatch, one_email, no_g
 
 def test_duplicate_sha_local_and_github_recorded_once(monkeypatch, one_email, one_repo):
     sha = "2" * 40
-    log = _log_entry(sha, ME, "2026-09-16T10:00:00+00:00", stat=(2, 10, 5))
+    log = _log_entry(sha, ME, RECENT, stat=(2, 10, 5))
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"iblu": log}))
 
     monkeypatch.setattr(G.gh, "configured", lambda: True)
     monkeypatch.setattr(
         G, "_list_github_repos",
         lambda: [{"full_name": "someorg/iblu", "archived": False,
-                   "pushed_at": "2026-09-16T00:00:00Z"}],
+                   "pushed_at": _hours_ago(30)}],
     )
 
     def fake_get(path, **params):
@@ -238,8 +252,8 @@ def test_duplicate_sha_local_and_github_recorded_once(monkeypatch, one_email, on
         return [{
             "sha": sha,
             "commit": {
-                "author": {"name": "Ignas Gee", "email": ME, "date": "2026-09-16T10:00:00Z"},
-                "committer": {"date": "2026-09-16T10:00:00Z"},
+                "author": {"name": "Ignas Gee", "email": ME, "date": RECENT},
+                "committer": {"date": RECENT},
                 "message": "did a thing",
             },
             "parents": [{"sha": "0" * 40}],
@@ -261,7 +275,7 @@ def test_duplicate_sha_local_and_github_recorded_once(monkeypatch, one_email, on
 
 def test_unmapped_repo_has_no_venture(monkeypatch, one_email, no_github):
     monkeypatch.setattr(G, "ROOTS", {"some-random-repo": Path("/fake/some-random-repo")})
-    log = _log_entry("3" * 40, ME, "2026-09-16T10:00:00+00:00")
+    log = _log_entry("3" * 40, ME, RECENT)
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"some-random-repo": log}))
     conn = FakeConn()
 
@@ -275,7 +289,7 @@ def test_unmapped_repo_has_no_venture(monkeypatch, one_email, no_github):
 
 def test_mapped_repo_gets_venture_and_project_as_fact(monkeypatch, one_email, no_github):
     monkeypatch.setattr(G, "ROOTS", {"machina": Path("/fake/machina")})
-    log = _log_entry("4" * 40, ME, "2026-09-16T10:00:00+00:00")
+    log = _log_entry("4" * 40, ME, RECENT)
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"machina": log}))
     conn = FakeConn()
 
@@ -293,7 +307,7 @@ def test_mapped_repo_gets_venture_and_project_as_fact(monkeypatch, one_email, no
 
 def test_snippet_is_only_the_first_line(monkeypatch, one_email, no_github, one_repo):
     log = _log_entry(
-        "5" * 40, ME, "2026-09-16T10:00:00+00:00",
+        "5" * 40, ME, RECENT,
         subject="Fix the thing",
         body="\n\nThis body has a lot of extra detail about the diff and files.\nSecond line.",
     )
@@ -310,7 +324,7 @@ def test_snippet_is_only_the_first_line(monkeypatch, one_email, no_github, one_r
 
 def test_subject_is_truncated_to_200_chars(monkeypatch, one_email, no_github, one_repo):
     long_subject = "x" * 250
-    log = _log_entry("6" * 40, ME, "2026-09-16T10:00:00+00:00", subject=long_subject)
+    log = _log_entry("6" * 40, ME, RECENT, subject=long_subject)
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"iblu": log}))
     conn = FakeConn()
 
@@ -344,7 +358,7 @@ def test_first_run_looks_back_seven_days():
 
 
 def test_github_failure_does_not_lose_local_commits(monkeypatch, one_email, one_repo):
-    log = _log_entry("7" * 40, ME, "2026-09-16T10:00:00+00:00")
+    log = _log_entry("7" * 40, ME, RECENT)
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"iblu": log}))
 
     monkeypatch.setattr(G.gh, "configured", lambda: True)
@@ -372,15 +386,15 @@ def test_local_failure_does_not_lose_github_commits(monkeypatch, one_email):
     monkeypatch.setattr(
         G, "_list_github_repos",
         lambda: [{"full_name": "someorg/iblu", "archived": False,
-                   "pushed_at": "2026-09-16T00:00:00Z"}],
+                   "pushed_at": _hours_ago(30)}],
     )
 
     def fake_get(path, **params):
         return [{
             "sha": "8" * 40,
             "commit": {
-                "author": {"name": "Ignas Gee", "email": ME, "date": "2026-09-16T10:00:00Z"},
-                "committer": {"date": "2026-09-16T10:00:00Z"},
+                "author": {"name": "Ignas Gee", "email": ME, "date": RECENT},
+                "committer": {"date": RECENT},
                 "message": "did a thing",
             },
             "parents": [],
@@ -420,7 +434,7 @@ def test_all_sources_failing_raises(monkeypatch, one_email):
 
 
 def test_dry_run_counts_but_writes_nothing(monkeypatch, one_email, no_github, one_repo):
-    log = _log_entry("9" * 40, ME, "2026-09-16T10:00:00+00:00")
+    log = _log_entry("9" * 40, ME, RECENT)
     monkeypatch.setattr(G.subprocess, "run", _fake_run_all_repos({"iblu": log}))
     conn = FakeConn()
 

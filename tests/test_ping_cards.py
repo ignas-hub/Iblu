@@ -1140,3 +1140,40 @@ def test_one_ping_failing_does_not_stop_the_other(monkeypatch):
     assert runner._run_one_safely("midday", dry=True) == "midday:failed"
     assert runner._run_one_safely("evening", dry=True) == "evening:ok"
     assert seen == ["midday", "evening"]
+
+
+# --- a ping asks about HIS work, in HIS timezone (2026-09-25) -------------
+
+
+def test_the_ping_only_ever_reads_signals_he_wrote():
+    """Twelve PandaDoc notifications to the contracts@ group became "the
+    Opera/DixiVobis contract thread took most of your window. Was that yours to
+    do?" — a thread he had never touched. Inbound mail is demand, not
+    attention; the weekly review always knew that, the composer did not."""
+    import inspect
+
+    from iblu_keeper.pings import runner
+
+    sql = inspect.getsource(runner._window_signals)
+    assert "actor = 'me'" in sql
+    assert "excluded_reason IS NULL" in sql
+
+
+def test_signal_times_are_rendered_in_his_timezone():
+    """Postgres hands back UTC, and the model wrote "13:10-13:41" for messages
+    that arrived at 15:10-15:41 in Zagreb."""
+    from datetime import datetime, timezone
+
+    rendered = compose.signal_lines([{
+        "id": 1, "source": "gmail", "occurred_at": datetime(2026, 9, 25, 13, 10, tzinfo=timezone.utc),
+        "counterpart": "someone", "subject": "s", "snippet": "x",
+    }])
+    assert "15:10" in rendered and "13:10" not in rendered
+
+
+def test_the_fallback_sink_question_also_uses_his_timezone():
+    import inspect
+
+    source = inspect.getsource(compose.compose_fallback)
+    assert "occurred_at']:%H:%M" not in source
+    assert "_local(rows[0]['occurred_at'])" in source
