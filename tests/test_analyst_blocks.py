@@ -1103,3 +1103,22 @@ def test_a_confident_analyst_block_is_not_mistaken_for_a_tap():
     assert B._is_confirmed({"source": "ping", "confidence": "fact"})
     assert B._is_confirmed({"source": "human", "confidence": "inferred"})
     assert not B._is_confirmed({"source": "analyst", "confidence": "fact"})
+
+
+def test_work_under_a_longer_overlapping_intent_still_blocks_family_inference():
+    """`_intent_at` gives a contested slice to the LONGEST intent, so work
+    inside a family event that also sat inside a longer work intent was filed
+    under that one and the density guard never saw it: a recital with most of
+    its span consumed by commits still had its quiet tail "assumed"."""
+    outside = signal(0, at(7, 0), venture="deadlift")
+    work = [signal(n, at(14, 0) + timedelta(minutes=15 * n), venture="deadlift")
+            for n in range(1, 7)]                      # 14:15 .. 15:30
+    clusters = B.cluster_signals([outside, *work])
+    long_work = intent(at(8, 0), at(15, 30), venture="deadlift",
+                       title="Deadlift working session", event_id="work1")
+    recital = intent(at(14, 0), at(16, 0), venture="family",
+                     title="Emory dance recital", event_id="fam1")
+    blocks = B.build(clusters, [long_work, recital])
+    assumed = [b for b in blocks
+               if b["venture"] == "family" and b["attention"] == "present"]
+    assert not assumed, "a span mostly consumed by work was assumed to be family time"

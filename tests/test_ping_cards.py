@@ -1177,3 +1177,34 @@ def test_the_fallback_sink_question_also_uses_his_timezone():
     source = inspect.getsource(compose.compose_fallback)
     assert "occurred_at']:%H:%M" not in source
     assert "_local(rows[0]['occurred_at'])" in source
+
+
+def test_question_text_is_trimmed_to_a_word_too():
+    """A 164-character question arrived as "...Was that yo". Only option labels
+    had ever been given the word-boundary trim."""
+    long_text = ("The Womanizer domain-health and deliverability thread with Ante and the "
+                 "Periscope team ran through the whole afternoon and the evening today "
+                 "as well. Was that yours to do?")
+    assert len(long_text) > compose.MAX_TEXT, "fixture must exceed the limit to test it"
+    q = compose.Question.model_validate({
+        "qid": "sink", "text": long_text,
+        "options": [
+            {"key": "A", "label": "Planned & mine",
+             "payload": {"kind": "sink", "verdict": "planned_mine"}},
+            {"key": "B", "label": "One-off, ignore",
+             "payload": {"kind": "sink", "verdict": "one_off"}},
+        ],
+    })
+    assert len(q.text) <= compose.MAX_TEXT
+    assert q.text.endswith("…")
+    assert not q.text[:-1].endswith(" ")
+    assert " yo…" not in q.text, "cut mid-word"
+
+
+def test_nothing_is_pre_truncated_before_the_trimmer_sees_it():
+    """A raw [:MAX_LABEL] slice upstream short-circuits the word-boundary
+    trimmer, which only acts when the text is longer than the limit."""
+    import inspect
+
+    source = inspect.getsource(compose)
+    assert "[:MAX_LABEL]" not in source

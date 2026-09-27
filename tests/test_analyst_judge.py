@@ -165,8 +165,12 @@ def test_judge_swallows_an_api_failure_and_keeps_the_computed_day(monkeypatch):
 # evidence — the labels came from the judge reading a calendar title.
 
 
-def sig(i, subject=None, snippet=None):
-    return {"id": i, "subject": subject, "snippet": snippet, "source": "chat"}
+def sig(i, subject=None, snippet=None, source="chat"):
+    # `source` matters: a chat's subject is its space label, never real words,
+    # so only a snippet counts as content there. A fixture that leaves subject
+    # None for a chat models the bug away — real chat signals always have one.
+    return {"id": i, "subject": subject or ("Ante Cetinic" if source == "chat" else None),
+            "snippet": snippet, "source": source}
 
 
 def test_a_calendar_title_is_not_evidence_of_what_happened():
@@ -208,7 +212,7 @@ def test_signals_with_no_readable_text_support_a_venture_but_not_a_work_type():
 
 def test_one_signal_with_real_text_is_enough_to_label_fully():
     rows = [block(evidence=[1, 2])]
-    signals = [sig(1), sig(2, subject="Dokumenti mjesec 08. Blank Label d.o.o.")]
+    signals = [sig(1), sig(2, snippet="Dokumenti mjesec 08. Blank Label d.o.o.")]
     out = J.apply_patch(
         rows, patch(venture="blt", work_type="client"),
         VENTURES, WORK_TYPES, PROJECTS, quality=J.evidence_quality(rows, signals),
@@ -311,3 +315,26 @@ def test_an_outage_is_distinguishable_from_a_quiet_judge(monkeypatch):
     monkeypatch.setattr(J, "_call", lambda *a, **k: (_ for _ in ()).throw(TimeoutError("slow")))
     J.judge([block()], [], ventures=VENTURES, work_types=WORK_TYPES, projects=PROJECTS, tz=UTC)
     assert J.failed_on_outage() is False
+
+
+def test_a_chat_space_name_is_not_readable_content():
+    """A chat signal's `subject` is the space label and is never empty, so
+    testing `subject or snippet` made every chat-only block FULL and the
+    "silent evidence" grade unreachable for Chat entirely."""
+    rows = [block(evidence=[1, 2, 3])]
+    chats = [{"id": i, "source": "chat", "subject": "Ante Cetinic", "snippet": ""}
+             for i in (1, 2, 3)]
+    assert J.evidence_quality(rows, chats) == [J.VENTURE_ONLY]
+
+
+def test_a_chat_with_real_words_is_full_evidence():
+    rows = [block(evidence=[1])]
+    chats = [{"id": 1, "source": "chat", "subject": "Ante Cetinic",
+              "snippet": "can you review the Temu contract before 3pm"}]
+    assert J.evidence_quality(rows, chats) == [J.FULL]
+
+
+def test_a_mail_subject_is_still_readable_content():
+    rows = [block(evidence=[1])]
+    mail = [{"id": 1, "source": "gmail", "subject": "Advance profit tax Q3", "snippet": ""}]
+    assert J.evidence_quality(rows, mail) == [J.FULL]

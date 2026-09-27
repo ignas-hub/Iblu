@@ -15,6 +15,7 @@ Matching order (first hit wins):
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 # Email domain -> venture code.
 DOMAINS: dict[str, str] = {
@@ -50,7 +51,7 @@ SPACE_KEYWORDS: dict[str, str] = {
     # back to `blt` by default; once calendar changes stopped doing that,
     # "BLT Intros +" came out as unknown.
     "blank label": "blt",
-    "blt ": "blt",
+    "blt": "blt",
     "gostellar": "gostellar",
     "kassari": "gostellar",
 }
@@ -106,6 +107,22 @@ DEFAULT_BY_ACCOUNT: dict[str, str] = {
 _EMAIL_RE = re.compile(r"[\w.+-]+@([\w-]+\.[\w.-]+)")
 
 
+@lru_cache(maxsize=512)
+def _word_re(keyword: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<!\w){re.escape(keyword)}(?!\w)")
+
+
+def _whole_word(keyword: str, haystack: str) -> bool:
+    """Whole-word keyword match.
+
+    Substring matching attributed "Pay the sysTEMUpdate invoice" to BLT, since
+    "systemupdate" contains "temu". It also forced the "blt " spelling with a
+    trailing space, which then needed the haystack padded to match at the end
+    of a line — a workaround for the wrong matcher.
+    """
+    return bool(_word_re(keyword).search(haystack))
+
+
 def _domains_in(text: str) -> list[str]:
     return [m.lower() for m in _EMAIL_RE.findall(text or "")]
 
@@ -122,9 +139,7 @@ def infer(
     the email subject / space display name / event title; `text` is the snippet.
     """
     haystack = " ".join(p for p in (counterpart, subject, text) if p)
-    # Padded so a keyword written with a trailing space to stay whole-word
-    # ("blt ") still matches when it is the last word of a title.
-    lowered = haystack.lower() + " "
+    lowered = haystack.lower()
 
     venture: str | None = None
     project: str | None = None
@@ -146,7 +161,7 @@ def infer(
     # 3 — keyword match on the human-readable bits.
     if venture is None:
         for keyword, code in SPACE_KEYWORDS.items():
-            if keyword in lowered:
+            if _whole_word(keyword, lowered):
                 venture = code
                 break
     if project is None:
@@ -161,7 +176,7 @@ def infer(
     # days" beats a shorter, more generic alias sharing a prefix.
     if project is None:
         for keyword in sorted(PROJECT_KEYWORDS, key=len, reverse=True):
-            if keyword in lowered:
+            if _whole_word(keyword, lowered):
                 project = PROJECT_KEYWORDS[keyword]
                 break
 

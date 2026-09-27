@@ -269,3 +269,23 @@ def test_the_watchdog_only_retires_its_own_kinds():
     W.retire_cleared(conn, [])
     assert "kind = ANY" in conn.executed[0]
     assert "sensecheck" not in conn.executed[0]
+
+
+def test_a_worsening_disk_is_not_reported_as_cleared():
+    """87% -> 94% used to resolve the warning with "it no longer holds", at the
+    moment the problem got worse, because each severity had its own kind."""
+    import collections
+
+    Usage = collections.namedtuple("Usage", "total used free")
+    import iblu_keeper.jobs.watchdog as W2
+
+    original = W2.shutil.disk_usage
+    try:
+        W2.shutil.disk_usage = lambda _: Usage(total=100, used=87, free=13)
+        [warn] = W2.check_disk()
+        W2.shutil.disk_usage = lambda _: Usage(total=100, used=94, free=6)
+        [err] = W2.check_disk()
+    finally:
+        W2.shutil.disk_usage = original
+    assert warn["severity"] == "warn" and err["severity"] == "error"
+    assert warn["fp"] == err["fp"], "the same condition must keep one fingerprint"

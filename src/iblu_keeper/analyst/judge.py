@@ -115,6 +115,23 @@ VENTURE_ONLY = "venture_only"  # signals exist but say nothing: no work_type/pro
 NOTHING = "nothing"            # no signals at all: a calendar title is not evidence
 
 
+def _has_readable_content(signal: dict) -> bool:
+    """Did this signal carry words, or only a name?
+
+    A Chat signal's `subject` is the SPACE LABEL, always present and never
+    empty ("Email Writer", "Ante Cetinic", worst case "unknown space"). Testing
+    `subject or snippet` therefore graded every chat-only block FULL, and the
+    `VENTURE_ONLY` grade — the whole point of which is "three messages showing
+    nothing but the recipient's name" — could never fire for Chat at all. Only
+    the snippet is real text for a chat; for mail, a subject line is.
+    """
+    if (signal.get("snippet") or "").strip():
+        return True
+    if signal.get("source") == "chat":
+        return False
+    return bool((signal.get("subject") or "").strip())
+
+
 def evidence_quality(rows: list[dict], signals: list[dict]) -> list[str]:
     """How much each block's own evidence can support.
 
@@ -130,10 +147,7 @@ def evidence_quality(rows: list[dict], signals: list[dict]) -> list[str]:
     are evidence that he was *present*, and evidence of nothing else. Venture
     survives (the account it came from is a fact); the KIND of work does not.
     """
-    content_by_id = {
-        s["id"]: bool((s.get("subject") or "").strip() or (s.get("snippet") or "").strip())
-        for s in signals
-    }
+    content_by_id = {s["id"]: _has_readable_content(s) for s in signals}
     out = []
     for row in rows:
         ids = row.get("evidence") or []

@@ -1,0 +1,16 @@
+[Unit]
+Description=Send the evening day card on weekday evenings
+
+[Timer]
+# Mon-Fri 20:30 Europe/Zagreb — after the analyst's later 20:15 run
+# (iblu-analyst.timer), so the card describes the fullest reconstruction of
+# the day the analyst has, not the 17:00 pass with the evening still missing.
+OnCalendar=Mon..Fri *-*-* 20:30:00 Europe/Zagreb
+# A missed evening is not worth a late catch-up — a day card about yesterday
+# arriving mid-morning reads as broken, not helpful.
+Persistent=false
+AccuracySec=5min
+Unit=iblu-daycard.service
+
+[Install]
+WantedBy=timers.target

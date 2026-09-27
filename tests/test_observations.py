@@ -218,3 +218,36 @@ def test_a_transient_failure_stays_a_per_source_warning(monkeypatch):
     obs.record_llm_failure("judge", TimeoutError("timed out"))
     assert calls[0]["severity"] == "warn"
     assert calls[0]["kind"] == "llm_call_failed"
+
+
+# --- a persistent transient failure is an outage (review, 2026-09-27) -----
+
+
+def test_a_rate_limit_or_overload_is_recognised_as_transient():
+    for text in ("Error code: 429 rate_limit_error", "Error code: 529 overloaded_error",
+                 "APIConnectionError: Connection error.", "Request timed out."):
+        assert obs.is_transient_llm_failure(RuntimeError(text)), text
+
+
+def test_a_billing_refusal_is_not_merely_transient():
+    exc = RuntimeError("Your credit balance is too low")
+    assert obs.is_llm_outage(exc) and not obs.is_transient_llm_failure(exc)
+
+
+def test_transient_failures_share_one_fingerprint_across_components(monkeypatch):
+    """Three ticks of "overloaded" across the composer, judge and classifier
+    must add up to one outage, not three warnings that never escalate."""
+    calls = []
+    monkeypatch.setattr(obs, "record_safe", lambda **kw: calls.append(kw))
+    monkeypatch.setattr(obs, "_escalate_if_persistent", lambda fp: None)
+    for source in ("composer", "judge", "analyst"):
+        obs.record_llm_failure(source, RuntimeError("Error code: 529 overloaded_error"))
+    assert len({c["fp"] for c in calls}) == 1
+    assert all(c["severity"] == "warn" for c in calls)
+
+
+def test_a_one_off_failure_in_one_component_stays_its_own(monkeypatch):
+    calls = []
+    monkeypatch.setattr(obs, "record_safe", lambda **kw: calls.append(kw))
+    obs.record_llm_failure("judge", ValueError("judge returned no 'blocks' list"))
+    assert calls[0]["fp"] == obs.fingerprint("judge", "llm_call_failed")

@@ -323,6 +323,22 @@ if __name__ == "__main__":  # pragma: no cover
 # its own failure at severity `info`, so the watchdog (errors only) never said a
 # word. Graceful degradation with no alarm is indistinguishable from working.
 
+# Transient on their own, an outage when they persist: rate limits, Anthropic
+# overloaded, the network down, repeated timeouts. Reviewed 2026-09-27: none of
+# these matched the billing/auth markers, so every one of them was recorded as a
+# per-source `warn` — and the watchdog alerts on errors only. A multi-hour
+# outage of any of these shapes degraded every LLM step to templates in total
+# silence, which is the exact failure the credit-balance fix was meant to close.
+_TRANSIENT_MARKERS = (
+    "rate_limit", "rate limit", "429", "overloaded", "529",
+    "apiconnectionerror", "connection error", "apitimeouterror", "timed out",
+    "timeout", "temporarily unavailable", "service unavailable", "502", "503",
+)
+
+# How many times a transient failure must recur before it is an outage worth
+# waking him for. Three consecutive ticks is ~30 minutes of nothing working.
+ESCALATE_AFTER = 3
+
 _OUTAGE_MARKERS = (
     "credit balance", "billing", "authentication_error", "permission_error",
     "invalid x-api-key", "invalid api key", "api key",
@@ -333,6 +349,12 @@ def is_llm_outage(exc: BaseException) -> bool:
     """True when the API refused us for a reason that will not fix itself."""
     text = str(exc).lower()
     return any(marker in text for marker in _OUTAGE_MARKERS)
+
+
+def is_transient_llm_failure(exc: BaseException) -> bool:
+    """True for a failure that usually fixes itself — but not if it keeps happening."""
+    text = str(exc).lower() + " " + type(exc).__name__.lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
 
 
 def record_llm_failure(source: str, exc: BaseException, *, context: str = "") -> None:
@@ -363,10 +385,45 @@ def record_llm_failure(source: str, exc: BaseException, *, context: str = "") ->
             fp=fingerprint("llm", "unavailable"),
         )
         return
+    # A transient failure shares ONE fingerprint across components, so three
+    # ticks of "overloaded" hitting the composer, the judge and the classifier
+    # add up to an outage instead of three separate, permanently-warn rows.
+    transient = is_transient_llm_failure(exc)
+    fp = fingerprint("llm", "transient") if transient else fingerprint(source, "llm_call_failed")
     record_safe(
         source=source, kind="llm_call_failed", severity="warn",
-        summary=f"an LLM call failed in {source}",
+        summary=(f"the Anthropic API keeps failing ({type(exc).__name__}) — LLM steps "
+                 "are on fallbacks" if transient else f"an LLM call failed in {source}"),
         detail=detail,
-        evidence={"context": context},
-        fp=fingerprint(source, "llm_call_failed"),
+        evidence={"context": context, "transient": transient},
+        fp=fp,
     )
+    if transient:
+        _escalate_if_persistent(fp)
+
+
+def _escalate_if_persistent(fp: str) -> None:
+    """Raise a recurring transient failure to `error` so the watchdog says so."""
+    try:
+        from ..config import settings
+
+        if settings.use_mock:
+            return
+        from .. import db
+
+        if not db.is_configured():
+            return
+        with db.get_conn() as conn:
+            conn.execute(
+                """
+                UPDATE observations
+                   SET severity = 'error',
+                       detail = detail || %s
+                 WHERE fingerprint = %s AND status = 'open'
+                   AND severity <> 'error' AND occurrences >= %s
+                """,
+                ("\n\nStill failing after repeated attempts — treating it as an outage.",
+                 fp, ESCALATE_AFTER),
+            )
+    except Exception:  # noqa: BLE001 — escalation must never break the caller
+        logger.warning("could not escalate a recurring LLM failure", exc_info=True)

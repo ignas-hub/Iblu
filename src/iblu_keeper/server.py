@@ -1352,6 +1352,17 @@ async def ping_tap(request: Request) -> HTMLResponse:
             title="Error",
         )
 
+    if result.get("qid") == "daycard":
+        if result["key"] == "A":
+            n = result.get("confirmed") or 0
+            sub = (
+                f"Confirmed {n} block(s). The Secretary calendar updates at the next analyst run."
+                if n else "Already up to date — nothing left to confirm."
+            )
+        else:
+            sub = "Reply in this thread with what was wrong."
+        return _tap_response(f"✓ Saved — {result['label']}", sub)
+
     sub = "Updated your earlier answer." if result["superseded"] else ""
     if result.get("qid") == "attended":
         # This tap does not rebuild the day itself (analyst/blocks.py only

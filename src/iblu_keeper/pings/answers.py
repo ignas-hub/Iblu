@@ -187,6 +187,17 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
     data = read_token(token, settings.ping_signing_secret)
     ping_id, qid, key = data["ping_id"], data["qid"], data["key"]
 
+    # The day card reuses this exact signed-token machinery and the same
+    # `/q/<token>` route, but against `day_cards` rather than `pings` — its
+    # two options ("All correct" / "Something's wrong") never fit the
+    # per-question supersede chain the rest of this function implements, and
+    # it needs its own write (`jobs.daycard.confirm_all`). Imported lazily —
+    # `jobs` depends on `pings`, not the other way round.
+    if qid == "daycard":
+        from ..jobs.daycard import record_daycard_tap
+
+        return record_daycard_tap(conn, ping_id, key)
+
     # One writer at a time per (ping, question). `/q` opens its own connection
     # per request and the tap page's own error tells him to "try again", so a
     # genuine double-tap is ordinary. Without this, two requests can each run
@@ -431,9 +442,19 @@ def read_thread_replies(conn: psycopg.Connection, *, dry: bool = False) -> int:
         "AND chat_thread_ref IS NOT NULL",
         (datetime.now(timezone.utc) - REPLY_LOOKBACK,),
     ).fetchall()
-    if not recent:
+    # The day card posts into its own thread (`jobs.daycard.send`), read here
+    # too so a reply to it is recognised the same tick a ping reply would be —
+    # one Chat message listing, two kinds of thread to match against.
+    recent_daycards = conn.execute(
+        "SELECT id, local_date, lines, chat_thread_ref FROM day_cards "
+        "WHERE status IN ('sent','answered') AND sent_at >= %s "
+        "AND chat_thread_ref IS NOT NULL",
+        (datetime.now(timezone.utc) - REPLY_LOOKBACK,),
+    ).fetchall()
+    if not recent and not recent_daycards:
         return 0
     by_thread = {row["chat_thread_ref"]: row for row in recent}
+    daycard_by_thread = {row["chat_thread_ref"]: row for row in recent_daycards}
 
     watermark = get_watermark(conn, "secretary_replies") or (
         datetime.now(timezone.utc) - REPLY_LOOKBACK
@@ -464,7 +485,8 @@ def read_thread_replies(conn: psycopg.Connection, *, dry: bool = False) -> int:
 
         thread_ref = (message.get("thread") or {}).get("name")
         ping = by_thread.get(thread_ref)
-        if ping is None:
+        day_card = daycard_by_thread.get(thread_ref) if ping is None else None
+        if ping is None and day_card is None:
             continue
         # Only Ignas's own replies are answers; the app's own card is not.
         if (message.get("sender") or {}).get("name") != self_name:
@@ -474,8 +496,47 @@ def read_thread_replies(conn: psycopg.Connection, *, dry: bool = False) -> int:
             continue
 
         if dry:
-            logger.info("answers [dry]: would record reply to ping %s", ping["id"])
+            logger.info(
+                "answers [dry]: would record reply to %s %s",
+                "day card" if day_card is not None else "ping",
+                day_card["id"] if day_card is not None else ping["id"],
+            )
             inserted += 1
+            continue
+
+        if day_card is not None:
+            # Same de-duplication as a ping reply (`ce_chat_reply_unique`,
+            # migration 002) — the watermark overlap re-reads the same
+            # message every tick, so this is what stops it being applied
+            # twice.
+            written = conn.execute(
+                """
+                INSERT INTO context_entries
+                    (type, content, importance, tags, source, source_ref, occurred_at, meta)
+                VALUES ('work_log', %s, 3, %s, 'chat_reply', %s, %s, %s)
+                ON CONFLICT (source_ref) WHERE source = 'chat_reply' DO NOTHING
+                RETURNING id
+                """,
+                (
+                    text,
+                    ["daycard", "reply"],
+                    message["name"],
+                    created,
+                    Jsonb({"day_card_id": day_card["id"], "answered_via": "reply"}),
+                ),
+            ).fetchone()
+            if written is not None:
+                inserted += 1
+                ventures = [
+                    r["code"] for r in
+                    conn.execute("SELECT code FROM ventures WHERE active").fetchall()
+                ]
+                work_types = [
+                    r["code"] for r in conn.execute("SELECT code FROM work_types").fetchall()
+                ]
+                from ..jobs.daycard import apply_daycard_reply
+
+                apply_daycard_reply(conn, dict(day_card), text, ventures, work_types)
             continue
 
         extra_tags, meta_extra, overrides_body_mind = _classify_reply(conn, ping, text)

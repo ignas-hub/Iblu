@@ -484,7 +484,28 @@ def collect(conn: psycopg.Connection, *, dry: bool = False) -> int:
             inserted += 1
 
     if not dry:
-        set_state(conn, NAME, watermark=max(newest, read_through), error=None)
+        # The watermark may only reach `read_through` when EVERY source
+        # actually reported. With one source dead, `read_through` claims we
+        # read up to now — so a commit that exists only in a local checkout,
+        # made while `git log` was failing, is skipped forever on the next run.
+        # A partial read advances only as far as what it genuinely saw, and the
+        # failure is recorded rather than logged and forgotten.
+        partial = local_failed or github_failed
+        watermark = newest if partial else max(newest, read_through)
+        errors = "; ".join(local_errors + github_errors)[:500] or None
+        set_state(conn, NAME, watermark=watermark, error=errors if partial else None)
+        if partial:
+            from ..store import observations as obs
+
+            obs.record_safe(
+                source="collector", kind="git_source_failed", severity="warn",
+                summary=("the local checkouts could not be read" if local_failed
+                         else "GitHub could not be read"),
+                detail=errors or "no detail",
+                evidence={"local_failed": local_failed, "github_failed": github_failed},
+                fp=obs.fingerprint("collector", "git_source_failed",
+                                   "local" if local_failed else "github"),
+            )
     logger.info(
         "%s: %d new signal(s) from %d local + %d github candidate(s)",
         NAME, inserted, len(local_commits), len(github_commits),

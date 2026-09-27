@@ -106,9 +106,13 @@ def check_disk() -> list[dict]:
     usage = shutil.disk_usage("/")
     pct = round(100 * usage.used / usage.total)
     free_gb = round(usage.free / 1024**3, 1)
+    # One kind for both severities. With `disk_filling` and `disk_full` as
+    # separate kinds, a disk going from 87% to 94% "cleared" the warning — the
+    # old fingerprint was absent from the new run — and the audit trail said a
+    # problem had resolved at the moment it got worse.
     if pct >= DISK_ERROR_PCT:
         return [_flag(
-            "disk_full", f"the disk is {pct}% full — {free_gb} GB left",
+            "disk_pressure", f"the disk is {pct}% full — {free_gb} GB left",
             severity="error",
             detail="Postgres stops accepting writes when the volume fills, and "
                    "the recorder fails silently from that point on.",
@@ -117,7 +121,7 @@ def check_disk() -> list[dict]:
         )]
     if pct >= DISK_WARN_PCT:
         return [_flag(
-            "disk_filling", f"the disk is {pct}% full — {free_gb} GB left",
+            "disk_pressure", f"the disk is {pct}% full — {free_gb} GB left",
             evidence={"used_pct": pct, "free_gb": free_gb}, fp_parts=("disk",),
         )]
     return []
@@ -242,7 +246,8 @@ def check_database(conn) -> list[dict]:
 
 # Every kind this module records, so it only ever retires its own findings.
 WATCHDOG_KINDS = (
-    "unit_down", "disk_full", "disk_filling", "tick_never_ran", "tick_stale",
+    "unit_down", "disk_pressure", "disk_full", "disk_filling",
+    "tick_never_ran", "tick_stale",
     "backups_unreadable", "backups_missing", "backups_stale",
     "google_auth_failed", "analyst_stale",
 )

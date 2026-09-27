@@ -35,6 +35,17 @@ MAX_OPTIONS = 5
 MAX_TEXT = 160
 MAX_LABEL = 40
 
+def _trim_to_word(text: str, limit: int) -> str:
+    """Shorten to `limit`, at a word boundary, marking that it was cut."""
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1]
+    space = cut.rfind(" ")
+    if space > limit // 2:
+        cut = cut[:space]
+    return cut.rstrip(" ,.;:—-") + "…"
+
+
 QIDS = ("sink", "displaced", "split", "work_type", "gap", "gains", "body_mind", "attended")
 VERDICTS = (
     "planned_mine", "unplanned_mine", "someone_else", "one_off",
@@ -128,14 +139,7 @@ class Option(BaseModel):
         A hard slice produced buttons like "Learned: YEARLY TOP PRIORITY — Ja",
         which is unreadable on a phone and looks broken rather than shortened.
         """
-        v = v.strip()
-        if len(v) <= MAX_LABEL:
-            return v
-        cut = v[: MAX_LABEL - 1]
-        space = cut.rfind(" ")
-        if space > MAX_LABEL // 2:
-            cut = cut[:space]
-        return cut.rstrip(" ,.;:—-") + "…"
+        return _trim_to_word(v.strip(), MAX_LABEL)
 
     @model_validator(mode="after")
     def _gains_option_is_a_gain(self) -> "Option":
@@ -234,7 +238,10 @@ class Question(BaseModel):
     @field_validator("text")
     @classmethod
     def _short(cls, v: str) -> str:
-        text = v.strip()[:MAX_TEXT]
+        # Trim to a word, like Option._short. A 164-character question was cut
+        # to exactly 160 and arrived as "...Was that yo" — the same defect that
+        # had already been fixed for buttons and never for the question itself.
+        text = _trim_to_word(v.strip(), MAX_TEXT)
         lowered = text.lower()
         for word in JARGON:
             if word in lowered:
@@ -427,7 +434,7 @@ def compose_split_question(blocks: list[dict]) -> dict | None:
     alternates = [v for v in _day_ventures(blocks) if v != block["venture"]][:2]
     for venture in alternates:
         options.append({
-            "key": chr(65 + len(options)), "label": f"Actually {venture}"[:MAX_LABEL],
+            "key": chr(65 + len(options)), "label": f"Actually {venture}",
             "payload": {
                 "kind": "split", "verdict": "more", "block_id": block["id"],
                 "venture": venture, "attention": block.get("attention") or "present",
@@ -454,7 +461,14 @@ def compose_gap_question(blocks: list[dict], top_venture: str | None) -> dict | 
     """
     untracked = [
         b for b in blocks
-        if b.get("venture") is None and not b.get("intent_title")
+        if b.get("venture") is None
+        and not b.get("intent_title")
+        # And no evidence. A `present` block whose venture vote merely TIED
+        # (two deadlift signals against two choco) also has venture None and no
+        # intent — asking "11:00–12:15 shows nothing. What was it?" about a
+        # stretch with four recorded messages states the opposite of the truth,
+        # and his answer would write a `fact` block over real evidence.
+        and not b.get("evidence")
     ]
     if not untracked:
         return None
@@ -466,7 +480,7 @@ def compose_gap_question(blocks: list[dict], top_venture: str | None) -> dict | 
         {"key": "A", "label": "Meeting / call not in my mail",
          "payload": {"kind": "gap", "verdict": "meeting", "block_id": block["id"],
                      "work_type": "client", "attention": "present"}},
-        {"key": "B", "label": deep_work_label[:MAX_LABEL],
+        {"key": "B", "label": deep_work_label,
          "payload": {"kind": "gap", "verdict": "deep_work", "block_id": block["id"],
                      "venture": top_venture, "work_type": "build", "attention": "present"}},
         {"key": "C", "label": "Personal / life",
@@ -600,7 +614,7 @@ def compose_gains_question(evidence: dict[str, list[dict]] | None) -> dict | Non
             logger.info("compose: gains option rejected (%s)", why)
             continue
         options.append({
-            "key": chr(65 + len(options)), "label": item["label"][:MAX_LABEL],
+            "key": chr(65 + len(options)), "label": item["label"],
             "payload": {
                 "kind": "gains", "verdict": gain_kind, "gain_kind": gain_kind,
                 "evidence_ids": [str(i) for i in item.get("evidence_ids", [])],
@@ -749,7 +763,7 @@ def compose_fallback(
         if during:
             continue
         options = [
-            {"key": chr(65 + i), "label": _cluster_name(rows)[:MAX_LABEL],
+            {"key": chr(65 + i), "label": _cluster_name(rows),
              "payload": {"kind": "displaced", "verdict": "more",
                          "venture": rows[0].get("venture"), "container": container,
                          "event_id": event.summary}}

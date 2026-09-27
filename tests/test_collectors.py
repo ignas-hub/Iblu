@@ -369,3 +369,14 @@ def test_the_company_name_identifies_blt():
     assert infer("", subject="Weekly sync BLT")[0] == "blt"
     assert infer("", subject="Blank Label x Temu AUNZ")[0] == "blt"
     assert infer("", subject="Subtle changes")[0] is None
+
+
+def test_keywords_match_whole_words_only():
+    """"Pay the sysTEMUpdate invoice" was attributed to Blank Label, because
+    "systemupdate" contains "temu"."""
+    from iblu_keeper.collectors.venture_hints import infer
+
+    assert infer("", subject="Pay the systemupdate invoice")[0] is None
+    assert infer("", subject="Temu contract review")[0] == "blt"
+    assert infer("", subject="BLT Intros +")[0] == "blt"
+    assert infer("", subject="Weekly sync BLT")[0] == "blt"

@@ -337,13 +337,46 @@ def test_subject_is_truncated_to_200_chars(monkeypatch, one_email, no_github, on
 # --- watermark: read_through taken before the read ------------------------
 
 
-def test_watermark_is_read_through_taken_before_the_read():
-    import inspect
+def test_a_clean_run_advances_the_watermark_to_now(monkeypatch, one_email, no_github, one_repo):
+    """Behavioural, not textual. The old version asserted that the SOURCE of
+    collect() contained "max(newest, read_through)" — which pinned the exact
+    pattern that loses commits when one source fails, and would have blocked
+    the fix rather than caught the bug."""
+    before = datetime.now(timezone.utc)
+    monkeypatch.setattr(G.subprocess, "run",
+                        _fake_run_all_repos({"iblu": _log_entry("a" * 40, ME, RECENT)}))
+    conn = FakeConn()
+    G.collect(conn)
+    (name, watermark, _cursor, error), = conn.state_calls
+    assert name == G.NAME
+    assert watermark >= before, "a clean run should claim it read up to now"
+    assert error is None
 
-    source = inspect.getsource(G.collect)
-    assert "max(newest, read_through)" in source
-    assert "read_through = datetime.now(timezone.utc)" in source
-    assert source.index("read_through =") < source.index("max(newest, read_through)")
+
+def test_a_failed_source_does_not_advance_the_watermark_past_what_it_read(
+    monkeypatch, one_email, no_github
+):
+    """With local reads failing and GitHub off, the watermark used to jump to
+    "now" with error=None: any commit made only in a local checkout during that
+    window became unreachable forever, silently."""
+    monkeypatch.setattr(G, "ROOTS", {"iblu": "/home/ignas/iblu"})
+
+    def _boom(*a, **k):
+        raise OSError("git: command not found")
+
+    monkeypatch.setattr(G.subprocess, "run", _boom)
+    monkeypatch.setattr("iblu_keeper.store.observations.record_safe", lambda **kw: None)
+    conn = FakeConn()
+    watermark_before = datetime.now(timezone.utc) - timedelta(hours=2)
+    conn.watermarks[G.NAME] = watermark_before
+
+    G.collect(conn)
+
+    (_, watermark, _cursor, error), = conn.state_calls
+    assert watermark <= datetime.now(timezone.utc) - timedelta(hours=1), (
+        "the watermark advanced past commits that were never read"
+    )
+    assert error, "a failed source must be recorded, not only logged"
 
 
 def test_first_run_looks_back_seven_days():

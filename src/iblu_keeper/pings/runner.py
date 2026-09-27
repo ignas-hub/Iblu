@@ -536,7 +536,11 @@ def run_one(kind: str, *, dry: bool = False, force: bool = False) -> str:
                               ELSE pings.composer
                           END,
                           covers_to = EXCLUDED.covers_to,
-                          status    = 'pending'
+                          -- Never un-answer a ping. A forced resend used to flip an
+                          -- already-answered day back to 'pending', losing that state
+                          -- while his answers stayed in context_entries.
+                          status    = CASE WHEN pings.status = 'answered'
+                                           THEN 'answered' ELSE 'pending' END
             RETURNING id
             """,
             (

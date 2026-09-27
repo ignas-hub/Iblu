@@ -510,6 +510,13 @@ def build(
     return merged
 
 
+def _overlap_minutes(block: dict, start: datetime, end: datetime) -> float:
+    """Minutes of `block` that fall inside [start, end)."""
+    lo = max(block["starts_at"], start)
+    hi = min(block["ends_at"], end)
+    return max(0.0, (hi - lo).total_seconds() / 60)
+
+
 def _apply_family_inference(
     blocks: list[dict],
     intents: list[Interval],
@@ -563,9 +570,15 @@ def _apply_family_inference(
             # when its venture is known, and the label thresholds now leave
             # venture unset on a mixed stretch. Counting only `displaced` let
             # an afternoon of unattributable work be claimed as family time.
+            # Every block OVERLAPPING the span, not only those filed under this
+            # intent's id. `_intent_at` gives a contested slice to the LONGEST
+            # intent, so work during a family event that also sat inside a
+            # longer work intent was invisible here: a recital with 90 of its
+            # 120 minutes consumed by Deadlift commits still had its quiet
+            # tail inferred as "assumed it happened".
             work_minutes = sum(
-                (b["ends_at"] - b["starts_at"]).total_seconds() / 60
-                for b in intent_blocks
+                _overlap_minutes(b, intent.start, intent.end)
+                for b in blocks
                 if b.get("evidence") and b.get("venture") != "family"
             )
             if work_minutes / span_minutes >= FAMILY_INFERENCE_MAX_WORK_SHARE:
@@ -783,7 +796,7 @@ def load_signals(conn, start: datetime, end: datetime) -> list[dict]:
     return conn.execute(
         """
         SELECT id, source, occurred_at, venture, venture_confidence,
-               work_type, project, subject, counterpart, collected_at
+               work_type, project, subject, snippet, counterpart, collected_at
           FROM signals
          WHERE occurred_at >= %s AND occurred_at < %s
            AND actor = 'me'
@@ -884,9 +897,21 @@ def _compact_intent(
     # calendar it came from has a configured default; an intent with no
     # venture can never make a block `displaced`. A flight is not a claim on
     # his attention, a client meeting is.
-    venture, _ = venture_hints.infer("", counterpart=attendees_str, subject=title)
-    if venture is None:
+    #
+    # A CONFIGURED calendar's venture wins over a keyword. The family calendar
+    # is family time whatever the words say: "Opera night with Greta" would
+    # otherwise read as Choco client work (Opera is a Choco account) and "Temu
+    # package pickup" as Blank Label. The workspace primaries keep the old
+    # order — they have no default to impose, except Deadlift and Choco, where
+    # keyword evidence about a specific client is genuinely the better guess.
+    # `needs_commitment_check` is True for exactly the INTENT_CALENDARS
+    # entries — the calendars that are not a workspace primary.
+    if needs_commitment_check and default_venture:
         venture = default_venture
+    else:
+        venture, _ = venture_hints.infer("", counterpart=attendees_str, subject=title)
+        if venture is None:
+            venture = default_venture
 
     domains = tuple(sorted({
         e.split("@", 1)[1].lower() for e in attendee_emails if "@" in e
