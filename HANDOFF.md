@@ -795,3 +795,51 @@ timestamps are now relative to `now`.
 
 > **Rule: a fixture that carries a date is a fixture with an expiry.** Anchor
 > it to `now` unless the test is specifically about a fixed point in time.
+
+### 26. Two detectors that are not unit tests, and the day card
+
+Built 2026-09-27 after Ignas said the daily experience was poor and asked how
+the accuracy could be improved. The honest starting point is in
+`docs/reports/2026-09-27-accuracy-review.md`: across 26 commits he found six
+classes of wrong output, the sense-check four, a commissioned review eleven —
+and the suite, 236 tests grown to 746 and green throughout, found none.
+
+**Scenarios** (`src/iblu_keeper/testing/scenarios.py`, data in
+`scenario_data.py`, run by `tests/test_scenarios.py` or
+`python -m iblu_keeper.testing.scenarios`). A whole day written as data —
+signals at local times, calendar intents — run through the REAL
+`cluster_signals`/`build`/`compose`, asserting on the blocks and questions that
+come out. **Every scenario is a defect that actually reached him.** Adding one
+is three lines; the rule is that a bug he reports becomes a scenario before it
+is fixed.
+
+**The audit** (`python -m iblu_keeper.jobs.audit [--days N] [--json]
+[--no-record] [--section ...]`). The same question asked of real data:
+structural invariants over stored blocks, a question audit over the stored ping
+snapshots (evidence that is actually his, times that are actually local, no
+internal codes), and the shadow-calendar accuracy figure. Findings become
+`observations`, so the watchdog raises them. It refuses to print an accuracy
+percentage with an empty denominator — "not enough confirmed spans yet (0)" is
+the correct output and was the honest one on the day it shipped.
+
+What the first run said, and it is worth keeping: **every ping between 14 and
+25 September carried UTC times**, because `signal_lines` formatted
+`occurred_at` straight from Postgres. One bug, every question for eleven days,
+and only the audit made the scale of it visible.
+
+**The day card** (`jobs/daycard.py`, migration 014, Mon–Fri 20:30). The day as
+lettered lines with two buttons. "All correct" writes a `source='human'`,
+`confidence='fact'` block for every line — the first mechanism in this system
+that can make a day confirmed, and therefore the first that lets the audit
+measure accuracy at all. Replies are parsed into corrections ("C was Deadlift ·
+Machina", "I skipped Futbolas", "13:00-14:00 was Blank Label").
+
+Two rendering rules learned immediately from a real day: **merge across short
+gaps** (a real Friday rendered as ten lines of "Blank Label" separated by
+15-minute holes, which are an artefact of how evidence lands and not something
+he can act on), and **the example reply must suggest changing something that is
+wrong** — the first version generated `"B was Blank Label"` for a line already
+labelled Blank Label.
+
+> **Rule: when he reports something wrong, it becomes a scenario or an audit
+> invariant first.** The unit tests were never going to find these.

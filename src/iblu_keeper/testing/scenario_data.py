@@ -287,6 +287,35 @@ SCENARIOS: list[Scenario] = [
              "venture": "family", "confidence": "fact", "reasoning_contains": "you said you went"},
         ],
     ),
+
+    Scenario(
+        name="work_under_a_longer_intent_still_blocks_family_inference",
+        description=(
+            "A recital overlapped by a longer work meeting: the work slices are "
+            "filed under the LONGER intent, so a density guard that counted only "
+            "its own intent's blocks saw an empty recital and assumed he went. "
+            "Found in review 2026-09-27."
+        ),
+        signals=(
+            [signal("07:00", source="chat", venture="deadlift")]
+            + [signal(f"14:{m:02d}", source="git", venture="deadlift")
+               for m in (15, 30, 45)]
+            + [signal("15:00", source="git", venture="deadlift"),
+               signal("15:15", source="git", venture="deadlift")]
+        ),
+        intents=[
+            intent("Deadlift working session", "08:00", "15:30",
+                   calendar_kind="workspace_primary", venture="deadlift"),
+            intent("Emory dance recital", "14:00", "16:00",
+                   calendar_kind="family_calendar", venture="family",
+                   attendance="his"),
+        ],
+        expect=[
+            {"kind": "total_minutes", "venture": "family",
+             "attention": "present", "equals": 0},
+        ],
+    ),
+
 ]
 
 

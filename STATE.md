@@ -280,6 +280,15 @@ inferred as family time under four guard-rails (HANDOFF §24). Git commits are
 evidence (migration 011); `GIT_AUTHOR_EMAILS` must list every address he
 commits from. Use `python -m iblu_keeper.db migrate --only <version>`.
 
+**How accuracy is measured now (2026-09-27):** `python -m
+iblu_keeper.testing.scenarios` runs whole days through the real pipeline (17+
+scenarios, each a defect that reached Ignas), and `python -m
+iblu_keeper.jobs.audit` measures the real recorded data — invariants, question
+accuracy, and the shadow-calendar figure. The day card (`jobs/daycard.py`,
+Mon-Fri 20:30) is what finally produces confirmed spans; until he taps "All
+correct" at least once, accuracy honestly reports "not enough confirmed spans".
+See HANDOFF §26 and docs/reports/2026-09-27-accuracy-review.md.
+
 **Known open items:** external DM partners who are not in Google Contacts
 cannot be named by the People API, so their `counterpart` stays `users/<id>`
 (1 space today). Phase 3 (goals/priorities) not started. Remaining week-2 backlog (plan §12): the mobile web app,
