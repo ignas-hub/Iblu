@@ -258,6 +258,58 @@ def gdoc_replace_text(
     }
 
 
+def gdoc_add_comment(
+    doc_id_or_url: str,
+    comment: str,
+    anchor_text: str | None = None,
+    account: str | None = None,
+) -> dict:
+    """Post a comment on a Google Doc (or any Drive file that supports comments).
+
+    Uses the Drive API's ``comments.create`` endpoint (comments are a Drive
+    concept, not a Docs one — the Docs ``batchUpdate`` cannot create them).
+
+    ``anchor_text``: if given, the comment appears anchored to (quotes) that
+    exact substring in the document — the same UX as selecting text in the
+    Docs UI and hitting "comment". If omitted, the comment is a general
+    document-level comment.
+
+    Requires the ``drive`` scope, which the primary account already holds.
+    """
+    if settings.use_mock:
+        return _mock({
+            "id": doc_id_or_url, "comment": comment, "anchor_text": anchor_text,
+            "status": "not_commented_mock",
+        })
+
+    file_id = _file_id(doc_id_or_url)
+    drive = _drive(account=account)
+
+    body: dict = {"content": comment}
+    if anchor_text:
+        body["quotedFileContent"] = {"value": anchor_text}
+
+    try:
+        created = drive.comments().create(
+            fileId=file_id,
+            body=body,
+            fields="id,content,quotedFileContent,htmlLink,createdTime,author",
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        raise friendly_access_error(exc, account, "this Google Doc") from exc
+
+    return {
+        "id": file_id,
+        "comment_id": created.get("id", ""),
+        "comment": created.get("content", comment),
+        "anchor_text": (created.get("quotedFileContent") or {}).get("value", ""),
+        "created_time": created.get("createdTime", ""),
+        "author": (created.get("author") or {}).get("displayName", ""),
+        "url": _viewable_url(file_id, "application/vnd.google-apps.document"),
+        "status": "commented",
+    }
+
+
 def gdoc_rename(doc_id_or_url: str, new_name: str) -> dict:
     """Rename a Drive file (works for Docs / Sheets / Slides / any file)."""
     if settings.use_mock:

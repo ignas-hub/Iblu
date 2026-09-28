@@ -593,6 +593,25 @@ def gdoc_replace_text(
     return drive_tools.gdoc_replace_text(doc_id_or_url, find, replace_with, match_case)
 
 
+@mcp.tool(name="gdoc_add_comment", annotations={"title": "Add Comment to Google Doc", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("gdoc_add_comment")
+@with_retry("gdoc_add_comment")
+def gdoc_add_comment(
+    doc_id_or_url: Annotated[str, Field(min_length=1, description="Doc ID or sharing URL")],
+    comment: Annotated[str, Field(min_length=1, max_length=10000, description="Comment body text")],
+    anchor_text: Annotated[str | None, Field(default=None, max_length=2000, description="Optional exact substring in the doc to anchor the comment to. If omitted, posts a general document-level comment.")] = None,
+    account: Annotated[str | None, Field(default=None, description="Optional account alias (choco, deadlift). Defaults to the primary account.")] = None,
+) -> dict:
+    """Post a comment on a Google Doc, optionally anchored to a text substring.
+
+    Comments live in the Drive API (not Docs), which is why gdoc_batch_update
+    cannot create them. Uses the existing drive scope — no re-consent needed.
+    """
+    from .tools import drive as drive_tools
+    return drive_tools.gdoc_add_comment(doc_id_or_url, comment, anchor_text, account)
+
+
 @mcp.tool(name="gdoc_rename", annotations={"title": "Rename Drive File", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("gdoc_rename")
