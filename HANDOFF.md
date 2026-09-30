@@ -873,3 +873,103 @@ The per-calendar notification switches (New/Changed/Cancelled events) live in
 Google Calendar's settings for that calendar and cannot be set with the
 `calendar.events` scope IBLU holds — turning them off is a one-time UI action.
 With the diff in place they should have nothing to fire on anyway.
+
+---
+
+## 28. The observation log addresses itself to a Claude Code session (2026-09-30)
+
+> "I want that these error messages and alerts would go into a log and that log
+> would be woken up once any Claude Code session starts working on IBLU. And
+> then Claude Code would read the errors and propose changes how to fix them
+> for good."
+
+**First, a correction to §27.** That section says the mirror calendar rang his
+phone because of churn — thirty events deleted and recreated twice a day, and
+Google notifying on each. That diagnosis was wrong, and the evidence refutes
+it: all five per-calendar notification switches were already **None**, all 281
+mirror events between 1 Sep and 30 Sep carried
+`reminders={"useDefault": False, "overrides": []}`, there were **zero**
+calendar-notification emails in 21 days, and **zero** mirror-style events had
+leaked onto his primary calendar. The incremental diff is still worth having —
+it removed ~120 pointless API writes a day — but it fixed a different problem.
+
+The alerts were `jobs/watchdog.py` posting into the Secretary Chat space. And
+every one he complained about was an **LLM lead**, not a machine fault:
+
+| what he saw | `detected_by` | could he act on it? |
+|---|---|---|
+| a 780-minute block | `llm` | no — a code change |
+| blocks labelled `email-writer` | `llm` | no — a code change |
+| 04:45 "rests on automated Machina alerts" | `llm` | no — a code change |
+| tick 644 minutes stale (17 Sep) | `rule` | yes |
+| `gmail_sent:deadlift` failed (17 Sep) | `rule` | yes |
+
+`alertable()` selected on severity alone, and the sense-check's LLM pass picks
+its own severity — so a suspicion could call itself an error and reach his
+phone at 04:45 with something only a developer could fix. The genuine machine
+faults had all stopped on 17 Sep.
+
+> **Rule: a rule finding is a fact and some facts are his; an LLM finding is a
+> lead and every lead is a coding task.** Chat carries what only he can fix —
+> a dead unit, an expired token, a full disk. Everything else goes to the next
+> Claude Code session. Never widen the Chat alert to leads.
+
+**The mechanism.** `jobs/session_brief.py` formats the open findings; the
+`SessionStart` hook in `.claude/settings.json` runs it and injects the output
+before the session's first prompt; `CLAUDE.md` says what to do with it
+(reproduce before believing, failing scenario before fix, close with what was
+done, say so when you did not check). `.claude/settings.json` is now tracked —
+a hook that lives on one checkout silently stops working in a worktree.
+
+The brief is silent about everything: no `.env`, no database, a pending
+migration, its own formatting bug. Each prints nothing and exits 0. **A
+session-start hook that can refuse to let you start working is worse than no
+hook.** It caps at six facts and six leads and stays under 5k characters,
+because every one of them is spent from the session's context before the first
+prompt is read.
+
+**What the first brief found, in its own first output.** All three open "facts"
+were false: a 13-day-old credit-balance rejection, a 6-day-old vague-question
+rejection, and a 20-second burst of "ANTHROPIC_API_KEY is not set" from a
+manual run with no environment loaded. Nothing retires a rule finding that
+describes a *moment* — `retire_cleared` knows only the watchdog's own kinds and
+`age_out_llm_leads` only touches leads. `age_out_transient_facts` closes them
+after three days, and claims more than a lead's ageing-out does, honestly:
+every recurrence would have bumped the row, so a stale timestamp is evidence it
+stopped.
+
+**Two real defects, worked as the first examples of the loop.**
+
+`_thread_context` referenced `my_addresses`, a local of `collect`, and so raised
+`NameError` on every thread holding a message older than mine — which is every
+reply. Live on the box; it fired three times on 30 Sep alone. The caller
+swallowed it and returned `(None, "me", 1)`, so the signal was still written and
+the timeline still looked complete. What was silently always empty was
+`ask_snippet` and `initiator` — the two columns that make "unplanned, someone
+else's agenda" answerable. The only record was a `logger.warning`, which is how
+it survived for days.
+
+> **Rule: a `logger.warning` that reports a defect is itself a defect.** It is
+> addressed to nobody and rotates out of the journal. Record an observation.
+
+`machina@deadlift.io` is a verified send-as alias on the admin@deadlift.io
+mailbox, so the Machina monitoring job's output lands in `in:sent` and the
+alias list — added so Choco's `ap@chocoagency.com` invoices count as his work —
+admits it as his. The mail carries no `Auto-Submitted`, `Precedence` or `List-*`
+header, so no header rule can catch it. Two mechanisms instead:
+`config.automated_senders` names the identity, and
+`collectors/automated.mark_fan_out` excludes any burst of 3+ identical-subject
+messages from one mailbox inside two minutes — the one thing a human cannot do,
+and the five arrived across three seconds. Nine signals marked over thirty days
+of real data, no false positives. The window is deliberately two minutes and not
+five: five would also have swallowed a genuine morning of forwarding one
+contract to three people, under-reporting his work in order to fix
+over-reporting it.
+
+And the sense-check was reading signals the analyst had deliberately ignored, so
+it re-raised the same lead on every rebuild — a finding that could never be
+closed, because fixing the cause did not change what the model was shown.
+
+> **Rule: the sense-check judges the day that was BUILT.** Exclusions go in as
+> a count with "object if wrong", because the model is the oversight on a
+> judgement the scripts made and cannot object to what it is never told.
