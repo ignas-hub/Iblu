@@ -289,9 +289,19 @@ def collect(
             text=body[:400],
         )
 
+        # An alias this mailbox may send as is not the same as an address he
+        # writes from. The alias list exists so Choco's `ap@chocoagency.com`
+        # invoices count as his work — and it also admitted every alert the
+        # Machina monitoring job posts through `machina@deadlift.io`.
+        automated = from_address in settings.automated_sender_addresses
+
         row = {
             "source": "gmail",
             "kind": "sent" if mine else "received",
+            "excluded_reason": (
+                f"automated sender: {from_address} is a service identity, not "
+                "an address Ignas writes from"
+            ) if automated else None,
             "account": me,
             "occurred_at": occurred,
             "actor": "me" if mine else "other",
@@ -309,6 +319,10 @@ def collect(
                 "to": to_addresses,
                 "cc_count": len(_addresses(headers.get("cc"))),
                 "thread_len": thread_len,
+                # Always, not only for group mail. Without the sender there was
+                # no way to ask afterwards which address a signal came from, so
+                # the Machina rows could only be found by their subject.
+                "from": from_address,
                 **({"group": from_address} if not mine else {}),
             },
         }

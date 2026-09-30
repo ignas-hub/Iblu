@@ -343,6 +343,41 @@ SCENARIOS: list[Scenario] = [
         expect=[{"kind": "total_minutes", "attention": "ambiguous", "at_least": 60}],
     ),
 
+    Scenario(
+        name="a_script_sending_mail_is_not_a_morning",
+        description=(
+            "Five identical 'Machina: Tagger accuracy below target' messages "
+            "arrived across three seconds at 04:58, posted by a monitoring job "
+            "through a send-as alias on his own Deadlift mailbox. They became "
+            "a thirty-minute 04:45 block described as 'alerts read at dawn', "
+            "and the sense-check alerted his phone about it at 04:45. Once "
+            "`collectors/automated.py` has marked the burst, no block may rest "
+            "on it — and the real 09:00 commit must still stand."
+        ),
+        workday=True,
+        signals=[
+            signal("04:58", source="gmail", venture="deadlift",
+                   subject="Machina: Tagger accuracy below target",
+                   excluded_reason="automated fan-out: 3 messages sharing this "
+                                   "subject from the same mailbox within 120s"),
+            signal("04:58", source="gmail", venture="deadlift",
+                   subject="Machina: Tagger accuracy below target",
+                   excluded_reason="automated fan-out: 3 messages sharing this "
+                                   "subject from the same mailbox within 120s"),
+            signal("04:58", source="gmail", venture="deadlift",
+                   subject="Machina: Tagger accuracy below target",
+                   excluded_reason="automated fan-out: 3 messages sharing this "
+                                   "subject from the same mailbox within 120s"),
+            signal("09:00", source="git", venture="deadlift", work_type="build",
+                   subject="Tighten the tagger threshold"),
+        ],
+        expect=[
+            {"kind": "no_block_between", "start": "04:00", "end": "07:00"},
+            {"kind": "covers", "start": "09:00", "end": "09:15",
+             "venture": "deadlift"},
+        ],
+    ),
+
 ]
 
 

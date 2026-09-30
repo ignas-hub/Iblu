@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 from .. import db
 from ..config import settings
@@ -61,6 +61,22 @@ def run(on: date | None = None, days: int = 1, dry: bool = False, mirror: bool =
 
     failures = 0
     with db.get_conn() as conn:
+        # A rebuild must reach the same verdict as a fresh tick, so the
+        # automated-mail sweep runs here too, over the whole window being
+        # reconstructed. Without it, `--days 30` would rebuild old days from
+        # signals the tick had already learned to exclude.
+        if not dry:
+            try:
+                from ..collectors.automated import mark_fan_out
+
+                marked = mark_fan_out(
+                    conn, since=datetime.combine(targets[0], time.min, timezone.utc)
+                )
+                if marked:
+                    logger.info("analyst: excluded %d automated signal(s)", len(marked))
+            except Exception:  # noqa: BLE001 — a sweep failing must not stop a rebuild
+                logger.warning("analyst: the fan-out sweep failed", exc_info=True)
+
         for day in targets:
             try:
                 # A savepoint per day, for the same reason as the collectors:

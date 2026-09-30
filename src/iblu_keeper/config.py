@@ -218,6 +218,32 @@ class Settings:
         default_factory=lambda: os.getenv("SLACK_WORKSPACES", "")
     )
 
+    # Addresses this mailbox can send as but Ignas does not write from: a
+    # service identity used by a system he built. `machina@deadlift.io` is a
+    # verified send-as alias on admin@deadlift.io with the display name
+    # "Deadlift Machina", and the Machina monitoring job posts through it — so
+    # its alerts land in `in:sent` and the alias check admits them as his own
+    # work. Five identical "Tagger accuracy below target" messages at 04:58
+    # became a thirty-minute block called "alerts read at dawn".
+    #
+    # This cannot be told from a single message: the mail carries no
+    # Auto-Submitted, Precedence or List-* header at all — it is sent through
+    # the Gmail API like any other. So the distinction is a stated fact about
+    # the address, not a header heuristic. Mail from these addresses is still
+    # recorded; it is marked `excluded_reason` so the analyst skips it while an
+    # audit can still count it.
+    automated_senders: str = field(
+        default_factory=lambda: os.getenv(
+            "IBLU_AUTOMATED_SENDERS", "machina@deadlift.io"
+        )
+    )
+
+    @property
+    def automated_sender_addresses(self) -> frozenset[str]:
+        return frozenset(
+            a.strip().lower() for a in self.automated_senders.split(",") if a.strip()
+        )
+
     @property
     def slack_aliases(self) -> tuple[str, ...]:
         return tuple(

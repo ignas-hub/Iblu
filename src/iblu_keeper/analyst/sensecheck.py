@@ -335,8 +335,29 @@ def _snapshot(conn, on: date) -> str:
          -- A local-day range, not `occurred_at::date`: the session timezone is
          -- UTC, so truncating there files anything after midnight Zagreb under
          -- the previous day.
+         --
+         -- `excluded_reason IS NULL` for the same reason `analyst.blocks`
+         -- carries it: the check must judge the day that was BUILT. Without
+         -- it the model saw five Machina alerts the analyst had correctly
+         -- ignored and raised the same lead on every rebuild — a finding that
+         -- could never be closed, because fixing the cause did not change
+         -- what the model was shown.
          WHERE occurred_at >= %s AND occurred_at < %s AND actor = 'me'
+           AND excluded_reason IS NULL
          ORDER BY occurred_at LIMIT 60
+        """,
+        _local_day_bounds(on),
+    ).fetchall()
+    # Shown as a count, not hidden: the model is the oversight on a judgement
+    # the scripts made, so it must be able to object that an exclusion was
+    # wrong. It cannot object to something it is never told about.
+    excluded = conn.execute(
+        """
+        SELECT excluded_reason, count(*) AS n
+          FROM signals
+         WHERE occurred_at >= %s AND occurred_at < %s AND actor = 'me'
+           AND excluded_reason IS NOT NULL
+         GROUP BY excluded_reason
         """,
         _local_day_bounds(on),
     ).fetchall()
@@ -359,6 +380,10 @@ def _snapshot(conn, on: date) -> str:
             f"\"{(s['subject'] or '')[:60]}\" venture={s['venture'] or '-'}"
             f"({s['venture_confidence']})"
         )
+    if excluded:
+        lines += ["", "SIGNALS DELIBERATELY EXCLUDED (not his attention — object if wrong):"]
+        for e in excluded:
+            lines.append(f"  {e['n']}x {e['excluded_reason']}")
     lines += ["", "COLLECTORS:"]
     for c in collectors:
         lines.append(

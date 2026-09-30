@@ -97,13 +97,14 @@ def insert_signal(conn: psycopg.Connection, row: dict) -> bool:
         INSERT INTO signals
             (source, kind, account, occurred_at, actor, initiator, counterpart,
              container, subject, snippet, ask_snippet, length_chars, venture,
-             venture_confidence, work_type, project, source_ref, meta)
+             venture_confidence, work_type, project, source_ref, meta,
+             excluded_reason)
         VALUES
             (%(source)s, %(kind)s, %(account)s, %(occurred_at)s, %(actor)s,
              %(initiator)s, %(counterpart)s, %(container)s, %(subject)s,
              %(snippet)s, %(ask_snippet)s, %(length_chars)s, %(venture)s,
              %(venture_confidence)s, %(work_type)s, %(project)s,
-             %(source_ref)s, %(meta)s)
+             %(source_ref)s, %(meta)s, %(excluded_reason)s)
         ON CONFLICT (source, source_ref) DO NOTHING
         RETURNING id
         """,
@@ -120,6 +121,10 @@ def insert_signal(conn: psycopg.Connection, row: dict) -> bool:
             "venture_confidence": "inferred",
             "work_type": None,
             "project": None,
+            # Recorded, but not his attention. See `signals.excluded_reason`
+            # (migration 009): the analyst skips these, everything else can
+            # still see them, and the reason is readable rather than inferred.
+            "excluded_reason": None,
             **row,
             "meta": Jsonb(row.get("meta") or {}),
         },

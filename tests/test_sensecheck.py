@@ -191,6 +191,12 @@ def _parse(payload):
     response.content = [block]
 
     real_settings = mod.settings
+    # `_snapshot` is restored too. It was not, and the stub leaked into every
+    # test that ran afterwards in the same session: two later tests read the
+    # lambda's source instead of the real function and failed in the file
+    # while passing alone. A fixture that does not clean up makes the suite
+    # lie about code it never looked at.
+    real_snapshot = mod._snapshot
     mod.settings = _Key()
     try:
         import sys
@@ -205,6 +211,7 @@ def _parse(payload):
         return mod.run_llm(_Conn({}), DAY)
     finally:
         mod.settings = real_settings
+        mod._snapshot = real_snapshot
 
 
 def test_a_calendar_block_labelled_without_evidence_is_an_error():
@@ -296,3 +303,35 @@ def test_the_rule_is_about_who_made_the_block_not_its_confidence():
     source = inspect.getsource(S.run_rules)
     assert "old.source IN ('ping', 'human')" in source
     assert "confidence = 'fact' AND superseded_by IS NOT NULL" not in source
+
+
+def test_the_check_judges_the_day_that_was_built():
+    """It must not see signals the analyst deliberately ignored.
+
+    The five automated Machina alerts were excluded from the reconstruction but
+    still shown to the model, which kept raising the same lead on every
+    rebuild — a finding that could never be closed, because fixing the cause
+    did not change what the model was shown.
+    """
+    import inspect
+
+    from iblu_keeper.analyst import sensecheck
+
+    source = inspect.getsource(sensecheck._snapshot)
+    signal_query = source.split("SELECT source, account, occurred_at")[1].split('"""')[0]
+    assert "excluded_reason IS NULL" in signal_query
+
+
+def test_exclusions_are_shown_as_a_count_not_hidden():
+    """The model is the oversight on a judgement the scripts made.
+
+    It cannot object that an exclusion was wrong if it is never told one
+    happened, so the reasons go in as a summary line.
+    """
+    import inspect
+
+    from iblu_keeper.analyst import sensecheck
+
+    source = inspect.getsource(sensecheck._snapshot)
+    assert "DELIBERATELY EXCLUDED" in source
+    assert "object if wrong" in source

@@ -89,6 +89,24 @@ def run(dry: bool = False, force_ping: str | None = None, assume_yes: bool = Fal
     with db.get_conn() as conn:
         results = run_all(conn, dry=dry)
 
+        # Before anything reads these signals. A burst of identical-subject
+        # mail from one mailbox inside two minutes was written by a script, and
+        # the ping composer must not ask him what he was doing during it — it
+        # asked about five 04:58 Machina alerts and called them "alerts read at
+        # dawn". Marking, not deleting: see collectors/automated.py.
+        if not dry:
+            try:
+                from ..collectors.automated import mark_fan_out
+
+                marked = mark_fan_out(conn)
+                if marked:
+                    logger.info(
+                        "tick: excluded %d automated signal(s) from %d burst(s)",
+                        len(marked), len({(m["account"], m["subject"]) for m in marked}),
+                    )
+            except Exception:  # noqa: BLE001 — never lose a tick over housekeeping
+                logger.warning("tick: the fan-out sweep failed", exc_info=True)
+
     failed = [name for name, value in results.items() if not isinstance(value, int)]
 
     # A collector that ran cleanly this tick clears its own earlier failure.
