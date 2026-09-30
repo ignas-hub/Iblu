@@ -843,3 +843,33 @@ labelled Blank Label.
 
 > **Rule: when he reports something wrong, it becomes a scenario or an audit
 > invariant first.** The unit tests were never going to find these.
+
+### 27. The mirror calendar is a record of the past, and it is silent
+
+Both reported by Ignas on 2026-09-30, and both were the mirror behaving as a
+calendar rather than as a record.
+
+**It described the future.** At 17:00 he saw an event on the Secretary calendar
+ending at 18:00. The 17:00 analyst run filled the remainder of the workday with
+"unaccounted" and turned the evening's calendar entries into ambiguous blocks —
+a prediction dressed as a record. `reconstruct` now clamps everything to `now`:
+the workday window ends at `min(workday_end, now)` and every row is clipped to
+`min(day_end, now)`. A past day is unaffected.
+
+> **Rule: the reconstruction only ever describes time that has already
+> happened.** If a block ends in the future, something is predicting.
+
+**It rang his phone.** Every mirror event is written with
+`reminders={"useDefault": False, "overrides": []}`, so no event alarm can fire
+— that was never the cause. The cause was churn: each run DELETED every event
+for the day and recreated it, roughly thirty events twice a day, and Google
+notifies on created, changed and cancelled events for a calendar you own.
+`mirror_day` is now a diff — it matches existing events by span, patches only
+what a human would see differently, inserts what is new and deletes only what
+the day no longer claims. Verified on a real day: the second run of an
+unchanged day reported `unchanged=21, written=0, updated=0, removed=0`.
+
+The per-calendar notification switches (New/Changed/Cancelled events) live in
+Google Calendar's settings for that calendar and cannot be set with the
+`calendar.events` scope IBLU holds — turning them off is a one-time UI action.
+With the diff in place they should have nothing to fire on anyway.

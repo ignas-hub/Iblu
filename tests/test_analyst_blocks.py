@@ -1146,3 +1146,69 @@ def test_evidence_outside_the_workday_does_not_make_the_day_watched():
     only_untracked = [b for b in B.build(B.cluster_signals([signal(1, at(23, 0))]), [],
                                          workday=(at(7, 0), at(20, 0))) if b["untracked"]]
     assert not only_untracked
+
+
+def test_the_reconstruction_never_describes_the_future(monkeypatch):
+    """At 17:00 the Secretary calendar showed an event ending at 18:00 — the
+    17:00 run filled the rest of the workday with "unaccounted" and turned the
+    evening's calendar entries into blocks. A reconstruction is a record."""
+    now = at(17, 0)
+    clipped = B._clip_to_day(
+        B.build(B.cluster_signals([signal(1, at(9, 0))]),
+                [intent(at(19, 0), at(20, 0), title="Evening call", event_id="e9")],
+                workday=(at(7, 0), now)),
+        (at(0, 0), now),
+    )
+    assert clipped, "the day so far should still be reconstructed"
+    assert max(b["ends_at"] for b in clipped) <= now, "a block runs past now"
+    assert not [b for b in clipped if b.get("intent_title") == "Evening call"]
+
+
+# --- the mirror must be silent (reported 2026-09-30) ----------------------
+
+
+def _mirror_block(**over):
+    base = {
+        "id": 1, "starts_at": at(9, 0), "ends_at": at(10, 0), "venture": "blt",
+        "work_type": None, "project": None, "attention": "present",
+        "confidence": "inferred", "reasoning": "60 min · 3 chat",
+        "intent_title": None, "calendar_event_id": "evt1", "untracked": False,
+    }
+    base.update(over)
+    return base
+
+
+def test_an_unchanged_day_rewrites_no_calendar_event():
+    """Every run used to delete and recreate all ~30 events. Google notifies on
+    created and changed events, so a silent record of the past rang his phone
+    twice a day."""
+    from iblu_keeper.analyst import mirror
+
+    block = _mirror_block()
+    assert mirror._same_event(block, mirror._body(block))
+
+
+def test_a_relabelled_block_is_recognised_as_changed():
+    from iblu_keeper.analyst import mirror
+
+    block = _mirror_block()
+    changed = mirror._body(_mirror_block(venture="deadlift"))
+    assert not mirror._same_event(block, changed)
+
+
+def test_a_changed_attention_is_recognised_as_changed():
+    from iblu_keeper.analyst import mirror
+
+    block = _mirror_block()
+    changed = mirror._body(_mirror_block(attention="displaced", intent_title="Go school"))
+    assert not mirror._same_event(block, changed)
+
+
+def test_every_mirror_event_is_silent_and_free():
+    """No reminder, and transparent so a record of the past never makes him
+    look busy to anyone."""
+    from iblu_keeper.analyst import mirror
+
+    body = mirror._body(_mirror_block())
+    assert body["reminders"] == {"useDefault": False, "overrides": []}
+    assert body["transparency"] == "transparent"

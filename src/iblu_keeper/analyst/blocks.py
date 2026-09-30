@@ -1245,8 +1245,18 @@ def reconstruct(conn, on: date, *, dry: bool = False, mirror: bool = True) -> di
     # all and so no later data could exist regardless.
     collected_ats = [s["collected_at"] for s in signals if s.get("collected_at")]
     horizon = max(collected_ats) if collected_ats else datetime.now(timezone.utc)
+    # The reconstruction describes the PAST. Nothing may be emitted for time
+    # that has not happened yet: the 17:00 run used to fill the rest of the
+    # workday with "unaccounted" and turn the evening's calendar entries into
+    # ambiguous blocks, so at 17:00 Ignas saw an event on the Secretary
+    # calendar ending at 18:00 — a prediction dressed as a record.
+    now = datetime.now(timezone.utc)
+    workday = (workday[0], min(workday[1], now)) if workday else None
+    if workday and workday[1] <= workday[0]:
+        workday = None          # the workday has not begun yet
+
     rows = build(cluster_signals(signals), intents, workday=workday, horizon=horizon)
-    rows = _clip_to_day(rows, (start, end))
+    rows = _clip_to_day(rows, (start, min(end, now)))
     rows = _carve_out(
         rows, [(b["starts_at"], b["ends_at"]) for b in confirmed], signals
     )

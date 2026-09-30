@@ -142,24 +142,110 @@ def mirror_day(conn, on: date, *, dry: bool = False) -> dict:
         return {"date": on.isoformat(), "would_write": len(blocks), "dry": True}
 
     service = _service()
-    removed = _clear(conn, service, calendar_id, on)
 
-    written = 0
+    # Reuse the events already on the calendar wherever the day has not
+    # changed. The first version deleted every event and recreated it on each
+    # run — twice a day, thirty-odd events — and Google notifies on created and
+    # changed events, so a silent record of the past was ringing Ignas's phone.
+    # A rebuild that produces the same day now touches nothing at all.
+    existing = _existing_by_span(conn, on)
+    written = updated = kept = 0
+
     for block in blocks:
-        created = (
-            service.events()
-            .insert(calendarId=calendar_id, body=_body(block))
-            .execute()
-        )
+        body = _body(block)
+        match = existing.pop((block["starts_at"], block["ends_at"]), None)
+        if match is None:
+            created = service.events().insert(calendarId=calendar_id, body=body).execute()
+            conn.execute(
+                "UPDATE blocks SET calendar_event_id = %s WHERE id = %s",
+                (created.get("id"), block["id"]),
+            )
+            written += 1
+            continue
+        if _same_event(match, body):
+            # Carry the event id onto whichever block row is live now: a
+            # rebuild supersedes rows even when the day itself is unchanged.
+            conn.execute(
+                "UPDATE blocks SET calendar_event_id = %s WHERE id = %s",
+                (match["calendar_event_id"], block["id"]),
+            )
+            kept += 1
+            continue
+        service.events().patch(
+            calendarId=calendar_id, eventId=match["calendar_event_id"], body=body,
+        ).execute()
         conn.execute(
             "UPDATE blocks SET calendar_event_id = %s WHERE id = %s",
-            (created.get("id"), block["id"]),
+            (match["calendar_event_id"], block["id"]),
         )
-        written += 1
+        updated += 1
+
+    # Whatever is left described a stretch this rebuild no longer claims.
+    removed = _remove_events(conn, service, calendar_id, list(existing.values()))
 
     return {
         "date": on.isoformat(),
         "calendar_id": calendar_id,
         "removed": removed,
         "written": written,
+        "updated": updated,
+        "unchanged": kept,
     }
+
+
+def _existing_by_span(conn, on: date) -> dict:
+    """Mirror events IBLU has already written for this day, keyed by span."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT ON (starts_at, ends_at)
+               id, starts_at, ends_at, calendar_event_id, venture, work_type,
+               project, attention, confidence, reasoning, intent_title
+          FROM blocks
+         WHERE local_date = %s AND calendar_event_id IS NOT NULL
+         ORDER BY starts_at, ends_at, created_at DESC
+        """,
+        (on,),
+    ).fetchall()
+    return {(r["starts_at"], r["ends_at"]): dict(r) for r in rows}
+
+
+def _same_event(previous: dict, body: dict) -> bool:
+    """Would re-writing this event change anything a human would see?"""
+    return (
+        _title(previous) == body["summary"]
+        and (previous.get("reasoning") or "") in body.get("description", "")
+        and COLOR_BY_ATTENTION[previous["attention"]] == body["colorId"]
+    )
+
+
+def _remove_events(conn, service, calendar_id: str, rows: list[dict]) -> int:
+    """Delete mirror events whose span no longer exists, and forget their ids."""
+    removed = 0
+    for row in rows:
+        event_id = row["calendar_event_id"]
+        gone = False
+        try:
+            service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+            removed += 1
+            gone = True
+        except Exception as exc:  # noqa: BLE001
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            gone = status in (404, 410)
+            if not gone:
+                logger.warning("mirror: could not delete %s (%s)", event_id, exc)
+                from ..store import observations as obs
+
+                obs.record_safe(
+                    source="analyst", kind="mirror_event_not_deleted", severity="warn",
+                    summary="a Secretary calendar event could not be removed; "
+                            "its id is kept so the next run can retry",
+                    detail=str(exc)[:500],
+                    evidence={"event_id": event_id},
+                    fp=obs.fingerprint("analyst", "mirror_event_not_deleted", event_id),
+                )
+        if gone:
+            conn.execute(
+                "UPDATE blocks SET calendar_event_id = NULL WHERE calendar_event_id = %s",
+                (event_id,),
+            )
+    return removed
