@@ -300,6 +300,17 @@ def alertable(conn, *, now: datetime | None = None, cooldown: timedelta = ALERT_
     Deliberately errors only. A warning is something to read on Sunday; an
     error is something that means IBLU is not recording, and only the second
     kind earns a notification on his phone.
+
+    And deliberately **rule findings only**. The sense-check's LLM pass picks
+    its own severity, so a lead could call itself an `error` and reach his
+    phone — which is exactly what happened. Every alert he complained about
+    over the last fortnight turned out to be one: a 780-minute block, a
+    misattributed venture, and at 04:45 "this block rests on automated Machina
+    alerts, not human work". All three were real defects. None of them was
+    anything he could do at 04:45, because all three needed a code change.
+    Those go to `jobs/session_brief.py` and reach a Claude Code session
+    instead. Chat is reserved for what only he can fix: a dead unit, an expired
+    token, a full disk.
     """
     now = now or datetime.now(timezone.utc)
     return conn.execute(
@@ -307,6 +318,7 @@ def alertable(conn, *, now: datetime | None = None, cooldown: timedelta = ALERT_
         SELECT id, source, kind, summary, detail, occurrences, first_seen_at
           FROM observations
          WHERE status = 'open' AND severity = 'error'
+           AND detected_by = 'rule'
            AND (alerted_at IS NULL OR alerted_at < %s)
          ORDER BY first_seen_at
          LIMIT 5
@@ -407,6 +419,13 @@ def run(dry: bool = False, alert: bool = True) -> int:
             aged = obs.age_out_llm_leads(conn)
             if aged:
                 logger.info("watchdog: aged out %d unrepeated lead(s)", aged)
+            # Rule findings about a moment ("this call failed") have no other
+            # way out: retire_cleared only knows its own kinds. Without this
+            # they accumulate and a new session reads a fortnight-old rejection
+            # as a current fault.
+            cleared = obs.age_out_transient_facts(conn)
+            if cleared:
+                logger.info("watchdog: cleared %d finding(s) that stopped happening", cleared)
 
         errors = [f for f in found if f["severity"] == "error"]
         logger.info(

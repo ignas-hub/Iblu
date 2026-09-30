@@ -40,8 +40,13 @@ data/
 .coverage
 htmlcov/
 
-# Local Claude Code permissions (machine-specific, not shared)
-.claude/
+# Local Claude Code state (machine-specific) — but settings.json IS tracked:
+# it carries the SessionStart hook that hands the observation log to the next
+# session, and a hook that only exists on one checkout is a hook that silently
+# stops working in a worktree.
+.claude/*
+!.claude/settings.json
+.claude/settings.local.json
 
 # Generated from the `observations` table, which is the source of truth.
 # Regenerate with `python -m iblu_keeper.store.observations --write-doc`.

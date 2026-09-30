@@ -187,6 +187,50 @@ def age_out_llm_leads(conn, *, ttl: timedelta = LLM_LEAD_TTL) -> int:
     return len(rows)
 
 
+# Rule findings that describe a MOMENT rather than a state: this call failed,
+# this response was rejected. Nothing retires them — `watchdog.retire_cleared`
+# only touches its own kinds, and `age_out_llm_leads` only touches leads — so
+# once one happened it stayed open forever. Found 2026-09-30 by reading the
+# session brief: the three open "facts" were a 13-day-old credit-balance
+# rejection, a 6-day-old vague-question rejection, and a 20-second burst of
+# "ANTHROPIC_API_KEY is not set" from a manual run with no environment loaded.
+# All three long since untrue, all three presented to a new session as current.
+#
+# Ageing these out is a stronger claim than ageing out a lead, and honestly so:
+# every recurrence bumps `last_seen_at` on the same fingerprint, so a stale
+# timestamp *is* evidence it has not happened again. A lead's absence proves
+# nothing; a fact's absence proves it stopped.
+TRANSIENT_FACT_KINDS = (
+    "llm_call_failed", "llm_output_rejected", "llm_sensecheck_unavailable",
+    "llm_unavailable",
+)
+TRANSIENT_FACT_TTL = timedelta(days=3)
+
+
+def age_out_transient_facts(
+    conn, *, ttl: timedelta = TRANSIENT_FACT_TTL, kinds=TRANSIENT_FACT_KINDS
+) -> int:
+    """Close rule findings about a moment that has not recurred since."""
+    rows = conn.execute(
+        """
+        UPDATE observations
+           SET status = 'resolved', resolved_at = now(),
+               resolution = %s
+         WHERE status = 'open' AND detected_by = 'rule'
+           AND kind = ANY(%s)
+           AND last_seen_at < %s
+        RETURNING id
+        """,
+        (
+            f"cleared: has not happened again in {ttl.days} days. Every "
+            f"recurrence would have bumped this row, so it stopped.",
+            list(kinds),
+            datetime.now(timezone.utc) - ttl,
+        ),
+    ).fetchall()
+    return len(rows)
+
+
 def summary_counts(conn, days: int = 7) -> dict:
     """How much IBLU has been catching lately, by source."""
     since = datetime.now(timezone.utc) - timedelta(days=days)

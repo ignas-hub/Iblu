@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git push:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/ignas/iblu/.venv/bin/python -m iblu_keeper.jobs.session_brief 2>/dev/null || true",
+            "timeout": 25,
+            "statusMessage": "Reading what IBLU caught…"
+          }
+        ]
+      }
+    ]
+  }
+}
