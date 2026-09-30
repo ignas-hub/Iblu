@@ -45,14 +45,65 @@ class _Conn:
 # --- the checks fire ------------------------------------------------------
 
 
-def test_a_stopped_unit_is_an_error(monkeypatch):
+def test_a_stopped_unit_that_records_is_an_error(monkeypatch):
+    """Whatever must run for IBLU to record unattended earns a phone alert."""
     class _R:
         stdout, stderr = "inactive", ""
 
     monkeypatch.setattr(W.subprocess, "run", lambda *a, **k: _R())
-    found = W.check_units()
-    assert found and all(f["severity"] == "error" for f in found)
-    assert any("iblu-mcp.service" in f["summary"] for f in found)
+    found = {f["evidence"]["unit"]: f for f in W.check_units()}
+    assert found
+    for unit in ("iblu-mcp.service", "iblu-tick.timer", "iblu-analyst.timer",
+                 "iblu-backup.timer", "iblu-daycard.timer"):
+        assert found[unit]["severity"] == "error", unit
+        assert "Nothing unattended happens" in found[unit]["detail"]
+
+
+def test_a_stopped_dashboard_is_only_a_warning(monkeypatch):
+    """Recording carries on without it; what stops is him being able to look.
+
+    The severity is the difference between "IBLU is not recording" and "IBLU is
+    recording and you cannot see it", and only the first is worth a 4am buzz.
+    """
+    class _R:
+        stdout, stderr = "inactive", ""
+
+    monkeypatch.setattr(W.subprocess, "run", lambda *a, **k: _R())
+    found = {f["evidence"]["unit"]: f for f in W.check_units()}
+    assert found["iblu-dashboard.service"]["severity"] == "warn"
+    assert "look at the data" in found["iblu-dashboard.service"]["detail"]
+
+
+def test_the_watchdog_does_not_claim_to_watch_itself():
+    """A dead watchdog cannot report its own death.
+
+    Listing `iblu-watchdog.timer` would only ever fire in the window between
+    `systemctl disable` and the next reboot, while implying the watchdog is
+    self-monitoring. It is not, and pretending otherwise is worse than the gap.
+    """
+    assert "iblu-watchdog.timer" not in {u for u, _what, _sev in W.UNITS}
+
+
+def test_every_installed_unit_is_watched():
+    """The daycard timer went uninstalled for a fortnight and nothing noticed.
+
+    Pinned against the repo's own deploy/ directory rather than the live box,
+    so it holds in CI and in a worktree: if a future session adds a unit file,
+    this fails until the watchdog is told about it.
+    """
+    import pathlib
+
+    deploy = pathlib.Path(__file__).resolve().parents[1] / "deploy"
+    on_disk = {p.name for p in deploy.glob("iblu-*.timer")}
+    on_disk |= {p.name for p in deploy.glob("iblu-*.service")}
+    watched = {u for u, _what, _sev in W.UNITS}
+
+    # A .timer and its .service are one unit to watch, not two: an enabled
+    # timer is the thing that proves the pair will fire.
+    paired = {name for name in on_disk
+              if name.endswith(".service") and name[:-8] + ".timer" in on_disk}
+    expected = on_disk - paired - {"iblu-watchdog.timer"}
+    assert expected <= watched, f"installed but unwatched: {sorted(expected - watched)}"
 
 
 def test_healthy_units_produce_nothing(monkeypatch):

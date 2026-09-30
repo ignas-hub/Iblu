@@ -38,13 +38,31 @@ from ..store import observations as obs
 
 logger = logging.getLogger("iblu_keeper.jobs.watchdog")
 
-# The units that must be running for IBLU to do anything unattended.
+# The units that must be running for IBLU to do anything unattended, and how
+# bad it is when one is not. `error` reaches his phone; `warn` waits to be read.
+#
+# `iblu-watchdog.timer` is deliberately absent. A watchdog cannot report its own
+# death: once the timer is disabled no run happens to notice, so the check would
+# only ever fire in the narrow window between `disable` and the next reboot
+# while giving the false impression that the watchdog is self-monitoring. What
+# actually catches a dead watchdog is `check_tick_freshness` going unreported
+# and him noticing the silence. Do not "fix" this omission.
 UNITS = (
-    ("iblu-mcp.service", "the MCP server Claude connects to"),
-    ("iblu-tick.timer", "the ten-minute recorder"),
-    ("iblu-analyst.timer", "the day reconstruction"),
-    ("iblu-weekly.timer", "the Friday review"),
-    ("iblu-backup.timer", "the nightly database dump"),
+    ("iblu-mcp.service", "the MCP server Claude connects to", "error"),
+    ("iblu-tick.timer", "the ten-minute recorder", "error"),
+    ("iblu-analyst.timer", "the day reconstruction", "error"),
+    ("iblu-weekly.timer", "the Friday review", "error"),
+    ("iblu-backup.timer", "the nightly database dump", "error"),
+    # Installed 2026-09-30. Without it the reconstruction is never confirmed by
+    # anybody, and shadow-calendar accuracy stays unmeasurable — which is the
+    # state it was in for its first fortnight, unnoticed, because nothing
+    # watched for a unit that had never been installed.
+    ("iblu-daycard.timer",
+     "the evening day card — the only thing that turns a guess into a fact",
+     "error"),
+    # A warning, not an error: recording continues without the dashboard. What
+    # stops is his ability to look at any of it.
+    ("iblu-dashboard.service", "the dashboard he reads his own data on", "warn"),
 )
 
 DISK_WARN_PCT = 85
@@ -81,7 +99,7 @@ def _flag(kind: str, summary: str, *, severity="warn", detail=None, evidence=Non
 def check_units() -> list[dict]:
     """systemd units that should be running and are not."""
     found = []
-    for unit, what in UNITS:
+    for unit, what, severity in UNITS:
         verb = "is-active" if unit.endswith(".service") else "is-enabled"
         try:
             result = subprocess.run(
@@ -93,9 +111,14 @@ def check_units() -> list[dict]:
         if state not in ("active", "enabled"):
             found.append(_flag(
                 "unit_down", f"{unit} is {state} — {what} is not running",
-                severity="error",
-                detail="Nothing unattended happens without this unit. Bring it "
-                       f"back with `sudo systemctl restart {unit}`.",
+                severity=severity,
+                detail=(
+                    "Nothing unattended happens without this unit. Bring it "
+                    f"back with `sudo systemctl restart {unit}`."
+                    if severity == "error" else
+                    "Recording carries on without it; what stops is being able "
+                    f"to look at the data. `sudo systemctl restart {unit}`."
+                ),
                 evidence={"unit": unit, "state": state},
                 fp_parts=(unit,),
             ))
