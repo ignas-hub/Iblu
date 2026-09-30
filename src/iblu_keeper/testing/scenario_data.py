@@ -316,6 +316,33 @@ SCENARIOS: list[Scenario] = [
         ],
     ),
 
+
+    Scenario(
+        name="an_unwatched_day_produces_nothing",
+        description=(
+            "A day with no evidence inside the workday produces NO blocks — not "
+            "one 780-minute 'nothing recorded' bar. Reported by Ignas from the "
+            "watchdog alert on 2026-09-30: two Sundays had rendered as thirteen "
+            "hours of grey on the Secretary calendar."
+        ),
+        workday=True,
+        signals=[],
+        intents=[],
+        expect=[{"kind": "total_minutes", "equals": 0}],
+    ),
+
+    Scenario(
+        name="a_watched_day_still_shows_its_holes",
+        description=(
+            "The distinction that makes the rule above safe: an unaccounted "
+            "stretch on a day he WAS being watched is still worth showing, and "
+            "is what the evening gap question asks about."
+        ),
+        workday=True,
+        signals=[signal("09:00", source="chat", venture="blt")],
+        expect=[{"kind": "total_minutes", "attention": "ambiguous", "at_least": 60}],
+    ),
+
 ]
 
 

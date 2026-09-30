@@ -494,7 +494,7 @@ def build(
     _apply_family_inference(blocks, intents, clusters, horizon)
     _apply_maybe_family_inference(blocks, maybe_intents, clusters, horizon)
 
-    blocks += _untracked(blocks, workday)
+    blocks += _untracked(blocks, workday, clusters)
 
     blocks.sort(key=lambda b: (b["starts_at"], b["ends_at"]))
     merged = _merge_adjacent(blocks)
@@ -1370,7 +1370,11 @@ def _counts(rows: list[dict]) -> dict[str, int]:
     return out
 
 
-def _untracked(blocks: list[dict], workday: tuple[datetime, datetime] | None) -> list[dict]:
+def _untracked(
+    blocks: list[dict],
+    workday: tuple[datetime, datetime] | None,
+    clusters: list[Cluster] | None = None,
+) -> list[dict]:
     """The stretches of the workday nothing accounts for.
 
     These are the only blocks IBLU writes with no evidence *and* no intent, and
@@ -1378,8 +1382,22 @@ def _untracked(blocks: list[dict], workday: tuple[datetime, datetime] | None) ->
     to supersede when Ignas says what an unaccounted hour was. They are
     `ambiguous` with `venture = NULL` — the schema's way of saying "unknown",
     which is not the same as "idle" and must never be rendered as idle.
+
+    **A day with no evidence at all produces none of them.** Two Sundays came
+    out as a single 780-minute "nothing recorded, and nothing on the calendar
+    either" block — thirteen hours of grey on the Secretary calendar, and an
+    unanswerable `gap` question. There is a difference between "this hour is
+    unaccounted for, in a day I was otherwise watching" and "I was not watching
+    at all"; the first is worth showing him, the second is just absence, and
+    absence is drawn by drawing nothing. (The recorder genuinely is not
+    watching at weekends: `iblu-tick.timer` runs Mon–Fri.)
     """
     if workday is None:
+        return []
+    day_start, day_end = workday
+    if clusters is not None and not any(
+        c.start < day_end and c.end > day_start for c in clusters
+    ):
         return []
     covered = [(b["starts_at"], b["ends_at"]) for b in blocks]
     out = []

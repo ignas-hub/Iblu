@@ -1122,3 +1122,27 @@ def test_work_under_a_longer_overlapping_intent_still_blocks_family_inference():
     assumed = [b for b in blocks
                if b["venture"] == "family" and b["attention"] == "present"]
     assert not assumed, "a span mostly consumed by work was assumed to be family time"
+
+
+def test_a_day_with_no_evidence_at_all_produces_no_untracked_blocks():
+    """Two Sundays came out as one 780-minute "nothing recorded" block: thirteen
+    hours of grey on the calendar and an unanswerable gap question. Not
+    watching at all is absence, and absence is drawn by drawing nothing."""
+    assert B.build([], [], workday=(at(7, 0), at(20, 0))) == []
+
+
+def test_an_unaccounted_stretch_on_a_watched_day_is_still_shown():
+    """The distinction is 'unaccounted while I was watching' vs 'not watching'."""
+    blocks = B.build(B.cluster_signals([signal(1, at(9, 0))]), [],
+                     workday=(at(7, 0), at(20, 0)))
+    assert [b for b in blocks if b["untracked"]], "a watched day must still show its holes"
+
+
+def test_evidence_outside_the_workday_does_not_make_the_day_watched():
+    """A single git commit at 23:00 on a Sunday is not evidence that the
+    recorder was watching the workday."""
+    assert B.build(B.cluster_signals([signal(1, at(23, 0))]), [],
+                   workday=(at(7, 0), at(20, 0))) != []
+    only_untracked = [b for b in B.build(B.cluster_signals([signal(1, at(23, 0))]), [],
+                                         workday=(at(7, 0), at(20, 0))) if b["untracked"]]
+    assert not only_untracked
