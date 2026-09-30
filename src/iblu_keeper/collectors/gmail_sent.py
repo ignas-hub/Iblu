@@ -158,7 +158,10 @@ def _thread_context(
         if ts >= my_ts:
             continue
         headers = _headers(msg)
-        if _is_mine(headers, me, my_addresses):
+        # `aliases`, not `my_addresses` — that name belongs to `collect` and
+        # raised NameError here on every thread that had a message older than
+        # mine, i.e. every reply. See the note below the caller.
+        if _is_mine(headers, me, aliases):
             continue
         ask = snippets.snippet(_extract_body(msg.get("payload", {})))
     return ask, initiator, len(messages)
@@ -252,7 +255,30 @@ def collect(
             try:
                 thread_cache[thread_id] = _thread_context(svc, thread_id, me, occurred, my_addresses)
             except Exception as exc:  # a thread read failing must not lose the signal
+                # It must not lose the signal, but it must not be invisible
+                # either. For days this swallowed `NameError: name
+                # 'my_addresses' is not defined` — raised on every thread with
+                # a message older than mine, so every reply — and the whole
+                # effect was that `ask_snippet` came back empty and `initiator`
+                # came back "me". Nothing was missing from the timeline, so
+                # nothing looked wrong; "unplanned, someone else's agenda" was
+                # simply unanswerable, and the only record was a
+                # `logger.warning` rotating out of the journal addressed to
+                # nobody. A defect that degrades an answer instead of removing
+                # it needs a reader, so it becomes an observation.
+                from ..store import observations as obs
+
                 logger.warning("%s: thread %s unreadable: %s", NAME, thread_id, exc)
+                obs.record_safe(
+                    source="collector", kind="thread_context_lost",
+                    summary=f"{NAME} cannot read thread context — every reply's "
+                            f"ask_snippet and initiator are being lost",
+                    detail=f"{type(exc).__name__}: {exc}\n\nThe signal is still "
+                           "recorded; what is missing is what he was replying to "
+                           "and who started the thread.",
+                    evidence={"account": alias, "example_thread": thread_id},
+                    fp=obs.fingerprint(NAME, "thread_context_lost", type(exc).__name__),
+                )
                 thread_cache[thread_id] = (None, "me", 1)
         ask_snippet, initiator, thread_len = thread_cache[thread_id]
 

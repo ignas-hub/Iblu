@@ -380,3 +380,101 @@ def test_keywords_match_whole_words_only():
     assert infer("", subject="Temu contract review")[0] == "blt"
     assert infer("", subject="BLT Intros +")[0] == "blt"
     assert infer("", subject="Weekly sync BLT")[0] == "blt"
+
+
+# --- thread context: the defect that degraded an answer instead of removing it
+
+
+def _msg(address: str, when: int, body: str) -> dict:
+    """One Gmail message, as `threads().get(format='full')` returns it."""
+    import base64
+
+    return {
+        "internalDate": str(when * 1000),
+        "payload": {
+            "mimeType": "text/plain",
+            "headers": [{"name": "From", "value": address}],
+            "body": {"data": base64.urlsafe_b64encode(body.encode()).decode()},
+        },
+    }
+
+
+class _FakeThreads:
+    def __init__(self, thread):
+        self._thread = thread
+
+    def get(self, **_kwargs):
+        return self
+
+    def execute(self):
+        return self._thread
+
+
+class _FakeService:
+    def __init__(self, thread):
+        self._threads = _FakeThreads(thread)
+
+    def users(self):
+        return self
+
+    def threads(self):
+        return self._threads
+
+
+def test_thread_context_reads_what_i_was_replying_to():
+    """The regression that made "someone else's agenda" unanswerable.
+
+    `_thread_context` referenced `my_addresses`, a local of `collect`, so it
+    raised NameError on every thread holding a message older than mine — which
+    is every reply. The caller swallowed it and returned `(None, "me", 1)`, so
+    the signal was still written, the timeline still looked complete, and
+    `ask_snippet` was silently always empty. Live on the box for days.
+    """
+    from datetime import datetime, timezone
+
+    from iblu_keeper.collectors import gmail_sent
+
+    mine = "ignacio@chocoagency.com"
+    thread = {"messages": [
+        _msg("Ana <ana@client.com>", 1_789_000_000, "Can you send the invoice?"),
+        _msg(f"Ignas <{mine}>", 1_789_000_600, "Attached."),
+    ]}
+    my_ts = datetime.fromtimestamp(1_789_000_600, tz=timezone.utc)
+
+    ask, initiator, length = gmail_sent._thread_context(
+        _FakeService(thread), "t1", mine, my_ts, {mine, "ap@chocoagency.com"}
+    )
+    assert initiator == "other", "Ana started it"
+    assert length == 2
+    assert "invoice" in (ask or ""), "the ask is the newest message before mine"
+
+
+def test_thread_context_knows_an_alias_is_still_me():
+    """Sent under an alias, the thread is still mine — the reason `aliases` exists."""
+    from datetime import datetime, timezone
+
+    from iblu_keeper.collectors import gmail_sent
+
+    me, alias = "ignacio@chocoagency.com", "ap@chocoagency.com"
+    thread = {"messages": [
+        _msg(f"Payables <{alias}>", 1_789_000_000, "Here is the run."),
+        _msg(f"Ignas <{me}>", 1_789_000_600, "And the second half."),
+    ]}
+    my_ts = datetime.fromtimestamp(1_789_000_600, tz=timezone.utc)
+
+    ask, initiator, _ = gmail_sent._thread_context(
+        _FakeService(thread), "t2", me, my_ts, {me, alias}
+    )
+    assert initiator == "me"
+    assert ask is None, "nothing to reply to — both messages are mine"
+
+
+def test_a_lost_thread_context_becomes_an_observation():
+    """It may not break the signal, but it may not be invisible either."""
+    import inspect
+
+    from iblu_keeper.collectors import gmail_sent
+
+    source = inspect.getsource(gmail_sent.collect)
+    assert "thread_context_lost" in source
+    assert "record_safe" in source
