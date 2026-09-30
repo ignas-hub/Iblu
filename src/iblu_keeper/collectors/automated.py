@@ -94,6 +94,99 @@ def mark_fan_out(
     return burst
 
 
+def backfill_senders(conn, *, since: datetime, dry: bool = False) -> dict:
+    """Recover `meta.from` for old signals, then apply the named-sender rule.
+
+    `gmail_sent` only started recording the sender today, so rows written
+    before that cannot be matched against `config.automated_senders` at all —
+    the five singleton Machina notices ("Machina test email", "Ad ...
+    submitted") are machine output that no burst rule will ever catch, and
+    nothing in the database says who sent them.
+
+    One metadata fetch per row, so it is bounded by `--days`. A message that
+    has since been deleted is skipped rather than fatal.
+    """
+    from ..config import settings
+    from ..google_auth import build_service
+
+    rows = conn.execute(
+        """
+        SELECT id, account, source_ref, subject FROM signals
+         WHERE source = 'gmail' AND actor = 'me'
+           AND meta->>'from' IS NULL AND occurred_at >= %s
+         ORDER BY occurred_at
+        """,
+        (since,),
+    ).fetchall()
+
+    by_email = {a["email"]: a["alias"] for a in settings.configured_accounts()}
+    automated = settings.automated_sender_addresses
+    services: dict[str, object] = {}
+    filled = excluded = unreadable = 0
+
+    for row in rows:
+        alias = by_email.get(row["account"])
+        if alias is None:
+            unreadable += 1
+            continue
+        if alias not in services:
+            services[alias] = build_service(
+                "gmail", "v1",
+                account=None if alias == settings.primary_alias else alias,
+            )
+        try:
+            message = (
+                services[alias].users().messages()
+                .get(userId="me", id=row["source_ref"], format="metadata",
+                     metadataHeaders=["From"])
+                .execute()
+            )
+        except Exception as exc:  # noqa: BLE001 — a deleted message is not a fault
+            logger.debug("cannot read %s: %s", row["source_ref"], exc)
+            unreadable += 1
+            continue
+
+        sender = ""
+        for header in message.get("payload", {}).get("headers", []):
+            if header.get("name", "").lower() == "from":
+                from email.utils import parseaddr
+
+                sender = parseaddr(header.get("value", ""))[1].strip().lower()
+        if not sender:
+            unreadable += 1
+            continue
+
+        filled += 1
+        if dry:
+            if sender in automated:
+                excluded += 1
+                logger.info("would exclude %s <- %s: %s", row["id"], sender,
+                            (row["subject"] or "")[:60])
+            continue
+
+        reason = (
+            f"automated sender: {sender} is a service identity, not an address "
+            "Ignas writes from"
+        ) if sender in automated else None
+        conn.execute(
+            """
+            UPDATE signals
+               -- Both casts are required: Postgres cannot infer a parameter's
+               -- type inside jsonb_build_object, and refuses the statement
+               -- with IndeterminateDatatype rather than guessing.
+               SET meta = meta || jsonb_build_object('from', %s::text),
+                   excluded_reason = COALESCE(excluded_reason, %s::text)
+             WHERE id = %s
+            """,
+            (sender, reason, row["id"]),
+        )
+        if reason:
+            excluded += 1
+
+    return {"seen": len(rows), "filled": filled, "excluded": excluded,
+            "unreadable": unreadable}
+
+
 def main(argv: list[str] | None = None) -> int:
     from .. import db
 
@@ -105,6 +198,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="how far back to look (default 2)")
     parser.add_argument("--dry", action="store_true",
                         help="report what would be excluded; change nothing")
+    parser.add_argument("--backfill-senders", action="store_true",
+                        help="recover meta.from from Gmail for older rows, then "
+                             "apply the named-sender rule")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
 
@@ -114,6 +210,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with db.get_conn() as conn:
             since = datetime.now(timezone.utc) - timedelta(days=args.days)
+            if args.backfill_senders:
+                stats = backfill_senders(conn, since=since, dry=args.dry)
+                print(
+                    f"senders: {stats['filled']}/{stats['seen']} recovered, "
+                    f"{stats['excluded']} excluded, {stats['unreadable']} unreadable"
+                )
             marked = mark_fan_out(conn, since=since, dry=args.dry)
             verb = "would exclude" if args.dry else "excluded"
             print(f"{verb} {len(marked)} signal(s)")
