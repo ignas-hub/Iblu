@@ -973,3 +973,73 @@ closed, because fixing the cause did not change what the model was shown.
 > **Rule: the sense-check judges the day that was BUILT.** Exclusions go in as
 > a count with "object if wrong", because the model is the oversight on a
 > judgement the scripts made and cannot object to what it is never told.
+
+---
+
+## 29. A password change, and the subsystem that was never watched (2026-10-01)
+
+**`ignas@blanklabel.team` went offline at 08:30 because he changed his Google
+password that morning.** Google revokes a refresh token when the account
+password changes. The error — `invalid_grant: Token has been expired or
+revoked` — took an afternoon to interpret, and IBLU's own message actively
+misled: "if the OAuth client secret was rotated, update it in .env" describes a
+different failure. `google_auth.reauth_hint` now answers by failure shape, and
+the watchdog alert carries that text to his phone.
+
+> **Ordering rule: test `invalid_rapt` BEFORE `invalid_grant`.** Google reports
+> session-control reauth as `invalid_grant: reauth related error
+> (invalid_rapt)` — the string contains `invalid_grant`, so the obvious order
+> blames a password change for a Workspace policy.
+
+Re-authorising needs a browser sign-in, which is the one part Claude cannot do,
+and it broke while he was away from his Mac. `connect_google.py --manual` now
+works from a phone: it lets Google's redirect to `http://localhost:8765/` fail,
+because the authorisation code is a string in the URL rather than something the
+loopback server computes. The browser shows "cannot connect" and the code is
+still in the address bar. PKCE survives because one process both builds the URL
+and exchanges the code.
+
+**Then I nearly broke something while cleaning up.** I proposed dropping the
+`pubsub` scope from the primary account as unused. Three checks agreed it was
+dormant and all three were wrong in the same way — I looked for a process, and
+it is a thread:
+
+| check | said | why it was wrong |
+|---|---|---|
+| `systemctl is-active iblu-readstate.service` | inactive | no such unit; it is a thread inside `iblu-mcp.service` |
+| `pgrep -af readstate_worker` | nothing | a thread has no process name |
+| `collector_state` rows | 0 | it keeps none; its state is an in-memory cache |
+
+The journal settled it: three `readstate event:` lines in the three minutes it
+took to look. The worker feeds `chat.py::_get_last_read_time`, and across 277
+spaces a cache miss costs one Chat API call each.
+
+> **Rule: before removing a capability, find the evidence it is unused in the
+> journal of the process that would use it.** A missing unit, a missing process
+> and a missing database row are all consistent with a thread working perfectly.
+
+So the Cloud-session-control risk is a real cost buying a real benefit, on the
+one account that can afford it: BLT's Workspace does not enforce that policy,
+which is why BLT ran three months on one sign-in while Deadlift and Choco
+failed every refresh. `test_the_primary_keeps_pubsub_and_the_others_do_not`
+fails if a future cleanup takes either half of that away.
+
+**And the gap it exposed is now closed.** The worker had no unit, so nothing
+watched it, and its failure mode is silent: `chat_list_unread` keeps working and
+merely gets slow. `watchdog.check_readstate` asks the MCP server's own health
+endpoint — over `settings.mcp_host`, which on this box is a docker bridge
+address and not 127.0.0.1, and deliberately not via the public URL, where a
+reverse-proxy outage would be reported as a worker fault.
+
+Severity is split three ways on purpose: a dead thread is an `error` because
+only a restart fixes it; an unreachable endpoint is a `warn` because
+`check_units` already raises the error when the server is down, and two findings
+for one cause is how the watchdog cried wolf before; and silence is only
+reported when a recent chat signal proves he has been in Chat at all, because
+readstate events arrive when he READS a space and overnight silence is correct.
+
+Also closed: the watchdog was watching five of seven units. It now watches the
+day card (`error`) and the dashboard (`warn` — recording carries on without it),
+and `test_every_installed_unit_is_watched` reads `deploy/` and fails until
+`UNITS` is told about any new unit file. `iblu-watchdog.timer` stays absent by
+design: a dead watchdog cannot report its own death.

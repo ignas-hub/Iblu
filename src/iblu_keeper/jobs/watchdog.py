@@ -254,6 +254,110 @@ def check_google_auth() -> list[dict]:
     return found
 
 
+# How long without a readstate event before the subscription looks lapsed, and
+# how recent his Chat activity must be for that silence to mean anything. Events
+# arrive when he READS a space, so overnight silence is correct behaviour — the
+# only honest version of this check needs evidence he has been in Chat at all.
+READSTATE_SILENT_HOURS = 6
+READSTATE_ACTIVE_WITHIN_HOURS = 3
+
+
+def readstate_health(timeout: float = 5.0) -> dict | None:
+    """The MCP server's own view of its readstate worker, or None if unreachable.
+
+    Asked over the loopback bind rather than the public URL: going out through
+    DNS, TLS and the reverse proxy would report a proxy outage as a worker fault.
+    `settings.mcp_host` is the same value the server passes to uvicorn, which on
+    this box is a docker bridge address rather than 127.0.0.1 — hardcoding
+    localhost here silently returns None forever.
+    """
+    import requests
+
+    try:
+        response = requests.get(
+            f"http://{settings.mcp_host}:{settings.mcp_port}/health", timeout=timeout
+        )
+        if response.status_code >= 400:
+            return None
+        return (response.json() or {}).get("readstate_worker")
+    except Exception:  # noqa: BLE001 — unreachable is an answer, not a crash
+        return None
+
+
+def check_readstate(conn, now: datetime | None = None) -> list[dict]:
+    """Is the Chat read-state cache still being fed?
+
+    It has no systemd unit of its own — it is a thread inside iblu-mcp.service,
+    which is why nothing watched it. When Pub/Sub stops delivering, nothing
+    breaks: `chat.py::_get_last_read_time` falls back to one Chat API call per
+    space, across 277 spaces, and `chat_list_unread` just gets slow. Silent
+    degradation, the same shape as the collector that swallowed a NameError for
+    days.
+    """
+    now = now or datetime.now(timezone.utc)
+    health = readstate_health()
+    if health is None:
+        # Deliberately a warning, and deliberately not silent. If the server is
+        # down, `check_units` raises its own error and that is the one that
+        # reaches his phone; this would be noise at best. But a unit that is
+        # active while its health endpoint refuses is a real and separate fault,
+        # and it should be visible somewhere.
+        return [_flag(
+            "readstate_unreachable",
+            "the MCP server's health endpoint did not answer, so the Chat "
+            "read-state worker cannot be checked",
+            detail=f"Tried http://{settings.mcp_host}:{settings.mcp_port}/health. "
+                   "If iblu-mcp.service is also reported down, fix that first — "
+                   "this finding is a consequence of it.",
+            fp_parts=("readstate", "unreachable"),
+        )]
+
+    if not health.get("worker_alive"):
+        return [_flag(
+            "readstate_worker_dead",
+            "the Chat read-state worker thread has died",
+            severity="error",
+            detail="It is a thread inside iblu-mcp.service, so it cannot restart "
+                   "itself: `sudo systemctl restart iblu-mcp.service`. Until then "
+                   "chat_list_unread works but makes one Chat API call per space.",
+            evidence={k: health.get(k) for k in ("ready", "cached_spaces")},
+            fp_parts=("readstate", "dead"),
+        )]
+
+    # Silence only means something if he has been using Chat. `last_event_at` is
+    # an epoch float from `readstate_worker.snapshot()`.
+    last_event = health.get("last_event_at")
+    if not last_event:
+        return []
+    silent_for = now - datetime.fromtimestamp(float(last_event), timezone.utc)
+    if silent_for < timedelta(hours=READSTATE_SILENT_HOURS):
+        return []
+
+    row = conn.execute(
+        "SELECT max(occurred_at) AS at FROM signals WHERE source = 'chat'"
+    ).fetchone()
+    newest_chat = row["at"] if row else None
+    if newest_chat is None or now - newest_chat > timedelta(
+        hours=READSTATE_ACTIVE_WITHIN_HOURS
+    ):
+        return []          # he has not been in Chat either — silence is correct
+
+    return [_flag(
+        "readstate_stale",
+        f"no Chat read-state event for {int(silent_for.total_seconds() // 3600)}h "
+        "although Chat is being used",
+        detail="The Workspace Events subscription expires after 7 days and is "
+               "re-created every 6. If that refresh loop died, events stop and "
+               "chat_list_unread silently falls back to per-space API calls. "
+               "`sudo systemctl restart iblu-mcp.service` re-creates it.",
+        evidence={
+            "silent_hours": round(silent_for.total_seconds() / 3600, 1),
+            "newest_chat_signal": str(newest_chat),
+        },
+        fp_parts=("readstate", "stale"),
+    )]
+
+
 def check_database(conn) -> list[dict]:
     """The analyst should have produced something for the last working day."""
     row = conn.execute(
@@ -280,6 +384,7 @@ WATCHDOG_KINDS = (
     "tick_never_ran", "tick_stale",
     "backups_unreadable", "backups_missing", "backups_stale",
     "google_auth_failed", "analyst_stale",
+    "readstate_unreachable", "readstate_worker_dead", "readstate_stale",
 )
 
 
@@ -312,6 +417,7 @@ def run_checks(conn) -> list[dict]:
         ("tick", lambda: check_tick_freshness(conn)),
         ("backups", lambda: check_backups()),
         ("auth", lambda: check_google_auth()),
+        ("readstate", lambda: check_readstate(conn)),
         ("analyst", lambda: check_database(conn)),
     ):
         try:

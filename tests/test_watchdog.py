@@ -386,3 +386,114 @@ def test_a_long_detail_is_still_cut_at_a_word():
     ]
     assert line.endswith("…"), "a cut must say it was cut"
     assert len(line) <= W.DETAIL_CHARS + 4
+
+
+# --- the Chat read-state worker (2026-10-01) -------------------------------
+#
+# It has no systemd unit of its own — it is a thread inside iblu-mcp.service,
+# which is why nothing watched it. When Pub/Sub stops delivering, nothing
+# breaks: `_get_last_read_time` falls back to one Chat API call per space,
+# across 277 spaces, and chat_list_unread merely gets slow. Silent degradation.
+
+
+NOW = datetime(2026, 10, 1, 16, 0, tzinfo=UTC)
+
+
+def _chat_seen(ago_hours: float) -> _Conn:
+    return _Conn({"max(occurred_at)": [{"at": NOW - timedelta(hours=ago_hours)}]})
+
+
+def _health(monkeypatch, snapshot):
+    monkeypatch.setattr(W, "readstate_health", lambda *a, **k: snapshot)
+
+
+def test_a_healthy_worker_says_nothing(monkeypatch):
+    _health(monkeypatch, {
+        "worker_alive": True, "ready": True, "cached_spaces": 4,
+        "last_event_at": (NOW - timedelta(minutes=5)).timestamp(),
+    })
+    assert W.check_readstate(_chat_seen(0.5), now=NOW) == []
+
+
+def test_a_dead_worker_thread_is_an_error(monkeypatch):
+    """It cannot restart itself — it is a thread, so the whole server must go."""
+    _health(monkeypatch, {"worker_alive": False, "ready": False, "cached_spaces": 0})
+    [f] = W.check_readstate(_chat_seen(0.5), now=NOW)
+    assert f["kind"] == "readstate_worker_dead"
+    assert f["severity"] == "error"
+    assert "restart iblu-mcp.service" in f["detail"]
+
+
+def test_an_unreachable_health_endpoint_is_a_warning_not_an_error(monkeypatch):
+    """`check_units` already raises the error when the server is down.
+
+    Two findings about one cause is how the watchdog cried wolf before: six
+    alerts in two days, several of them the same thing twice. A warning stays
+    visible in the log without buzzing his phone a second time.
+    """
+    _health(monkeypatch, None)
+    [f] = W.check_readstate(_chat_seen(0.5), now=NOW)
+    assert f["kind"] == "readstate_unreachable"
+    assert f["severity"] == "warn"
+    assert "fix that first" in f["detail"]
+
+
+def test_overnight_silence_is_correct_behaviour_not_a_fault(monkeypatch):
+    """Events arrive when he READS a space. Asleep, there are none, correctly.
+
+    Without this guard the check would fire every morning, which is the fastest
+    way to teach him to ignore it.
+    """
+    _health(monkeypatch, {
+        "worker_alive": True, "ready": True,
+        "last_event_at": (NOW - timedelta(hours=9)).timestamp(),
+    })
+    assert W.check_readstate(_chat_seen(9), now=NOW) == []
+
+
+def test_silence_while_he_is_using_chat_is_a_lapsed_subscription(monkeypatch):
+    """The realistic failure: the 6-day subscription-refresh loop died."""
+    _health(monkeypatch, {
+        "worker_alive": True, "ready": True,
+        "last_event_at": (NOW - timedelta(hours=8)).timestamp(),
+    })
+    [f] = W.check_readstate(_chat_seen(1), now=NOW)
+    assert f["kind"] == "readstate_stale"
+    assert f["severity"] == "warn", "inferential, so it does not wake him"
+    assert "8h" in f["summary"]
+    assert "expires after 7 days" in f["detail"]
+
+
+def test_a_worker_that_has_never_seen_an_event_is_not_reported(monkeypatch):
+    """A freshly restarted server has no last_event_at, and that is not a fault."""
+    _health(monkeypatch, {"worker_alive": True, "ready": False, "last_event_at": None})
+    assert W.check_readstate(_chat_seen(0.5), now=NOW) == []
+
+
+def test_health_is_asked_over_the_configured_bind_not_localhost():
+    """On this box the server binds to a docker bridge address, not 127.0.0.1.
+
+    Hardcoding localhost returns None forever — the check would be permanently
+    "unreachable" and the finding permanently wrong. Going out via the public
+    URL instead would report a reverse-proxy outage as a worker fault.
+    """
+    import inspect
+
+    source = inspect.getsource(W.readstate_health)
+    # The URL it builds, not the prose explaining why — the docstring names the
+    # wrong address deliberately, as the thing NOT to do.
+    assert 'f"http://{settings.mcp_host}:{settings.mcp_port}/health"' in source
+    body = source.split('"""')[-1]
+    assert "127.0.0.1" not in body
+    assert "mcp_public_base_url" not in body
+
+
+def test_the_readstate_findings_can_retire_themselves():
+    """Every kind this module records must be in WATCHDOG_KINDS.
+
+    `retire_cleared` only closes its own kinds, so a finding missing from that
+    tuple stays open forever and is re-announced every six hours — which is
+    exactly what happened before retirement existed at all.
+    """
+    for kind in ("readstate_unreachable", "readstate_worker_dead", "readstate_stale"):
+        assert kind in W.WATCHDOG_KINDS
