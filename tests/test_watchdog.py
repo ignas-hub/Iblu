@@ -340,3 +340,49 @@ def test_a_worsening_disk_is_not_reported_as_cleared():
         W2.shutil.disk_usage = original
     assert warn["severity"] == "warn" and err["severity"] == "error"
     assert warn["fp"] == err["fp"], "the same condition must keep one fingerprint"
+
+
+def test_the_alert_keeps_the_command_whole(monkeypatch):
+    """180 characters cut the phone-runnable command to "...Fro".
+
+    The last line of a finding's detail is the one that says what to do. A
+    command he can run from the alert is usually the entire point of the
+    message, so it must survive truncation intact and the cut must land on a
+    word rather than mid-token.
+    """
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from iblu_keeper.google_auth import reauth_hint
+
+    exc = Exception("('invalid_grant: Token has been expired or revoked.', "
+                    "{'error': 'invalid_grant'})")
+    row = {
+        "summary": "the blt Google account can no longer refresh its token",
+        "detail": f"{exc}\n\n{reauth_hint('blt', exc)}",
+        "occurrences": 16,
+        "first_seen_at": datetime(2026, 10, 1, 8, 30, tzinfo=timezone.utc),
+    }
+    text = W.compose_alert(
+        [row], datetime(2026, 10, 1, 15, 0, tzinfo=timezone.utc)
+        .astimezone(ZoneInfo("Europe/Zagreb"))
+    )
+    assert "--account blt --manual" in text, "the phone command must not be cut"
+    assert "Fro\n" not in text and not text.endswith("Fro")
+
+
+def test_a_long_detail_is_still_cut_at_a_word():
+    from datetime import datetime, timezone
+
+    row = {
+        "summary": "something broke",
+        "detail": "x" + " verylongword" * 80,
+        "occurrences": 1,
+        "first_seen_at": datetime(2026, 10, 1, 8, 30, tzinfo=timezone.utc),
+    }
+    [line] = [
+        l for l in W.compose_alert([row], datetime(2026, 10, 1, 15, 0, tzinfo=timezone.utc)).splitlines()
+        if "verylongword" in l
+    ]
+    assert line.endswith("…"), "a cut must say it was cut"
+    assert len(line) <= W.DETAIL_CHARS + 4

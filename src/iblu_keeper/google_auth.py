@@ -166,17 +166,14 @@ def _load_credentials(alias: str | None = None):
                 logger.error("Google token refresh FAILED: %s", exc)
                 raise CredentialsUnavailable(
                     f"Google token refresh failed for {account['alias']!r}: "
-                    f"{exc}. If the OAuth client secret was rotated, update it "
-                    "in .env; otherwise re-run "
-                    f"`python scripts/connect_google.py --account {account['alias']}`."
+                    f"{exc}. {reauth_hint(account['alias'], exc)}"
                 ) from exc
             logger.info("Google token refreshed for %s.", account["alias"])
             _save_token(creds, path)
         else:
             raise CredentialsUnavailable(
                 f"Saved Google token for {account['alias']!r} is invalid and "
-                "cannot be refreshed. Re-run "
-                f"`python scripts/connect_google.py --account {account['alias']}`."
+                f"cannot be refreshed. {reauth_hint(account['alias'])}"
             )
     return creds
 
@@ -244,6 +241,56 @@ def get_credentials(scopes: Sequence[str] | None = None):  # noqa: ARG001
 # account cannot quietly hand back the first account's token — which would
 # attribute one person's mail to another.
 _creds_by_alias: dict[str, object] = {}
+
+
+def reauth_hint(alias: str, exc: BaseException | None = None) -> str:
+    """What to actually do about a refresh failure, by failure shape.
+
+    Written after an afternoon spent working out from first principles what
+    `invalid_grant: Token has been expired or revoked` meant. It meant he had
+    changed his Google password that morning: Google revokes a refresh token
+    when the account's password changes, so every password change silently
+    takes IBLU's primary account offline until somebody signs in again. The
+    message said "if the OAuth client secret was rotated, update it in .env" —
+    true, but the wrong cause, and it sent the diagnosis down the wrong path.
+
+    A message that names the likeliest cause turns a half-hour into a minute,
+    and the watchdog alert carries this same text to his phone.
+    """
+    text = str(exc or "").lower()
+    command = f"python scripts/connect_google.py --account {alias}"
+    # Runnable from a phone — no desktop browser, no SSH tunnel. Always worth
+    # saying, because this breaks while he is away from his Mac as often as not.
+    anywhere = f"From a phone: `{command} --manual`."
+
+    # `invalid_rapt` FIRST. Google reports it as
+    # `invalid_grant: reauth related error (invalid_rapt)` — it contains the
+    # string `invalid_grant`, so testing that first swallows it and blames a
+    # password change for a Cloud session-control policy. Caught by the test
+    # below, which is the whole reason this function has one.
+    if "invalid_rapt" in text:
+        # The failure that cost days on Deadlift and Choco. See the scope
+        # comment above: a Cloud Platform scope drags the token under the
+        # Workspace's Google Cloud session control policy.
+        return (
+            "`invalid_rapt` is Google Cloud session control, not a bad token: "
+            "the Workspace is demanding periodic reauthentication because this "
+            "token carries a Cloud Platform scope. Dropping that scope fixes it "
+            f"for good; re-authorising only buys time. Meanwhile: `{command}`."
+        )
+    if "invalid_grant" in text:
+        return (
+            "The refresh token is gone, not stale — almost always because the "
+            f"Google password for this account changed today. Re-authorise: "
+            f"`{command}`. {anywhere}"
+        )
+    if "invalid_client" in text:
+        return (
+            "`invalid_client` is the client secret, not the token. Update "
+            f"GOOGLE_* client id/secret in .env — refresh tokens survive a "
+            "secret rotation, so no sign-in is needed."
+        )
+    return f"Re-authorise: `{command}`. {anywhere}"
 
 
 def get_credentials_for(alias: str | None, scopes: Sequence[str] | None = None):

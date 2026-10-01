@@ -83,6 +83,10 @@ ALERT_COOLDOWN = timedelta(hours=6)
 # at 03:00 is announced at 08:00 — it is not lost, it is queued.
 ALERT_FROM, ALERT_UNTIL = 8, 21
 
+# How much of a finding's last line reaches his phone. Enough for a command he
+# can run from it, which is usually the entire point of the message.
+DETAIL_CHARS = 340
+
 
 def _flag(kind: str, summary: str, *, severity="warn", detail=None, evidence=None,
           fp_parts=()) -> dict:
@@ -234,13 +238,16 @@ def check_google_auth() -> list[dict]:
             # The message can carry a URL; scrub it the same way delivery does.
             from ..pings.deliver import _scrub
 
+            # The hint is shaped by the failure, and `compose_alert` sends the
+            # LAST line of this detail to his phone — so the line he reads is
+            # the one that says what to do, not the raw exception.
+            from ..google_auth import reauth_hint
+
             found.append(_flag(
                 "google_auth_failed",
                 f"the {alias} Google account can no longer refresh its token",
                 severity="error",
-                detail=f"{_scrub(exc)}\n\nRe-authorize with "
-                       f"`python scripts/connect_google.py --account {alias}` "
-                       f"(needs a browser sign-in as that account).",
+                detail=f"{_scrub(exc)}\n\n{reauth_hint(alias, exc)}",
                 evidence={"alias": alias},
                 fp_parts=("auth", alias),
             ))
@@ -375,7 +382,13 @@ def compose_alert(rows: list[dict], now_local: datetime) -> str:
         lines.append(f"  going on {since}, seen {r['occurrences']}x")
         detail = (r["detail"] or "").strip().splitlines()
         if detail:
-            lines.append(f"  {detail[-1][:180]}")
+            # The last line is the one that says what to do, and 180 characters
+            # cut the phone-runnable command in half — "...Fro". A `read -rs` or
+            # a `--manual` invocation is the single most useful thing in the
+            # message, so it gets the room, and the cut lands on a word.
+            from ..pings.compose import _trim_to_word
+
+            lines.append(f"  {_trim_to_word(detail[-1], DETAIL_CHARS)}")
     lines.append("")
     lines.append("_`python -m iblu_keeper.store.observations` for the full list._")
     return "\n".join(lines)

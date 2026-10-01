@@ -93,3 +93,71 @@ def test_tokens_are_url_safe():
 def test_tap_url_shape():
     t = tokens.make_token(7, "split", "A", SECRET, sent_at=NOW)
     assert tokens.tap_url("https://mcp.iblugames.com/", t) == f"https://mcp.iblugames.com/q/{t}"
+
+
+# --- what to do about a refresh failure, by failure shape -----------------
+#
+# 2026-10-01: `invalid_grant: Token has been expired or revoked` on the primary
+# account took an afternoon to diagnose. It meant he had changed his Google
+# password that morning — Google revokes a refresh token when the account
+# password changes. The message said "if the OAuth client secret was rotated,
+# update it in .env", which is true of a different failure and sent the
+# diagnosis down the wrong path.
+
+
+def test_a_revoked_token_blames_the_password_change():
+    from iblu_keeper.google_auth import reauth_hint
+
+    hint = reauth_hint("blt", Exception(
+        "('invalid_grant: Token has been expired or revoked.', "
+        "{'error': 'invalid_grant'})"
+    ))
+    assert "password" in hint
+    assert "--manual" in hint, "it breaks while he is away from his Mac"
+
+
+def test_invalid_rapt_is_not_mistaken_for_a_password_change():
+    """Google reports it as `invalid_grant: reauth related error (invalid_rapt)`.
+
+    The string contains `invalid_grant`, so testing that first swallows it and
+    blames a password change for a Google Cloud session-control policy — which
+    is the same class of misdiagnosis this function exists to end. Ordering is
+    the contract here, not an implementation detail.
+    """
+    from iblu_keeper.google_auth import reauth_hint
+
+    hint = reauth_hint("deadlift", Exception(
+        "invalid_grant: reauth related error (invalid_rapt)"
+    ))
+    assert "session control" in hint
+    assert "password" not in hint
+    assert "Cloud Platform scope" in hint, "the cause is the scope, not the token"
+
+
+def test_a_rotated_secret_does_not_ask_for_a_sign_in():
+    """Refresh tokens survive a secret rotation — they are tied to the client id."""
+    from iblu_keeper.google_auth import reauth_hint
+
+    hint = reauth_hint("choco", Exception("invalid_client: Unauthorized"))
+    assert ".env" in hint
+    assert "connect_google" not in hint
+
+
+def test_an_unrecognised_failure_still_says_something_useful():
+    from iblu_keeper.google_auth import reauth_hint
+
+    for exc in (Exception("connection reset by peer"), None):
+        hint = reauth_hint("blt", exc)
+        assert "connect_google.py --account blt" in hint
+        assert "--manual" in hint
+
+
+def test_the_watchdog_alert_carries_the_hint_to_his_phone():
+    """`compose_alert` sends the LAST line of `detail`, so the hint must be last."""
+    import inspect
+
+    from iblu_keeper.jobs import watchdog
+
+    source = inspect.getsource(watchdog.check_google_auth)
+    assert "reauth_hint(alias, exc)" in source
+    assert source.index("_scrub(exc)") < source.index("reauth_hint(alias, exc)")
