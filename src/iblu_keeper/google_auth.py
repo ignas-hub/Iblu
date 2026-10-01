@@ -69,6 +69,30 @@ SCOPES: tuple[str, ...] = (
 # (`readstate_worker` calls `get_credentials()`, never `get_credentials_for`),
 # so Deadlift and Choco were carrying a scope they never use and paying for it
 # with an outage every day or so.
+# The primary account KEEPS it, and this is load-bearing. Checked 2026-10-01
+# while about to remove it as unused — three checks all said it was dormant and
+# all three were wrong in the same way:
+#
+#   * `systemctl is-active iblu-readstate.service` -> inactive. There is no such
+#     unit. The worker is a THREAD inside iblu-mcp.service (`server.py` calls
+#     `readstate_worker.start_worker()` at import).
+#   * `pgrep -af readstate_worker` -> nothing. A thread has no process name.
+#   * `collector_state WHERE name LIKE '%readstate%'` -> 0 rows. It does not use
+#     collector_state; its state is an in-memory cache.
+#
+# What settled it was the journal: `readstate event: spaces/... lastRead=...`
+# three times in the three minutes it took to look. The worker feeds
+# `chat.py::_get_last_read_time`, which decides whether a space is unread. With
+# 277 spaces, a cache miss is one extra Chat API call PER SPACE.
+#
+# So the Cloud-session-control risk is a real cost paid for a real benefit, and
+# only on the account that can afford it: BLT's Workspace does not enforce that
+# policy, which is why BLT ran three months on one sign-in while Deadlift and
+# Choco — whose Workspaces DO enforce it — failed every refresh with
+# `invalid_rapt` until this set was introduced.
+#
+# Do not remove `pubsub` from the primary without first confirming, in the MCP
+# server's journal, that no readstate events are arriving.
 PRIMARY_ONLY_SCOPES: frozenset[str] = frozenset({
     "https://www.googleapis.com/auth/pubsub",
 })

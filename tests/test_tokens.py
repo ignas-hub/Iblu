@@ -161,3 +161,29 @@ def test_the_watchdog_alert_carries_the_hint_to_his_phone():
     source = inspect.getsource(watchdog.check_google_auth)
     assert "reauth_hint(alias, exc)" in source
     assert source.index("_scrub(exc)") < source.index("reauth_hint(alias, exc)")
+
+
+def test_the_primary_keeps_pubsub_and_the_others_do_not():
+    """A guard against a cleanup that looks obviously right and is not.
+
+    On 2026-10-01 `pubsub` was about to be dropped from the primary as unused.
+    Three checks said the readstate worker was dormant and all three were wrong:
+    there is no `iblu-readstate.service` (it is a thread inside
+    `iblu-mcp.service`), `pgrep` cannot see a thread, and the worker keeps no
+    `collector_state` row. It was in fact processing events as the check ran.
+
+    The scope feeds `chat.py::_get_last_read_time`, which decides whether a
+    space is unread. Across 277 spaces a cache miss costs one Chat API call
+    each, so removing it degrades `chat_list_unread` rather than breaking it —
+    the kind of regression nothing notices.
+    """
+    from iblu_keeper.config import settings
+    from iblu_keeper.google_auth import scopes_for
+
+    pubsub = "https://www.googleapis.com/auth/pubsub"
+    assert pubsub in scopes_for(settings.primary_alias)
+    for alias in ("deadlift", "choco"):
+        assert pubsub not in scopes_for(alias), (
+            f"{alias}'s Workspace enforces Google Cloud session control; a Cloud "
+            "scope there means invalid_rapt on every refresh"
+        )
