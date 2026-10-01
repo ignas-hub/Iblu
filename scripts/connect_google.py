@@ -90,6 +90,12 @@ def main() -> int:
         prompt="consent",
         access_type="offline",
         open_browser=False,
+        # Pre-select the account on Google's own page. Without it the URL lands
+        # on whichever identity the browser happens to be signed in as, and
+        # with three Workspaces in one browser that is a coin toss — the check
+        # below then refuses the token and the whole flow has to be redone.
+        # Google treats this as a hint, not a lock: he can still switch.
+        **({"login_hint": account["email"]} if account["email"] else {}),
     )
 
     # Refuse to save a token for the wrong account — authorising as the wrong
