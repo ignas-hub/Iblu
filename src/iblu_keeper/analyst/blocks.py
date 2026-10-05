@@ -995,6 +995,9 @@ def load_intents(conn, start: datetime, end: datetime) -> list[Interval]:
 
     intents: list[Interval] = []
     for calendar_id, account, default_venture, needs_commitment_check in sources:
+        unreadable_fp = obs.fingerprint(
+            "analyst", "intent_calendar_unreadable", calendar_id, account
+        )
         try:
             service = build_service("calendar", "v3", account=account)
             items = calendar_manage._fetch_events(service, calendar_id, start, end)
@@ -1008,9 +1011,20 @@ def load_intents(conn, start: datetime, end: datetime) -> list[Interval]:
                 summary=f"calendar {calendar_id!r} on account {account!r} could not be read",
                 detail=str(exc)[:500],
                 evidence={"calendar_id": calendar_id, "account": account},
-                fp=obs.fingerprint("analyst", "intent_calendar_unreadable", calendar_id, account),
+                fp=unreadable_fp,
             )
             continue
+
+        # The read worked, so any standing "could not be read" note for this
+        # calendar is now false. Nothing else would ever close it: this finding
+        # is `source='analyst'`, and the only retirement sweep for rule findings
+        # is `sensecheck._retire_fixed_rules`, which filters on
+        # `source='sensecheck'` AND a day in `evidence`. Three of these sat open
+        # for four days describing a token re-authorised on the first.
+        obs.resolve_fingerprint(
+            unreadable_fp,
+            "cleared: the calendar was read successfully on a later analyst run",
+        )
 
         for event in items:
             iv = _compact_intent(

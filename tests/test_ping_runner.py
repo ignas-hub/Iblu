@@ -97,3 +97,27 @@ def test_answered_instance_keys_never_raises_on_a_bad_query():
             raise RuntimeError("db hiccup")
 
     assert runner._answered_instance_keys(_Boom(), ["k1"]) == set()
+
+
+def test_a_tick_with_nothing_to_read_still_records_that_it_ran():
+    """A quiet reply reader must not look like a dead one.
+
+    `read_thread_replies` returned early when no ping or day card was inside
+    the 48h lookback, without touching `collector_state` — so `last_run_at`
+    froze at the last tick that happened to find a live thread. It read Oct 2
+    17:50 for three days while the reader ran every ten minutes, and the
+    sense-check's "this collector stopped while its siblings carried on" rule
+    reported it as stalled. The same lesson the gmail watermark learned.
+    """
+    import inspect
+
+    from iblu_keeper.pings import answers
+
+    source = inspect.getsource(answers.read_thread_replies)
+    early = source.index("if not recent and not recent_daycards:")
+    returns = source.index("return 0", early)
+    between = source[early:returns]
+    assert "set_state" in between, "the empty path must record the run"
+    # `watermark=None` so set_state COALESCEs the existing one — nothing may be
+    # skipped, and on this path there was nothing in range to skip.
+    assert "watermark" not in between.split("set_state")[1].split(")")[0]

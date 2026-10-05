@@ -91,7 +91,15 @@ def test_a_collector_error_is_reported_with_its_own_fingerprint():
     ]})
     [f] = [f for f in S.run_rules(conn, DAY) if f["kind"] == "collector_error"]
     assert "gmail_sent:choco" in f["summary"]
-    assert f["severity"] == "error"
+    assert f["fp"] != S.run_rules(_Conn({
+        "SELECT name, watermark, last_run_at, last_error FROM collector_state": [
+            {"name": "gmail_sent:deadlift", "watermark": None, "last_run_at": None,
+             "last_error": "invalid_grant"},
+        ]}), DAY)[0]["fp"], "two accounts failing are two findings, not one"
+    # `invalid_grant` is an auth failure, so this is a warning by design: the
+    # watchdog's own auth check owns alerting on an expired token. See
+    # test_an_expired_token_does_not_alert_once_per_collector.
+    assert f["severity"] == "warn"
 
 
 def test_one_collector_not_running_while_the_others_do_is_flagged():
@@ -335,3 +343,114 @@ def test_exclusions_are_shown_as_a_count_not_hidden():
     source = inspect.getsource(sensecheck._snapshot)
     assert "DELIBERATELY EXCLUDED" in source
     assert "object if wrong" in source
+
+
+# --- findings that could never retire themselves (2026-10-05) --------------
+#
+# Four days after the blt token was re-authorised, six `error` findings were
+# still open describing it as broken, and three of them had been re-announced
+# to his phone every six hours throughout. Neither could reach retirement:
+#
+#   * `collector_error` is source='sensecheck' but carries no day in evidence,
+#     and `_retire_fixed_rules` filters on `evidence ->> 'date' = <the day>`;
+#   * `intent_calendar_unreadable` is source='analyst', so that sweep —
+#     which filters source='sensecheck' — never considers it at all.
+
+
+def test_a_collector_running_cleanly_clears_its_own_error_finding():
+    resolved: list[tuple[int, str]] = []
+
+    class _C(_Conn):
+        pass
+
+    conn = _C({
+        "FROM collector_state WHERE last_error IS NULL": [
+            {"name": "gmail_sent"}, {"name": "chat_sent"},
+        ],
+        "kind = 'collector_error'": [{"id": 1321}, {"id": 1322}],
+    })
+    import iblu_keeper.analyst.sensecheck as mod
+
+    real = mod.obs.resolve
+    mod.obs.resolve = lambda c, i, note: resolved.append((i, note)) or True
+    try:
+        assert mod.retire_cleared_collectors(conn) == 2
+    finally:
+        mod.obs.resolve = real
+
+    assert [i for i, _ in resolved] == [1321, 1322]
+    assert "run without error" in resolved[0][1]
+
+
+def test_nothing_is_cleared_while_every_collector_is_still_failing():
+    import iblu_keeper.analyst.sensecheck as mod
+
+    conn = _Conn({"FROM collector_state WHERE last_error IS NULL": []})
+    assert mod.retire_cleared_collectors(conn) == 0
+
+
+def test_retirement_is_keyed_on_the_live_condition_not_on_this_pass():
+    """`last_error IS NULL` is positive evidence; a missing finding is not.
+
+    `set_state(..., error=None)` clears it on any successful run, so NULL means
+    the collector worked — as opposed to `_retire_fixed_rules`, which can only
+    say "this pass did not re-report it".
+    """
+    import inspect
+
+    import iblu_keeper.analyst.sensecheck as mod
+
+    source = inspect.getsource(mod.retire_cleared_collectors)
+    assert "last_error IS NULL" in source
+    assert "kind = 'collector_error'" in source
+    assert "detected_by = 'rule'" in source
+
+
+def test_an_expired_token_does_not_alert_once_per_collector():
+    """One revoked token produced four phone alerts and re-sent all four every 6h.
+
+    `watchdog.check_google_auth` already reports an expired token as an error,
+    per account. The collector note is still recorded — it is just not the one
+    that should wake him, so an auth-caused collector failure is a warning.
+    """
+    conn = _Conn({"FROM collector_state": [
+        {"name": "gmail_sent", "watermark": None, "last_run_at": None,
+         "last_error": "Google token refresh failed for 'blt': invalid_grant: "
+                       "Token has been expired or revoked."},
+    ]})
+    [f] = [f for f in S.run_rules(conn, DAY) if f["kind"] == "collector_error"]
+    assert f["severity"] == "warn"
+    assert f["evidence"]["auth_failure"] is True
+    assert "auth finding owns alerting" in f["detail"]
+
+
+def test_a_collector_failing_for_any_other_reason_is_still_an_error():
+    conn = _Conn({"FROM collector_state": [
+        {"name": "git_commits", "watermark": None, "last_run_at": None,
+         "last_error": "fatal: could not read from remote repository"},
+    ]})
+    [f] = [f for f in S.run_rules(conn, DAY) if f["kind"] == "collector_error"]
+    assert f["severity"] == "error"
+    assert f["evidence"]["auth_failure"] is False
+
+
+def test_a_calendar_that_reads_clears_its_unreadable_finding():
+    """Same fingerprint both ways, or the clear cannot find what the record wrote."""
+    import inspect
+
+    from iblu_keeper.analyst import blocks
+
+    source = inspect.getsource(blocks.load_intents)
+    assert "unreadable_fp" in source
+    # Recorded and cleared under one variable, computed once before the try.
+    assert source.count("unreadable_fp") >= 3
+    assert "resolve_fingerprint" in source
+    assert source.index("unreadable_fp = obs.fingerprint") < source.index("try:")
+
+
+def test_clearing_a_finding_never_breaks_the_work_that_disproved_it(monkeypatch):
+    from iblu_keeper.store import observations as obs
+
+    monkeypatch.setattr("iblu_keeper.db.is_configured",
+                        lambda: (_ for _ in ()).throw(RuntimeError("down")))
+    assert obs.resolve_fingerprint("deadbeef", "cleared") is False

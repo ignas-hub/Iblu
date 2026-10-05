@@ -452,6 +452,20 @@ def read_thread_replies(conn: psycopg.Connection, *, dry: bool = False) -> int:
         (datetime.now(timezone.utc) - REPLY_LOOKBACK,),
     ).fetchall()
     if not recent and not recent_daycards:
+        # "I looked, and there was nothing to look at" is a run, and it has to
+        # be recorded as one. Returning here without touching the state left
+        # `last_run_at` frozen at the last tick that happened to find a live
+        # thread — so a reply reader working perfectly looked exactly like one
+        # that had died, and the sense-check's "this collector stopped while
+        # its siblings carried on" rule reported it as stalled every time he
+        # went 48 hours without a ping or a day card. The same lesson the gmail
+        # watermark learned: a quiet source must not read as a broken one.
+        #
+        # `watermark=None` keeps the existing watermark (set_state COALESCEs
+        # it) and stamps `last_run_at` alone — nothing is skipped, because
+        # there was nothing in range to skip.
+        if not dry:
+            set_state(conn, "secretary_replies", error=None)
         return 0
     by_thread = {row["chat_thread_ref"]: row for row in recent}
     daycard_by_thread = {row["chat_thread_ref"]: row for row in recent_daycards}

@@ -202,13 +202,27 @@ def run_rules(conn, on: date) -> list[dict]:
     newest_run = max(runs) if runs else None
     for row in collectors:
         if row["last_error"]:
+            # An expired token is ONE problem, and `watchdog.check_google_auth`
+            # already reports it as an error per account. Left at `error` here
+            # too, one revoked token produced four alerts on his phone — the
+            # auth finding plus one per collector that uses that account — and
+            # then re-announced all four every six hours for two days. The
+            # collector note is still worth recording; it is just not the one
+            # that should wake him.
+            auth_failure = any(
+                marker in row["last_error"].lower()
+                for marker in ("token refresh failed", "invalid_grant", "invalid_rapt")
+            )
             _flag(
                 "collector_error",
                 f"collector {row['name']} last failed: {row['last_error'][:120]}",
-                severity="error",
+                severity="warn" if auth_failure else "error",
                 detail="One collector failing never stops the others, which is "
-                       "why this can go unnoticed for days.",
-                evidence={"collector": row["name"], "error": row["last_error"][:500]},
+                       "why this can go unnoticed for days."
+                       + (" The account's token is the cause; the auth finding "
+                          "owns alerting on it." if auth_failure else ""),
+                evidence={"collector": row["name"], "error": row["last_error"][:500],
+                          "auth_failure": auth_failure},
                 fp_parts=(row["name"], (row["last_error"] or "")[:60]),
             )
         # A collector that has simply stopped running, while its siblings carry
@@ -483,6 +497,10 @@ def run(conn, on: date, *, use_llm: bool = True) -> dict:
     retired = 0
     if not dry_run_like(findings):
         retired = _retire_fixed_rules(conn, on, findings)
+        # Not day-scoped, so it sits outside the sweep above and runs whatever
+        # day is being checked. Keyed on `last_error IS NULL`, which is a fact
+        # about now rather than about `on`.
+        retired += retire_cleared_collectors(conn)
 
     logger.info(
         "sensecheck %s: %d finding(s) recorded (llm=%s)", on, recorded, llm_ok
@@ -506,6 +524,44 @@ def dry_run_like(findings: list[dict]) -> bool:
     difference between "fixed" and "not checked".
     """
     return any(f.get("kind") == "_rules_pass_failed" for f in findings)
+
+
+def retire_cleared_collectors(conn) -> int:
+    """Close `collector_error` findings for collectors that now run cleanly.
+
+    `_retire_fixed_rules` cannot reach these. It scopes retirement to
+    `evidence ->> 'date' = <the day>`, and a collector error is not about a day,
+    so it carries no date and is never considered. Three of them stayed open and
+    kept alerting for days, quoting an error message from a token that had been
+    re-authorised on the first.
+
+    Keyed on the live condition rather than on "did this pass re-report it":
+    `set_state(..., error=None)` clears `last_error` on any successful run, so a
+    NULL there is positive evidence the collector is working — not merely the
+    absence of a finding.
+    """
+    healthy = [r["name"] for r in conn.execute(
+        "SELECT name FROM collector_state WHERE last_error IS NULL"
+    ).fetchall()]
+    if not healthy:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT id FROM observations
+         WHERE status = 'open' AND detected_by = 'rule'
+           AND kind = 'collector_error'
+           AND evidence ->> 'collector' = ANY(%s)
+        """,
+        (healthy,),
+    ).fetchall()
+    retired = 0
+    for row in rows:
+        if obs.resolve(
+            conn, row["id"],
+            "cleared: the collector has since run without error",
+        ):
+            retired += 1
+    return retired
 
 
 def _retire_fixed_rules(conn, on: date, findings: list[dict]) -> int:

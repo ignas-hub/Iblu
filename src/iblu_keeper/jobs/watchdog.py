@@ -358,6 +358,63 @@ def check_readstate(conn, now: datetime | None = None) -> list[dict]:
     )]
 
 
+# How many unanswered day cards before the ground-truth loop is judged broken.
+# Two is enough to distinguish "he was busy that evening" from "this is not
+# working", and few enough that it is said while it can still be fixed.
+DAYCARD_UNANSWERED_LIMIT = 2
+
+
+def check_day_cards(conn) -> list[dict]:
+    """Is the day card producing any ground truth at all?
+
+    Everything else here asks whether a machine is running. This asks whether
+    the one feedback loop in IBLU is closing, and it exists because that loop
+    failed silently for its first four days: two cards delivered, both working
+    — route healthy, buttons signed, a friendly 410 on a bad token — and zero
+    taps, so `blocks` still held 290 rows of which not one was confirmed.
+
+    Nothing noticed, because nothing was looking. The day card is the ONLY path
+    from a reconstruction to a fact, and `jobs/audit.py` refuses to print an
+    accuracy figure with an empty denominator — so a card nobody answers leaves
+    the whole system permanently unable to say how right it is, which is
+    exactly the state the card was built to end.
+
+    A warning, never an error. He is the one not answering, and buzzing his
+    phone about not answering is nagging. This is addressed to whoever can make
+    the card easier to answer.
+    """
+    rows = conn.execute(
+        """
+        SELECT count(*) AS sent,
+               count(*) FILTER (WHERE status = 'answered') AS answered
+          FROM day_cards
+         WHERE sent_at >= now() - interval '14 days'
+        """
+    ).fetchone()
+    if rows is None:
+        return []
+    sent, answered = int(rows["sent"] or 0), int(rows["answered"] or 0)
+    if answered or sent < DAYCARD_UNANSWERED_LIMIT:
+        return []
+
+    confirmed = conn.execute(
+        "SELECT count(*) AS n FROM blocks "
+        " WHERE source IN ('human','ping') AND superseded_by IS NULL"
+    ).fetchone()
+    return [_flag(
+        "daycard_unanswered",
+        f"{sent} day cards sent and none answered — the reconstruction still "
+        "has nothing confirming it",
+        detail="The day card is the only path from a guess to a fact, and "
+               "`jobs/audit.py` will not print an accuracy figure without one. "
+               "Check the card is answerable before assuming he is ignoring it: "
+               "the tap route, the 20:30 timing, and whether the lines name "
+               "anything he can recognise.",
+        evidence={"sent_14d": sent, "confirmed_blocks": int(confirmed["n"] or 0)},
+        fp_parts=("daycard", "unanswered"),
+    )]
+
+
 def check_database(conn) -> list[dict]:
     """The analyst should have produced something for the last working day."""
     row = conn.execute(
@@ -385,6 +442,7 @@ WATCHDOG_KINDS = (
     "backups_unreadable", "backups_missing", "backups_stale",
     "google_auth_failed", "analyst_stale",
     "readstate_unreachable", "readstate_worker_dead", "readstate_stale",
+    "daycard_unanswered",
 )
 
 
@@ -418,6 +476,7 @@ def run_checks(conn) -> list[dict]:
         ("backups", lambda: check_backups()),
         ("auth", lambda: check_google_auth()),
         ("readstate", lambda: check_readstate(conn)),
+        ("daycards", lambda: check_day_cards(conn)),
         ("analyst", lambda: check_database(conn)),
     ):
         try:

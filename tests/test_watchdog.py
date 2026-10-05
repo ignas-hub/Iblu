@@ -497,3 +497,57 @@ def test_the_readstate_findings_can_retire_themselves():
     """
     for kind in ("readstate_unreachable", "readstate_worker_dead", "readstate_stale"):
         assert kind in W.WATCHDOG_KINDS
+
+
+# --- is the one feedback loop closing? (2026-10-05) ------------------------
+#
+# Two day cards delivered, both working — route healthy, buttons signed, a
+# friendly 410 on a bad token — and zero taps. `blocks` held 290 rows, not one
+# confirmed, so `jobs/audit.py` still could not print an accuracy figure. The
+# loop the card was built to close had failed silently for four days and
+# nothing was looking.
+
+
+def _cards(sent: int, answered: int, confirmed: int = 0) -> _Conn:
+    return _Conn({
+        "FROM day_cards": [{"sent": sent, "answered": answered}],
+        "FROM blocks": [{"n": confirmed}],
+    })
+
+
+def test_cards_going_unanswered_is_reported():
+    [f] = W.check_day_cards(_cards(sent=2, answered=0))
+    assert f["kind"] == "daycard_unanswered"
+    assert f["evidence"] == {"sent_14d": 2, "confirmed_blocks": 0}
+    assert "nothing confirming it" in f["summary"]
+
+
+def test_it_never_wakes_him_about_not_answering():
+    """He is the one not answering; buzzing his phone about it is nagging.
+
+    This finding is addressed to whoever can make the card easier to answer,
+    which is why it is a warning and reaches the session brief instead.
+    """
+    [f] = W.check_day_cards(_cards(sent=5, answered=0))
+    assert f["severity"] == "warn"
+
+
+def test_one_answered_card_clears_it():
+    """`daycard.py` sets status='answered', so the condition really can clear.
+
+    A check that can never become false is noise with extra steps.
+    """
+    assert W.check_day_cards(_cards(sent=4, answered=1)) == []
+
+
+def test_a_single_unanswered_evening_is_not_a_broken_loop():
+    """He was busy once. Two is the point at which it stops being an evening."""
+    assert W.check_day_cards(_cards(sent=1, answered=0)) == []
+
+
+def test_no_cards_at_all_is_the_timer_check_not_this_one():
+    assert W.check_day_cards(_cards(sent=0, answered=0)) == []
+
+
+def test_the_daycard_finding_can_retire_itself():
+    assert "daycard_unanswered" in W.WATCHDOG_KINDS

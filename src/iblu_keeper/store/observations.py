@@ -140,6 +140,44 @@ def open_observations(
     ).fetchall()
 
 
+def resolve_fingerprint(fp: str, resolution: str) -> bool:
+    """Close the open finding with this fingerprint, if there is one. Never raises.
+
+    The counterpart to `record_safe`: a check that records a problem by a
+    deterministic fingerprint can clear it by the same fingerprint the moment
+    the condition stops holding. Written because the alternative is a finding
+    that only a *re-run of the same pass* can retire, and three of those sat
+    open for days describing a token that had been fixed on day one.
+
+    Safe to call on the happy path — it is one indexed UPDATE that usually
+    matches nothing, and it swallows everything, because clearing a note must
+    never break the work that proved the note wrong.
+    """
+    from ..config import settings
+
+    if settings.use_mock:
+        return False
+    try:
+        from .. import db
+
+        if not db.is_configured():
+            return False
+        with db.get_conn() as conn:
+            row = conn.execute(
+                """
+                UPDATE observations
+                   SET status = 'resolved', resolved_at = now(), resolution = %s
+                 WHERE fingerprint = %s AND status <> 'resolved'
+                RETURNING id
+                """,
+                (resolution, fp),
+            ).fetchone()
+            return row is not None
+    except Exception:  # noqa: BLE001 — see the docstring
+        logger.warning("could not clear an observation", exc_info=True)
+        return False
+
+
 def resolve(conn, observation_id: int, resolution: str) -> bool:
     """Close one out. Never deletes — the history is the point."""
     row = conn.execute(
