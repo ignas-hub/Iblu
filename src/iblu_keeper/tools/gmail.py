@@ -166,18 +166,30 @@ def _extract_body(payload: dict) -> str:
     return ""
 
 
-def draft_email(to: str, subject: str, body: str) -> dict:
-    """Create a Gmail draft. In mock mode, stores it in the local draft store."""
+def draft_email(
+    to: str, subject: str, body: str, account: str | None = None,
+) -> dict:
+    """Create a Gmail draft. In mock mode, stores it in the local draft store.
+
+    ``account`` selects which Google account's Gmail to draft from
+    (default primary). The From: header uses that account's address.
+    """
+    from ..config import resolve_account
+
+    account = resolve_account(account)
     if settings.use_mock:
         return drafts.add_draft(
-            "email", {"to": to, "subject": subject, "body": body}
+            "email", {"to": to, "subject": subject, "body": body, "account": account},
         )
 
-    service = _service()
+    service = _service(account=account)
     created = (
         service.users()
         .drafts()
-        .create(userId="me", body={"message": {"raw": _build_raw(to, subject, body)}})
+        .create(
+            userId="me",
+            body={"message": {"raw": _build_raw(to, subject, body, account=account)}},
+        )
         .execute()
     )
     return {"id": created.get("id"), "to": to, "subject": subject, "status": "draft"}

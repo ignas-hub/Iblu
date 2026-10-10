@@ -16,15 +16,15 @@ from __future__ import annotations
 
 import logging
 
-from ..config import settings
+from ..config import resolve_account, settings
 
 logger = logging.getLogger("iblu_keeper.tools.calendar")
 
 
-def _service():
+def _service(account: str | None = None):
     from ..google_auth import build_service
 
-    return build_service("calendar", "v3")
+    return build_service("calendar", "v3", account=account)
 
 
 def create_event(
@@ -32,12 +32,15 @@ def create_event(
     start: str,
     end: str,
     description: str | None = None,
+    account: str | None = None,
 ) -> dict:
     """Create a calendar event.
 
     start/end: RFC 3339 timestamps, e.g. "2026-06-11T14:00:00+03:00".
+    ``account`` selects which Google account owns the calendar (default primary).
     Returns {id, html_link, title, start, end}.
     """
+    account = resolve_account(account)
     if settings.use_mock:
         logger.warning("MOCK create_event '%s' — NOT actually created (DRY_RUN).", title)
         return {
@@ -52,7 +55,7 @@ def create_event(
             "note": "MOCK MODE — event was NOT created. Set DRY_RUN=false.",
         }
 
-    service = _service()
+    service = _service(account=account)
     body = {
         "summary": title,
         "start": {"dateTime": start},
@@ -79,18 +82,25 @@ def create_event(
     }
 
 
-def add_label(event_id: str, label_id: str, calendar_id: str = "primary") -> dict:
+def add_label(
+    event_id: str,
+    label_id: str,
+    calendar_id: str = "primary",
+    account: str | None = None,
+) -> dict:
     """Attach a custom event label to an existing Calendar event.
 
     Requires the label to be defined at the calendar level first (via
     Calendar UI or Calendars API — the latter would need a wider OAuth
     scope than we currently request). Passing ``label_id=""`` removes the
-    current label from the event.
+    current label from the event. ``account`` selects which Google account
+    owns the calendar (default primary).
 
     Uses ``eventLabelVersion=1``; with this flag Calendar processes the
     ``eventLabelId`` field on the event body and ignores the legacy
     ``colorId``.
     """
+    account = resolve_account(account)
     if settings.use_mock:
         logger.warning("MOCK add_label event=%s label=%s (DRY_RUN)", event_id, label_id)
         return {
@@ -101,7 +111,7 @@ def add_label(event_id: str, label_id: str, calendar_id: str = "primary") -> dic
             "note": "MOCK MODE — event was NOT labeled. Set DRY_RUN=false.",
         }
 
-    service = _service()
+    service = _service(account=account)
     updated = service.events().patch(
         calendarId=calendar_id,
         eventId=event_id,

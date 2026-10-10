@@ -152,13 +152,23 @@ def friendly_google_errors(account: str | None, what: str):
 # --------------------------------------------------------------------------- #
 # Google Docs editing
 # --------------------------------------------------------------------------- #
-def gdoc_create(title: str, content: str = "", folder_id: str | None = None) -> dict:
-    """Create a new Google Doc with optional initial body text."""
+def gdoc_create(
+    title: str,
+    content: str = "",
+    folder_id: str | None = None,
+    account: str | None = None,
+) -> dict:
+    """Create a new Google Doc with optional initial body text.
+
+    ``account`` selects which Google account the doc is created in
+    (``blt`` default, ``deadlift``, ``choco``). Omit for the primary.
+    """
+    account = resolve_account(account)
     if settings.use_mock:
         return _mock({"id": "MOCK_DOC", "name": title, "status": "not_created_mock"})
 
-    docs = _docs()
-    drive = _drive()
+    docs = _docs(account=account)
+    drive = _drive(account=account)
     doc = docs.documents().create(body={"title": title}).execute()
     doc_id = doc.get("documentId")
     if not doc_id:
@@ -196,17 +206,21 @@ def gdoc_create(title: str, content: str = "", folder_id: str | None = None) -> 
     }
 
 
-def gdoc_append(doc_id_or_url: str, text: str) -> dict:
+def gdoc_append(
+    doc_id_or_url: str, text: str, account: str | None = None,
+) -> dict:
     """Append text to the end of an existing Google Doc.
 
     Preserves all prior content. Adds a leading newline if the doc already
-    has content so the new text starts on a fresh line.
+    has content so the new text starts on a fresh line. ``account`` selects
+    which Google account owns the doc (default primary).
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return _mock({"id": doc_id_or_url, "status": "not_modified_mock"})
 
     doc_id = _file_id(doc_id_or_url)
-    docs = _docs()
+    docs = _docs(account=account)
     # endIndex of the last segment minus 1 = insertion point right before
     # the doc's trailing empty paragraph.
     doc = docs.documents().get(documentId=doc_id, fields="body.content/endIndex,title").execute()
@@ -226,18 +240,24 @@ def gdoc_append(doc_id_or_url: str, text: str) -> dict:
 
 
 def gdoc_replace_text(
-    doc_id_or_url: str, find: str, replace_with: str, match_case: bool = False
+    doc_id_or_url: str,
+    find: str,
+    replace_with: str,
+    match_case: bool = False,
+    account: str | None = None,
 ) -> dict:
     """Find-and-replace text in a Google Doc.
 
     Replaces ALL occurrences of ``find`` with ``replace_with``. Set
-    ``match_case=True`` for case-sensitive matching.
+    ``match_case=True`` for case-sensitive matching. ``account`` selects
+    which Google account owns the doc (default primary).
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return _mock({"id": doc_id_or_url, "status": "not_modified_mock"})
 
     doc_id = _file_id(doc_id_or_url)
-    docs = _docs()
+    docs = _docs(account=account)
     result = docs.documents().batchUpdate(
         documentId=doc_id,
         body={"requests": [{"replaceAllText": {
@@ -310,13 +330,19 @@ def gdoc_add_comment(
     }
 
 
-def gdoc_rename(doc_id_or_url: str, new_name: str) -> dict:
-    """Rename a Drive file (works for Docs / Sheets / Slides / any file)."""
+def gdoc_rename(
+    doc_id_or_url: str, new_name: str, account: str | None = None,
+) -> dict:
+    """Rename a Drive file (works for Docs / Sheets / Slides / any file).
+
+    ``account`` selects which Google account owns the file (default primary).
+    """
+    account = resolve_account(account)
     if settings.use_mock:
         return _mock({"id": doc_id_or_url, "name": new_name, "status": "not_renamed_mock"})
 
     file_id = _file_id(doc_id_or_url)
-    drive = _drive()
+    drive = _drive(account=account)
     res = drive.files().update(
         fileId=file_id, body={"name": new_name}, fields="id,name,mimeType",
         supportsAllDrives=True,
@@ -328,17 +354,21 @@ def gdoc_rename(doc_id_or_url: str, new_name: str) -> dict:
     }
 
 
-def gdoc_move(file_id_or_url: str, folder_id_or_url: str) -> dict:
+def gdoc_move(
+    file_id_or_url: str, folder_id_or_url: str, account: str | None = None,
+) -> dict:
     """Move a Drive file into the given folder.
 
     Replaces the file's existing parent(s) with the target folder.
+    ``account`` selects which Google account owns the file (default primary).
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return _mock({"id": file_id_or_url, "status": "not_moved_mock"})
 
     file_id = _file_id(file_id_or_url)
     folder_id = _file_id(folder_id_or_url)
-    drive = _drive()
+    drive = _drive(account=account)
     meta = drive.files().get(
         fileId=file_id, fields="parents,name,mimeType", supportsAllDrives=True,
     ).execute()
@@ -361,12 +391,19 @@ def gdoc_move(file_id_or_url: str, folder_id_or_url: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Drive folders + uploads
 # --------------------------------------------------------------------------- #
-def drive_create_folder(name: str, parent_id: str | None = None) -> dict:
-    """Create a folder in Drive (optionally under a parent folder)."""
+def drive_create_folder(
+    name: str, parent_id: str | None = None, account: str | None = None,
+) -> dict:
+    """Create a folder in Drive (optionally under a parent folder).
+
+    ``account`` selects which Google account to create the folder in
+    (default primary).
+    """
+    account = resolve_account(account)
     if settings.use_mock:
         return _mock({"id": "MOCK_FOLDER", "name": name, "status": "not_created_mock"})
 
-    drive = _drive()
+    drive = _drive(account=account)
     body: dict = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
     if parent_id:
         body["parents"] = [_file_id(parent_id)]
@@ -444,11 +481,12 @@ def _upload_bytes(
     filename: str,
     mime_type: str,
     folder_id: str | None,
+    account: str | None = None,
 ) -> dict:
     """Internal: upload raw bytes to Drive as a new file."""
     from googleapiclient.http import MediaInMemoryUpload  # type: ignore
 
-    drive = _drive()
+    drive = _drive(account=account)
     body: dict = {"name": filename, "mimeType": mime_type}
     if folder_id:
         body["parents"] = [_file_id(folder_id)]
@@ -480,13 +518,17 @@ def drive_save_gmail_attachment(
     attachment_id: str,
     folder_id_or_url: str | None = None,
     filename: str | None = None,
+    account: str | None = None,
 ) -> dict:
     """Save a Gmail attachment directly to Drive (no client round-trip).
 
     Looks the attachment up on the original message for filename + MIME type
     when ``filename`` isn't provided. ``folder_id_or_url`` is the Drive folder
-    to save into (omit to save to My Drive root).
+    to save into (omit to save to My Drive root). ``account`` applies to BOTH
+    the Gmail read and the Drive write — the message and the destination must
+    live in the same account (default primary).
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return _mock({"id": "MOCK_FILE", "name": filename or "mock.bin",
                       "status": "not_uploaded_mock"})
@@ -495,11 +537,13 @@ def drive_save_gmail_attachment(
     # and the Gmail attachmentId quirks.
     from . import gmail as gmail_tools
 
-    fetched = gmail_tools.read_attachment(message_id, attachment_id, max_chars=0)
+    fetched = gmail_tools.read_attachment(
+        message_id, attachment_id, max_chars=0, account=account,
+    )
     # read_attachment returns text + metadata. We also need the raw bytes.
     # Refetch directly so we get bytes without text-extraction overhead.
     import base64
-    service = gmail_tools._service()
+    service = gmail_tools._service(account=account)
     att = (
         service.users().messages().attachments()
         .get(userId="me", messageId=message_id, id=attachment_id).execute()
@@ -507,7 +551,7 @@ def drive_save_gmail_attachment(
     data = base64.urlsafe_b64decode(att.get("data", ""))
     name = filename or fetched.get("filename") or "attachment"
     mime = fetched.get("mime_type") or "application/octet-stream"
-    return _upload_bytes(data, name, mime, folder_id_or_url)
+    return _upload_bytes(data, name, mime, folder_id_or_url, account=account)
 
 
 def drive_upload_from_url(
@@ -515,13 +559,16 @@ def drive_upload_from_url(
     filename: str,
     folder_id_or_url: str | None = None,
     mime_type: str | None = None,
+    account: str | None = None,
 ) -> dict:
     """Fetch a URL and save its body to Drive as a new file.
 
     ``mime_type`` is inferred from the response's Content-Type header when
     omitted. For binary downloads (PDFs, images, zips) pass an explicit
-    ``mime_type`` to avoid wrong defaults.
+    ``mime_type`` to avoid wrong defaults. ``account`` selects which Google
+    account to save into (default primary).
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return _mock({"id": "MOCK_FILE", "name": filename, "status": "not_uploaded_mock"})
 
@@ -534,7 +581,7 @@ def drive_upload_from_url(
         mime_type = (
             r.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
         )
-    return _upload_bytes(data, filename, mime_type, folder_id_or_url)
+    return _upload_bytes(data, filename, mime_type, folder_id_or_url, account=account)
 
 
 def drive_create_file(
@@ -542,6 +589,7 @@ def drive_create_file(
     content: str,
     folder_id_or_url: str | None = None,
     mime_type: str = "text/plain",
+    account: str | None = None,
 ) -> dict:
     """Create a new file in Drive with the given text content.
 
@@ -550,11 +598,13 @@ def drive_create_file(
     binary data use ``drive_save_gmail_attachment`` or
     ``drive_upload_from_url`` instead. Set ``mime_type`` to control how
     Drive treats the file (e.g. ``text/markdown``, ``application/json``,
-    ``text/csv``).
+    ``text/csv``). ``account`` selects which Google account to save into
+    (default primary).
     """
+    account = resolve_account(account)
     if settings.use_mock:
         return _mock({"id": "MOCK_FILE", "name": filename, "status": "not_uploaded_mock"})
 
     return _upload_bytes(
-        content.encode("utf-8"), filename, mime_type, folder_id_or_url,
+        content.encode("utf-8"), filename, mime_type, folder_id_or_url, account=account,
     )

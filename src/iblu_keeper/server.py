@@ -375,9 +375,10 @@ def gmail_draft_email(
     to: Annotated[str, Field(min_length=3, max_length=320, pattern=r".+@.+\..+", description="Recipient email")],
     subject: Annotated[str, Field(min_length=1, max_length=998)],
     body: Annotated[str, Field(min_length=1)],
+    account: Annotated[str | None, Field(default=None, description="Which Google account to draft from: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Create a Gmail draft for human review (does NOT send)."""
-    return gmail_tools.draft_email(to, subject, body)
+    return gmail_tools.draft_email(to, subject, body, account)
 
 
 @mcp.tool(name="gmail_send_email", annotations={"title": "Send Email", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -559,10 +560,11 @@ def gdoc_create(
     title: Annotated[str, Field(min_length=1, max_length=500, description="Title of the new Doc")],
     content: Annotated[str, Field(default="", max_length=200_000, description="Optional initial body text")] = "",
     folder_id: Annotated[str | None, Field(default=None, description="Drive folder ID or sharing URL to create the Doc inside")] = None,
+    account: Annotated[str | None, Field(default=None, description="Which Google account: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Create a new Google Doc, optionally with initial body text and inside a folder."""
     from .tools import drive as drive_tools
-    return drive_tools.gdoc_create(title, content, folder_id)
+    return drive_tools.gdoc_create(title, content, folder_id, account)
 
 
 @mcp.tool(name="gdoc_append", annotations={"title": "Append to Google Doc", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -572,10 +574,11 @@ def gdoc_create(
 def gdoc_append(
     doc_id_or_url: Annotated[str, Field(min_length=1, description="Doc ID or sharing URL")],
     text: Annotated[str, Field(min_length=1, max_length=200_000, description="Text to append at the end of the doc")],
+    account: Annotated[str | None, Field(default=None, description="Which Google account: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Append text to the end of an existing Google Doc. Preserves prior content."""
     from .tools import drive as drive_tools
-    return drive_tools.gdoc_append(doc_id_or_url, text)
+    return drive_tools.gdoc_append(doc_id_or_url, text, account)
 
 
 @mcp.tool(name="gdoc_replace_text", annotations={"title": "Find-and-Replace in Google Doc", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -587,10 +590,11 @@ def gdoc_replace_text(
     find: Annotated[str, Field(min_length=1, description="Text to search for")],
     replace_with: Annotated[str, Field(description="Text to replace with (can be empty to delete the matches)")],
     match_case: Annotated[bool, Field(default=False, description="Case-sensitive matching")] = False,
+    account: Annotated[str | None, Field(default=None, description="Which Google account: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Find-and-replace text in a Google Doc. Replaces ALL occurrences."""
     from .tools import drive as drive_tools
-    return drive_tools.gdoc_replace_text(doc_id_or_url, find, replace_with, match_case)
+    return drive_tools.gdoc_replace_text(doc_id_or_url, find, replace_with, match_case, account)
 
 
 @mcp.tool(name="gdoc_add_comment", annotations={"title": "Add Comment to Google Doc", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -619,10 +623,11 @@ def gdoc_add_comment(
 def gdoc_rename(
     doc_id_or_url: Annotated[str, Field(min_length=1, description="File ID or sharing URL")],
     new_name: Annotated[str, Field(min_length=1, max_length=500, description="New file name")],
+    account: Annotated[str | None, Field(default=None, description="Which Google account: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Rename a Drive file (works for Docs, Sheets, Slides, any file)."""
     from .tools import drive as drive_tools
-    return drive_tools.gdoc_rename(doc_id_or_url, new_name)
+    return drive_tools.gdoc_rename(doc_id_or_url, new_name, account)
 
 
 @mcp.tool(name="gdoc_move", annotations={"title": "Move Drive File to Folder", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -632,10 +637,11 @@ def gdoc_rename(
 def gdoc_move(
     file_id_or_url: Annotated[str, Field(min_length=1, description="File ID or sharing URL")],
     folder_id_or_url: Annotated[str, Field(min_length=1, description="Destination folder ID or URL")],
+    account: Annotated[str | None, Field(default=None, description="Which Google account: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Move a Drive file into a folder (replaces existing parents)."""
     from .tools import drive as drive_tools
-    return drive_tools.gdoc_move(file_id_or_url, folder_id_or_url)
+    return drive_tools.gdoc_move(file_id_or_url, folder_id_or_url, account)
 
 
 @mcp.tool(name="drive_create_folder", annotations={"title": "Create Drive Folder", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -645,10 +651,11 @@ def gdoc_move(
 def drive_create_folder(
     name: Annotated[str, Field(min_length=1, max_length=500, description="Folder name")],
     parent_id: Annotated[str | None, Field(default=None, description="Optional parent folder ID or URL (creates in My Drive root if omitted)")] = None,
+    account: Annotated[str | None, Field(default=None, description="Which Google account: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Create a new folder in Google Drive."""
     from .tools import drive as drive_tools
-    return drive_tools.drive_create_folder(name, parent_id)
+    return drive_tools.drive_create_folder(name, parent_id, account)
 
 
 @mcp.tool(name="drive_list_folder", annotations={"title": "List Drive Folder Contents", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
@@ -684,10 +691,11 @@ def drive_save_gmail_attachment(
     attachment_id: Annotated[str, Field(min_length=1, description="Attachment id from gmail_list_attachments")],
     folder_id_or_url: Annotated[str | None, Field(default=None, description="Destination Drive folder (My Drive root if omitted)")] = None,
     filename: Annotated[str | None, Field(default=None, max_length=500, description="Override filename (defaults to original attachment name)")] = None,
+    account: Annotated[str | None, Field(default=None, description="Which Google account the Gmail message AND Drive destination live in: blt (default), deadlift, or choco. Both must be the same account.")] = None,
 ) -> dict:
     """Save a Gmail attachment directly to Drive without a client round-trip."""
     from .tools import drive as drive_tools
-    return drive_tools.drive_save_gmail_attachment(message_id, attachment_id, folder_id_or_url, filename)
+    return drive_tools.drive_save_gmail_attachment(message_id, attachment_id, folder_id_or_url, filename, account)
 
 
 @mcp.tool(name="drive_upload_from_url", annotations={"title": "Upload URL Content to Drive", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -699,6 +707,7 @@ def drive_upload_from_url(
     filename: Annotated[str, Field(min_length=1, max_length=500)],
     folder_id_or_url: Annotated[str | None, Field(default=None, description="Destination Drive folder (My Drive root if omitted)")] = None,
     mime_type: Annotated[str | None, Field(default=None, max_length=200, description="MIME type override. Auto-detected from response Content-Type when omitted.")] = None,
+    account: Annotated[str | None, Field(default=None, description="Which Google account to save into: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Download a URL and save its body to Drive as a new file.
 
@@ -707,7 +716,7 @@ def drive_upload_from_url(
     Marked openWorldHint=true because this tool reaches an arbitrary URL.
     """
     from .tools import drive as drive_tools
-    return drive_tools.drive_upload_from_url(url, filename, folder_id_or_url, mime_type)
+    return drive_tools.drive_upload_from_url(url, filename, folder_id_or_url, mime_type, account)
 
 
 @mcp.tool(name="drive_create_file", annotations={"title": "Create File in Drive", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -719,6 +728,7 @@ def drive_create_file(
     content: Annotated[str, Field(description="Text content to write. UTF-8 encoded before upload. For binary data use drive_upload_from_url or drive_save_gmail_attachment.")],
     folder_id_or_url: Annotated[str | None, Field(default=None, description="Destination Drive folder ID or URL (My Drive root if omitted). Works for Shared Drives.")] = None,
     mime_type: Annotated[str, Field(default="text/plain", max_length=200, description="MIME type Drive should treat the file as. Common: 'text/plain', 'text/markdown', 'text/csv', 'application/json'.")] = "text/plain",
+    account: Annotated[str | None, Field(default=None, description="Which Google account to save into: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Create a new file in Drive with the given text content.
 
@@ -727,7 +737,7 @@ def drive_create_file(
     Returns the new file's id, name, mime_type, size, and viewable URL.
     """
     from .tools import drive as drive_tools
-    return drive_tools.drive_create_file(filename, content, folder_id_or_url, mime_type)
+    return drive_tools.drive_create_file(filename, content, folder_id_or_url, mime_type, account)
 
 
 @mcp.tool(name="gdoc_batch_update", annotations={"title": "Batch-Update Google Doc (full API access)", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
@@ -908,10 +918,11 @@ def calendar_create_event(
     title: Annotated[str, Field(min_length=1, max_length=500, description="Event title")],
     start: Annotated[str, Field(min_length=10, description="RFC 3339 timestamp with offset, e.g. 2026-06-16T14:00:00+03:00")],
     end: Annotated[str, Field(min_length=10, description="RFC 3339 timestamp; must be after `start`")],
-    description: Annotated[str | None, Field(default=None, max_length=8000)] = None
+    description: Annotated[str | None, Field(default=None, max_length=8000)] = None,
+    account: Annotated[str | None, Field(default=None, description="Which Google account: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Create a calendar event. start/end are RFC 3339 timestamps with offset."""
-    return calendar_tools.create_event(title, start, end, description)
+    return calendar_tools.create_event(title, start, end, description, account)
 
 
 @mcp.tool(name="calendar_add_label", annotations={"title": "Label Calendar Event", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
@@ -922,6 +933,7 @@ def calendar_add_label(
     event_id: Annotated[str, Field(min_length=1, description="Calendar event id (from calendar_create_event or a Calendar URL)")],
     label_id: Annotated[str, Field(max_length=200, description="Event label id defined on the calendar. Pass empty string to clear the label.")],
     calendar_id: Annotated[str, Field(default="primary", max_length=200, description="Calendar id (default 'primary')")] = "primary",
+    account: Annotated[str | None, Field(default=None, description="Which Google account: blt (default), deadlift, or choco")] = None,
 ) -> dict:
     """Attach (or clear) a custom event label on an existing Calendar event.
 
@@ -931,7 +943,7 @@ def calendar_add_label(
     label from the event. Idempotent — calling twice with the same label
     is a no-op.
     """
-    return calendar_tools.add_label(event_id, label_id, calendar_id)
+    return calendar_tools.add_label(event_id, label_id, calendar_id, account)
 
 
 # --------------------------------------------------------------------------- #
@@ -1112,6 +1124,7 @@ def calendar(
     end: str | None = None,
     description: str | None = None,
     location: str | None = None,
+    account: str | None = None,
 ) -> dict:
     """See and manage Ignas's calendar — list, find free time, create, move, change, delete.
 
@@ -1149,7 +1162,7 @@ def calendar(
         action=action, start=start, days=days, calendar_id=calendar_id,
         minutes=minutes, work_start=work_start, work_end=work_end,
         include_weekends=include_weekends, event_id=event_id, summary=summary,
-        end=end, description=description, location=location,
+        end=end, description=description, location=location, account=account,
     )
 
 

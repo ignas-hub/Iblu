@@ -81,14 +81,16 @@ class _FakeService:
 
 def _install_fake_service(monkeypatch, events: _FakeEvents) -> _FakeService:
     service = _FakeService(events)
-    monkeypatch.setattr(CM, "_service", lambda: service)
+    # _service now accepts an optional account kwarg (multi-account support);
+    # tests ignore it since they pin a single fake.
+    monkeypatch.setattr(CM, "_service", lambda **_kw: service)
     return service
 
 
 def _touched_google(monkeypatch):
     """Fail the test if anything calls `_service()`."""
 
-    def _boom():
+    def _boom(**_kw):
         raise AssertionError("mock mode must never call _service()")
 
     monkeypatch.setattr(CM, "_service", _boom)

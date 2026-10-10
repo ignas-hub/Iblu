@@ -40,10 +40,10 @@ class CalendarError(ValueError):
     """Bad input to a `manage()` action. The message always names what was expected."""
 
 
-def _service():
+def _service(account: str | None = None):
     from ..google_auth import build_service
 
-    return build_service("calendar", "v3")
+    return build_service("calendar", "v3", account=account)
 
 
 def _tz() -> ZoneInfo:
@@ -189,13 +189,18 @@ def list_events(
     start: str | None = None,
     days: int = 1,
     calendar_id: str = "primary",
+    account: str | None = None,
 ) -> dict:
     """Compact agenda for a window of days. Cancelled events are dropped —
     Calendar keeps a tombstone around for sync purposes, not for a human to see.
+    ``account`` selects which Google account owns the calendar (default primary).
     """
+    from ..config import resolve_account
+
+    account = resolve_account(account)
     tz = _tz()
     time_min, time_max = _window(start, days, tz)
-    items = _fetch_events(_service(), calendar_id, time_min, time_max)
+    items = _fetch_events(_service(account=account), calendar_id, time_min, time_max)
     events = [_compact_event(e, tz) for e in items if e.get("status") != "cancelled"]
     return {
         "calendar_id": calendar_id,
@@ -245,13 +250,18 @@ def find_slots(
     work_start: str = "09:00",
     work_end: str = "18:00",
     include_weekends: bool = False,
+    account: str | None = None,
 ) -> list[dict]:
     """Free windows of at least `minutes`, chronological, clipped to working hours.
 
     Deliberately reasons purely from `events().list()` (see module docstring) —
     never `freeBusy` — so this never needs a wider OAuth scope than the create/
-    read/patch calls the rest of this file already makes.
+    read/patch calls the rest of this file already makes. ``account`` selects
+    which Google account owns the calendar (default primary).
     """
+    from ..config import resolve_account
+
+    account = resolve_account(account)
     if minutes < 1:
         raise CalendarError(f"minutes must be >= 1, got {minutes!r}")
     tz = _tz()
@@ -263,7 +273,7 @@ def find_slots(
             f"work_start must be before work_end, got {work_start!r}..{work_end!r}"
         )
 
-    items = _fetch_events(_service(), calendar_id, window_start, window_end)
+    items = _fetch_events(_service(account=account), calendar_id, window_start, window_end)
     busy = _busy_intervals(items, tz)
     duration = timedelta(minutes=minutes)
 
@@ -308,12 +318,17 @@ def update_event(
     description: str | None = None,
     location: str | None = None,
     calendar_id: str = "primary",
+    account: str | None = None,
 ) -> dict:
     """Patch an existing event. Only the fields the caller actually passed are
     sent — `events().patch` (unlike `update`) already merges rather than
     replaces, but building the body from only-what-changed also means the
     audit trail (this function's log line) says exactly what changed.
+    ``account`` selects which Google account owns the calendar (default primary).
     """
+    from ..config import resolve_account
+
+    account = resolve_account(account)
     if settings.use_mock:
         logger.warning("MOCK update_event id=%s — NOT actually updated (DRY_RUN).", event_id)
         return {
@@ -342,7 +357,7 @@ def update_event(
         )
 
     updated = (
-        _service()
+        _service(account=account)
         .events()
         .patch(calendarId=calendar_id, eventId=event_id, body=body)
         .execute()
@@ -367,11 +382,16 @@ def move_event(
     minutes: int | None = None,
     start: str | None = None,
     calendar_id: str = "primary",
+    account: str | None = None,
 ) -> dict:
     """Shift an event, keeping its duration. Exactly one of `minutes` (relative,
     can be negative) or `start` (absolute new start) must be given — mixing
-    both would leave it ambiguous which one wins.
+    both would leave it ambiguous which one wins. ``account`` selects which
+    Google account owns the calendar (default primary).
     """
+    from ..config import resolve_account
+
+    account = resolve_account(account)
     if (minutes is None) == (start is None):
         raise CalendarError("move requires exactly one of minutes or start")
 
@@ -386,7 +406,7 @@ def move_event(
         }
 
     tz = _tz()
-    service = _service()
+    service = _service(account=account)
     event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
     old_start, all_day = _edge(event["start"], tz)
     old_end, _ = _edge(event["end"], tz)
@@ -421,10 +441,16 @@ def move_event(
 # --- action: delete -------------------------------------------------------
 
 
-def delete_event(event_id: str, calendar_id: str = "primary") -> dict:
+def delete_event(
+    event_id: str, calendar_id: str = "primary", account: str | None = None,
+) -> dict:
     """Delete an event outright. There is no undo, hence no ambiguity in mock mode:
-    when in doubt, this simply does not call Google.
+    when in doubt, this simply does not call Google. ``account`` selects which
+    Google account owns the calendar (default primary).
     """
+    from ..config import resolve_account
+
+    account = resolve_account(account)
     if settings.use_mock:
         logger.warning("MOCK delete_event id=%s — NOT actually deleted (DRY_RUN).", event_id)
         return {
@@ -435,7 +461,7 @@ def delete_event(event_id: str, calendar_id: str = "primary") -> dict:
             "note": "MOCK MODE — event was NOT deleted. Set DRY_RUN=false.",
         }
 
-    _service().events().delete(calendarId=calendar_id, eventId=event_id).execute()
+    _service(account=account).events().delete(calendarId=calendar_id, eventId=event_id).execute()
     logger.info("delete_event id=%s", event_id)
     return {"id": event_id, "calendar_id": calendar_id, "status": "deleted"}
 
@@ -450,11 +476,12 @@ def create_event(
     description: str | None = None,
     location: str | None = None,
     calendar_id: str = "primary",
+    account: str | None = None,
 ) -> dict:
     """Create an event. Delegates to the original tool so there is one writer."""
     from .calendar import create_event as _create
 
-    return _create(title=summary, start=start, end=end, description=description)
+    return _create(title=summary, start=start, end=end, description=description, account=account)
 
 
 def manage(
@@ -471,18 +498,21 @@ def manage(
     end: str | None = None,
     description: str | None = None,
     location: str | None = None,
+    account: str | None = None,
 ) -> dict:
     """Dispatch across the calendar actions: list, find_slot, create, update,
     move, delete — plus `day` and `reconstruct`, which read and rebuild the day
     that actually happened rather than the one that was planned. One tool with
     an `action` param — see the module docstring for why this isn't eight
-    separate MCP tools.
+    separate MCP tools. ``account`` selects which Google account's calendar to
+    operate on (default primary). ``day`` and ``reconstruct`` are IBLU-internal
+    reads of the reconstructed day and intentionally stay on the primary.
     """
     if settings.use_mock:
         return dict(_MOCK)
 
     if action == "list":
-        return list_events(start=start, days=days, calendar_id=calendar_id)
+        return list_events(start=start, days=days, calendar_id=calendar_id, account=account)
 
     if action == "find_slot":
         slots = find_slots(
@@ -493,6 +523,7 @@ def manage(
             work_start=work_start,
             work_end=work_end,
             include_weekends=include_weekends,
+            account=account,
         )
         return {
             "calendar_id": calendar_id,
@@ -512,12 +543,15 @@ def manage(
             description=description,
             location=location,
             calendar_id=calendar_id,
+            account=account,
         )
 
     if action == "move":
         if not event_id:
             raise CalendarError("move requires event_id")
-        return move_event(event_id, minutes=minutes, start=start, calendar_id=calendar_id)
+        return move_event(
+            event_id, minutes=minutes, start=start, calendar_id=calendar_id, account=account,
+        )
 
     if action == "create":
         if not (summary and start and end):
@@ -525,11 +559,11 @@ def manage(
                 "create requires summary, start and end "
                 "(e.g. start='2026-09-15T14:00', end='2026-09-15T15:00')"
             )
-        return create_event(summary, start, end, description, location, calendar_id)
+        return create_event(summary, start, end, description, location, calendar_id, account=account)
     if action == "delete":
         if not event_id:
             raise CalendarError("delete requires event_id")
-        return delete_event(event_id, calendar_id=calendar_id)
+        return delete_event(event_id, calendar_id=calendar_id, account=account)
 
     if action == "day":
         return day_blocks(start=start)
