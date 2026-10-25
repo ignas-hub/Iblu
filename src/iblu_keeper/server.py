@@ -1178,6 +1178,7 @@ def repo(
     max_chars: int = 20000,
     source: str = "auto",
     ref: str | None = None,
+    offset: int = 0,
 ) -> dict:
     """Read any of Ignas's source code — on this box or on GitHub. Read-only.
 
@@ -1189,7 +1190,7 @@ def repo(
     ``action``:
       - ``repos``  — every readable repository, local and GitHub
       - ``list``   — directory contents (``path``, default the repo root)
-      - ``read``   — one text file (``path`` required; ``max_chars`` caps it)
+      - ``read``   — one text file (``path`` required)
       - ``search`` — find text (``query``). With no ``repo_name`` this searches
         EVERY repository at once — use it when you do not know which project
         something is in. Name one to narrow it.
@@ -1200,6 +1201,20 @@ def repo(
     (``machina``) or a full one (``owner/name``). ``ref`` reads a branch, tag or
     commit. ``source`` forces ``'local'`` or ``'github'`` when it matters.
 
+    **Long files come back in pieces, and you must ask for the rest.** One
+    ``read`` returns at most 20,000 characters; ``max_chars`` can only lower
+    that, never raise it. When the response says ``truncated: true`` it also
+    carries ``next_offset`` — call ``read`` again with ``offset=<that>`` and
+    repeat until ``truncated`` is false.
+
+    Do this before summarising, quoting or concluding anything about a long
+    document. Truncation removes the END of a file, which is where conclusions,
+    open items and the newest decisions live — ``HANDOFF.md`` is 56k characters
+    and a single read stops inside section 10 of 29, so a reader who stops
+    there will confidently describe a record that ends weeks ago. ``HANDOFF.md``
+    carries an index of every section at the top: use it to see what you have
+    not read yet.
+
     Credential-shaped files (.env, keys, tokens, service accounts) are refused
     from both sources, and local paths cannot escape the repository root.
 
@@ -1208,6 +1223,7 @@ def repo(
     return repo_tools.repo(
         action=action, repo_name=repo_name, path=path, query=query,
         limit=limit, max_chars=max_chars, source=source, ref=ref,
+        offset=offset,
     )
 
 

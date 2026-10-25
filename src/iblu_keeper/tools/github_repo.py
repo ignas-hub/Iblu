@@ -237,9 +237,10 @@ def list_dir(repo_name: str, path: str | None = None, ref: str | None = None) ->
 
 
 def read_file(
-    repo_name: str, path: str, max_chars: int = MAX_CHARS, ref: str | None = None
+    repo_name: str, path: str, max_chars: int = MAX_CHARS, ref: str | None = None,
+    offset: int = 0,
 ) -> dict:
-    from .repo import _is_secret, _looks_binary
+    from .repo import _is_secret, _looks_binary, window
 
     full = _full_name(repo_name)
     name = path.rsplit("/", 1)[-1]
@@ -261,15 +262,15 @@ def read_file(
         raise GitHubError(f"{path} looks binary — this tool reads text only")
 
     text = raw.decode("utf-8", errors="replace")
-    limit = max(200, min(int(max_chars), MAX_CHARS))
+    # One windowing implementation, shared with the local reader — the two
+    # drifted for a while and only the local one reported `truncated` honestly.
     return {
         "source": "github",
         "repo": full,
         "path": path,
         "bytes": len(raw),
         "lines": text.count("\n") + 1,
-        "truncated": len(text) > limit,
-        "text": text[:limit],
+        **window(text, max_chars, offset),
         "url": data.get("html_url"),
     }
 

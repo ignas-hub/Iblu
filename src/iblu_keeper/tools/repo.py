@@ -131,7 +131,48 @@ def list_dir(repo: str, path: str | None = None) -> dict:
     }
 
 
-def read_file(repo: str, path: str, max_chars: int = MAX_CHARS) -> dict:
+def window(text: str, max_chars: int, offset: int = 0) -> dict:
+    """One readable slice of `text`, and how to get the next one.
+
+    `MAX_CHARS` is a ceiling per CALL, not per file — `min(max_chars,
+    MAX_CHARS)` means asking for more never grants more. Until this existed
+    there was also no way to ask for a *later* part, so everything past the
+    first 20,000 characters of a file was simply unreachable, and a session
+    reading HANDOFF.md (56k) got sections 1–10 of 12 and reported the document
+    as ending in September. The newest decisions are always last, so the cap
+    ate exactly the part that bound it.
+
+    `next_offset` is the whole point: a truncated result now carries the
+    argument that continues it, so a reader does not have to know this
+    function exists to get the rest.
+    """
+    limit = max(200, min(int(max_chars), MAX_CHARS))
+    start = max(0, int(offset))
+    chunk = text[start:start + limit]
+    end = start + len(chunk)
+    more = end < len(text)
+    out = {
+        "chars": len(text),
+        "offset": start,
+        "truncated": more,
+        "text": chunk,
+    }
+    if more:
+        out["next_offset"] = end
+        out["read_the_rest"] = (
+            f"{len(text) - end} characters remain. Call this again with "
+            f"offset={end} (repeat until truncated is false). Do NOT summarise "
+            "a truncated document — the end of a file is where conclusions, "
+            "open items and the newest decisions live."
+        )
+    if start:
+        out["continues_from"] = start
+    return out
+
+
+def read_file(
+    repo: str, path: str, max_chars: int = MAX_CHARS, offset: int = 0
+) -> dict:
     root = _root(repo).resolve()
     target = _resolve(repo, path)
     if not target.is_file():
@@ -144,15 +185,12 @@ def read_file(repo: str, path: str, max_chars: int = MAX_CHARS) -> dict:
         raise RepoError(f"{path} looks binary — this tool reads text only")
 
     text = raw.decode("utf-8", errors="replace")
-    limit = max(200, min(int(max_chars), MAX_CHARS))
-    truncated = len(text) > limit
     return {
         "repo": repo,
         "path": str(target.relative_to(root)),
         "bytes": len(raw),
         "lines": text.count("\n") + 1,
-        "truncated": truncated,
-        "text": text[:limit],
+        **window(text, max_chars, offset),
     }
 
 
@@ -247,6 +285,7 @@ def repo(
     max_chars: int = MAX_CHARS,
     source: str = "auto",
     ref: str | None = None,
+    offset: int = 0,
 ) -> dict:
     """Dispatch across the local disk and GitHub. One tool — see the docstring."""
     if settings.use_mock:
@@ -300,7 +339,7 @@ def repo(
             if action == "read":
                 if not path:
                     raise RepoError("read requires a path")
-                return gh.read_file(repo_name, path, max_chars, ref)
+                return gh.read_file(repo_name, path, max_chars, ref, offset)
             if action == "search":
                 return gh.search(repo_name, query or "")
             if action == "log":
@@ -311,7 +350,7 @@ def repo(
             if action == "read":
                 if not path:
                     raise RepoError("read requires a path")
-                return read_file(repo_name, path, max_chars)
+                return read_file(repo_name, path, max_chars, offset)
             if action == "search":
                 return search(repo_name, query or "", path)
             if action == "log":

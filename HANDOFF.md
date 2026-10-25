@@ -1,14 +1,69 @@
-# iblu-keeper — Handoff (Session 1)
+# iblu-keeper — Handoff and decision record
 
-_Last updated: 2026-06-10_
+_Started 2026-06-10. Newest section: §29, 2026-10-01 — see the index below._
 
-This document captures the state of **iblu-keeper** after the first build
-session: what exists, what's been validated against the real Google account,
-the decisions made, and exactly what's left to do. It's written so both Ignas
-(non-developer) and any future Claude/developer session can pick up cleanly.
+This began as the handoff after the first build session and became the decision
+record: what exists, what was validated against the real Google account, and —
+mostly — the rules that were learned by getting something wrong first. Written
+so both Ignas (non-developer) and any future Claude Code session can pick up
+cleanly.
+
+The header said "Last updated: 2026-06-10" until 2026-10-25, four months and
+nineteen sections out of date, which is its own small lesson about a date
+maintained by hand. The index below is generated from the headings and from git,
+and `tests/test_handoff_index.py` fails if it drifts.
 
 ---
 
+## Index
+
+Every section, oldest first. **The newest decisions are at the bottom of
+this file**, so a tool that truncates a long read removes exactly the part
+that binds you. This index is at the top so that even a truncated read can
+see what it is missing and ask for it.
+
+Reading it through IBLU's own `repo` tool: one `read` returns 20,000
+characters of a 56,000-character file. When the result says
+`truncated: true` it carries `next_offset` — call `read` again with that
+`offset` until `truncated` is false. Do not summarise before then.
+
+| § | Date | What it settles |
+|---|---|---|
+| 1 | 2026-06-10 | What iblu-keeper is |
+| 2 | 2026-06-10 | Current status — ✅ working & validated |
+| 3 | 2026-06-10 | Key decisions made this session |
+| 4 | 2026-06-10 | Google Cloud setup (done) |
+| 5 | 2026-06-10 | ⚠️ Important: the token is NOT yet on a server |
+| 6 | 2026-06-10 | Known limitations / open items |
+| 7 | 2026-06-10 | What's left to do — DEPLOYMENT (next session) |
+| 8 | 2026-06-10 | How to run things (reference) |
+| 9 | 2026-06-10 | Repo map (where things live) |
+| 10 | 2026-09-13 | Corrections from the Phase 2 build (2026-09-12 / 13) |
+| 12 | 2026-09-13 | Tool surface: one tool per domain × side-effect class |
+| 13 | 2026-09-13 | Never delete a `calendar_seen` row for an event that still exists |
+| 14 | 2026-09-13 | "Not written by me" has two different causes — do not conflate them |
+| 15 | 2026-09-13 | One mirror calendar, on BLT, covering every venture |
+| 16 | 2026-09-13 | `blocks` — the reconstructed day, and the three rules it encodes |
+| 17 | 2026-09-13 | Slack is collected with a USER token, not a bot token |
+| 18 | 2026-09-13 | The judge relabels; it never reshapes |
+| 19 | 2026-09-13 | Gap warnings advise; they never block |
+| 20 | 2026-09-13 | Sessions 5–8 vs. the brief: what the repo already had |
+| 21 | 2026-09-13 | IBLU keeps a log of what it caught itself getting wrong |
+| 22 | 2026-09-13 | What the 2026-09-13 code review found |
+| 23 | 2026-09-15 | A calendar title is not evidence, and nobody was watching the watchman |
+| 24 | 2026-09-17 | Where a day's plan comes from, and when silence counts as family time |
+| 25 | 2026-09-25 | The ping asked about other people's mail, in the wrong timezone |
+| 26 | 2026-09-27 | Two detectors that are not unit tests, and the day card |
+| 27 | 2026-09-30 | The mirror calendar is a record of the past, and it is silent |
+| 28 | 2026-09-30 | The observation log addresses itself to a Claude Code session |
+| 29 | 2026-10-01 | A password change, and the subsystem that was never watched |
+
+There is no §11: the number was taken by a list item inside §10 and the
+sections carried on from 12. Code comments cite these numbers (`HANDOFF
+§24`, `§25`, `§3.1`), so they are never renumbered — a stable wrong number
+beats a correct one that invalidates every reference to it.
+
+---
 ## 1. What iblu-keeper is
 
 A self-hosted personal AI assistant for Ignas. Claude connects to a custom

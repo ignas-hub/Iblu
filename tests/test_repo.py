@@ -223,3 +223,97 @@ def test_the_404_message_points_at_organisation_tokens(monkeypatch):
     monkeypatch.setattr(gh, "_request", lambda *a, **k: _Resp(404))
     with pytest.raises(gh.GitHubError, match="GITHUB_TOKEN_2"):
         gh._get("/repos/someorg/machina")
+
+
+# --- long files must be reachable, not merely reported as cut (2026-10-25) --
+#
+# `MAX_CHARS` is a ceiling per call and `min(max_chars, MAX_CHARS)` means asking
+# for more never grants more. With no offset there was no way to ask for a LATER
+# part either, so everything past the first 20,000 characters of a file was
+# unreachable. A session reading HANDOFF.md (59k) got sections 1-10 of 29 and
+# reported the record as ending in September; §§28-29 carry the rules in force.
+
+
+def test_a_long_file_can_be_read_to_the_end():
+    from iblu_keeper.tools import repo as R
+
+    pieces, offset, calls = [], 0, 0
+    while True:
+        result = R.read_file("iblu", "HANDOFF.md", offset=offset)
+        pieces.append(result["text"])
+        calls += 1
+        if not result["truncated"]:
+            break
+        offset = result["next_offset"]
+        assert calls < 50, "paging is not converging"
+
+    assert calls > 1, "the fixture must be longer than one window, or it proves nothing"
+    assert "".join(pieces) == (
+        __import__("pathlib").Path(R.ROOTS["iblu"] / "HANDOFF.md").read_text()
+    ), "the reassembled pieces must be the file, byte for byte"
+
+
+def test_a_truncated_result_carries_the_argument_that_continues_it():
+    """A reader must not need to know the tool's internals to get the rest."""
+    from iblu_keeper.tools.repo import window
+
+    r = window("x" * 50_000, max_chars=20_000)
+    assert r["truncated"] is True
+    assert r["next_offset"] == 20_000
+    assert "offset=20000" in r["read_the_rest"]
+    assert "Do NOT summarise" in r["read_the_rest"]
+
+
+def test_the_last_window_says_it_is_the_last():
+    from iblu_keeper.tools.repo import window
+
+    r = window("x" * 1000, max_chars=20_000)
+    assert r["truncated"] is False
+    assert "next_offset" not in r
+    assert "read_the_rest" not in r
+
+
+def test_max_chars_cannot_be_raised_above_the_ceiling():
+    """It is a ceiling, not a default — the cap exists to protect the context."""
+    from iblu_keeper.tools.repo import MAX_CHARS, window
+
+    r = window("x" * 100_000, max_chars=90_000)
+    assert len(r["text"]) == MAX_CHARS
+    assert r["truncated"] is True
+
+
+def test_a_window_past_the_end_is_empty_not_an_error():
+    from iblu_keeper.tools.repo import window
+
+    r = window("x" * 100, max_chars=20_000, offset=500)
+    assert r["text"] == ""
+    assert r["truncated"] is False
+
+
+def test_a_negative_offset_reads_from_the_start():
+    from iblu_keeper.tools.repo import window
+
+    assert window("abcdef", max_chars=20_000, offset=-5)["offset"] == 0
+
+
+def test_both_readers_window_the_same_way():
+    """The local and GitHub readers drifted once; only one reported truncation."""
+    import inspect
+
+    from iblu_keeper.tools import github_repo
+
+    source = inspect.getsource(github_repo.read_file)
+    assert "window(text, max_chars, offset)" in source
+    assert "text[:limit]" not in source, "github_repo must not re-implement the cap"
+
+
+def test_the_mcp_tool_tells_a_session_how_to_page():
+    """The instruction has to live where a reader of the tool will meet it."""
+    import inspect
+
+    from iblu_keeper import server
+
+    doc = inspect.getdoc(server.repo.fn if hasattr(server.repo, "fn") else server.repo)
+    assert "next_offset" in doc
+    assert "offset=" in doc
+    assert "HANDOFF.md" in doc, "name the file this actually bit"

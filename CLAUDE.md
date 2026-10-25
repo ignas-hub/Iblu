@@ -7,6 +7,26 @@ to, `HANDOFF.md` is the decision record — read those before changing design.
 
 This file is the part that binds every session.
 
+## Reading `HANDOFF.md`
+
+It is ~60,000 characters and **the rules currently in force are at the bottom**.
+Any tool that caps a read removes the end of a file, so a single call leaves you
+describing a record that stops weeks ago — which happened: a session read
+sections 1–10 of 29 and reported the document as ending in September.
+
+- Its **Index** is in the first 3,000 characters. Read that first and use it to
+  see which sections you have not reached.
+- Through IBLU's own `repo` tool, one `read` returns at most 20,000 characters
+  and `max_chars` can only lower that. A truncated result carries
+  `next_offset` — call again with `offset=<that>` until `truncated` is false.
+- Locally, prefer `Read` with `offset`/`limit`, or `sed -n '900,1100p'`. There
+  is no cap on the local file tools.
+- **Never summarise, quote or conclude from a document you have only partly
+  read.** Say which part you read instead.
+
+Adding a section means adding its row to the Index;
+`tests/test_handoff_index.py` fails until you do.
+
 ## The observation log
 
 IBLU writes down what it catches about itself, in the `observations` table.
