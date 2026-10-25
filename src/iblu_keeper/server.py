@@ -616,6 +616,32 @@ def gdoc_add_comment(
     return drive_tools.gdoc_add_comment(doc_id_or_url, comment, anchor_text, account)
 
 
+@mcp.tool(name="gdoc_resolve_comment", annotations={"title": "Resolve Google Doc Comment", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("gdoc_resolve_comment")
+@with_retry("gdoc_resolve_comment")
+def gdoc_resolve_comment(
+    doc_id_or_url: Annotated[str, Field(min_length=1, description="Doc ID or sharing URL")],
+    comment_id: Annotated[str | None, Field(default=None, description="The comment thread to resolve. Omit to list the doc's open comments and their ids.")] = None,
+    reply: Annotated[str | None, Field(default=None, max_length=10000, description="Optional closing reply posted with the resolution.")] = None,
+    account: Annotated[str | None, Field(default=None, description="Optional account alias (choco, deadlift). Defaults to the primary account.")] = None,
+) -> dict:
+    """Resolve a comment on a Google Doc, or list which comments are still open.
+
+    Call it without ``comment_id`` first: resolving needs an id, and that call
+    returns every open thread with its id, its anchored text and its author.
+    Then call again with the one to close.
+
+    Resolving is a reply carrying ``action: "resolve"`` — Drive has no
+    "set resolved" field, and writing one is silently ignored. Reopening is
+    deliberately not exposed: resolving hides a comment, so a tool that could
+    close the wrong thread and then quietly undo the evidence is worse than one
+    that cannot.
+    """
+    from .tools import drive as drive_tools
+    return drive_tools.gdoc_resolve_comment(doc_id_or_url, comment_id, reply, account)
+
+
 @mcp.tool(name="gdoc_rename", annotations={"title": "Rename Drive File", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("gdoc_rename")

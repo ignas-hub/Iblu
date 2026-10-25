@@ -656,3 +656,113 @@ def test_an_anchor_in_the_last_paragraph_appends_instead_of_using_an_invalid_ind
     assert "location" not in insert_req
     assert insert_req["endOfSegmentLocation"] == {}
     assert result["table_start_index"] == 16
+
+
+# --- resolving a comment (2026-10-25) -------------------------------------
+
+
+class _FakeExec:
+    def __init__(self, result):
+        self._result = result
+        self.called_with: dict | None = None
+
+    def __call__(self, **kwargs):
+        self.called_with = kwargs
+        return self
+
+    def execute(self):
+        return self._result
+
+
+class _FakeDrive:
+    def __init__(self, comments_result=None, reply_result=None):
+        self._comments = _FakeExec(comments_result or {})
+        self._replies = _FakeExec(reply_result or {})
+
+    def comments(self):
+        return type("C", (), {"list": self._comments})()
+
+    def replies(self):
+        return type("R", (), {"create": self._replies})()
+
+
+def _drive_patched(monkeypatch, drive):
+    """`settings` is a frozen dataclass and the suite pins DRY_RUN=true, so the
+    established pattern is to swap the whole object, not one attribute."""
+    from iblu_keeper.tools import drive as d
+
+    class _Live:
+        use_mock = False
+
+    monkeypatch.setattr(d, "settings", _Live())
+    monkeypatch.setattr(d, "_drive", lambda account=None: drive)
+    monkeypatch.setattr(d, "_file_id", lambda x: "FILE1")
+    monkeypatch.setattr(d, "_viewable_url", lambda *a, **k: "https://docs.example/FILE1")
+    return d
+
+
+def test_no_comment_id_lists_what_is_open(monkeypatch):
+    """Resolving needs an id, and nobody has one to hand — so list first."""
+    drive = _FakeDrive(comments_result={"comments": [
+        {"id": "c1", "content": "fix this heading", "resolved": False,
+         "quotedFileContent": {"value": "Intro"},
+         "author": {"displayName": "Ignas"}, "createdTime": "2026-10-20T10:00:00Z"},
+        {"id": "c2", "content": "already handled", "resolved": True,
+         "author": {"displayName": "Ignas"}},
+    ]})
+    d = _drive_patched(monkeypatch, drive)
+
+    out = d.gdoc_resolve_comment("https://docs.google.com/document/d/FILE1/edit")
+    assert out["status"] == "listed"
+    assert out["count"] == 1, "a resolved comment is not an open one"
+    assert out["open_comments"][0]["comment_id"] == "c1"
+    assert out["open_comments"][0]["anchor_text"] == "Intro"
+    assert "comment_id" in out["next"]
+
+
+def test_resolving_posts_a_reply_with_the_resolve_action(monkeypatch):
+    """Drive has no 'resolved' field to set — writing one is silently ignored."""
+    drive = _FakeDrive(reply_result={
+        "id": "r1", "action": "resolve", "content": "done",
+        "author": {"displayName": "Ignas"}, "createdTime": "2026-10-25T10:00:00Z",
+    })
+    d = _drive_patched(monkeypatch, drive)
+
+    out = d.gdoc_resolve_comment("FILE1", comment_id="c1", reply="done")
+    assert out["status"] == "resolved"
+    assert out["reply_id"] == "r1"
+    sent = drive._replies.called_with
+    assert sent["commentId"] == "c1"
+    assert sent["body"]["action"] == "resolve"
+    assert sent["body"]["content"] == "done"
+
+
+def test_a_resolution_needs_no_reply_text(monkeypatch):
+    drive = _FakeDrive(reply_result={"id": "r2", "action": "resolve"})
+    d = _drive_patched(monkeypatch, drive)
+
+    out = d.gdoc_resolve_comment("FILE1", comment_id="c9")
+    assert out["status"] == "resolved"
+    assert out["reply"] is None
+    assert "content" not in drive._replies.called_with["body"]
+
+
+def test_reopening_is_not_exposed():
+    """Resolving hides a comment. A tool that could close the wrong thread and
+    then quietly undo the evidence is worse than one that cannot."""
+    import inspect
+
+    from iblu_keeper.tools import drive as d
+
+    source = inspect.getsource(d.gdoc_resolve_comment)
+    assert '"action": "resolve"' in source
+    assert "reopen" in source, "the omission should be documented, not silent"
+    assert '"action": "reopen"' not in source
+
+
+def test_mock_mode_resolves_nothing():
+    """DRY_RUN must never reach a real document. The suite runs in it."""
+    from iblu_keeper.tools import drive as d
+
+    out = d.gdoc_resolve_comment("FILE1", comment_id="c1")
+    assert out["status"] == "not_resolved_mock"

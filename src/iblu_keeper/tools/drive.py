@@ -330,6 +330,91 @@ def gdoc_add_comment(
     }
 
 
+def gdoc_resolve_comment(
+    doc_id_or_url: str,
+    comment_id: str | None = None,
+    reply: str | None = None,
+    account: str | None = None,
+) -> dict:
+    """List a doc's open comments, or resolve one.
+
+    Called without ``comment_id`` it lists what is still open, because
+    resolving requires an id and nobody has one to hand. Called with a
+    ``comment_id`` it resolves that thread.
+
+    Resolving is a *reply* carrying ``action: "resolve"`` — Drive has no
+    "update comment.resolved" call, and setting the field directly is silently
+    ignored. ``reply`` text is optional and posted with it; the Docs UI shows
+    it as the closing remark on the thread.
+
+    One-way by design: Drive can reopen a thread with ``action: "reopen"``, and
+    that is deliberately not exposed. Resolving hides a comment from the
+    document, so a tool that could resolve the wrong thread AND quietly undo
+    the evidence of having done so is worse than one that cannot.
+    """
+    if settings.use_mock:
+        return _mock({
+            "id": doc_id_or_url, "comment_id": comment_id,
+            "status": "not_resolved_mock",
+        })
+
+    file_id = _file_id(doc_id_or_url)
+    drive = _drive(account=account)
+
+    if not comment_id:
+        try:
+            listing = drive.comments().list(
+                fileId=file_id,
+                fields="comments(id,content,resolved,quotedFileContent,author,createdTime)",
+                pageSize=50,
+            ).execute()
+        except Exception as exc:  # noqa: BLE001
+            raise friendly_access_error(exc, account, "this Google Doc") from exc
+        open_comments = [
+            {
+                "comment_id": c.get("id", ""),
+                "comment": (c.get("content") or "")[:300],
+                "anchor_text": (c.get("quotedFileContent") or {}).get("value", "")[:200],
+                "author": (c.get("author") or {}).get("displayName", ""),
+                "created_time": c.get("createdTime", ""),
+            }
+            for c in listing.get("comments", []) or []
+            if not c.get("resolved")
+        ]
+        return {
+            "id": file_id,
+            "open_comments": open_comments,
+            "count": len(open_comments),
+            "url": _viewable_url(file_id, "application/vnd.google-apps.document"),
+            "status": "listed",
+            "next": "call again with comment_id to resolve one",
+        }
+
+    body: dict = {"action": "resolve"}
+    if reply:
+        body["content"] = reply
+    try:
+        created = drive.replies().create(
+            fileId=file_id,
+            commentId=comment_id,
+            body=body,
+            fields="id,action,content,author,createdTime",
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        raise friendly_access_error(exc, account, "this Google Doc comment") from exc
+
+    return {
+        "id": file_id,
+        "comment_id": comment_id,
+        "reply_id": created.get("id", ""),
+        "reply": created.get("content", "") or None,
+        "author": (created.get("author") or {}).get("displayName", ""),
+        "created_time": created.get("createdTime", ""),
+        "url": _viewable_url(file_id, "application/vnd.google-apps.document"),
+        "status": "resolved",
+    }
+
+
 def gdoc_rename(
     doc_id_or_url: str, new_name: str, account: str | None = None,
 ) -> dict:
