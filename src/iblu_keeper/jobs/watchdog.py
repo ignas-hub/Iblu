@@ -129,6 +129,61 @@ def check_units() -> list[dict]:
     return found
 
 
+def check_unit_failures() -> list[dict]:
+    """A timer can be armed and its service fail on every single firing.
+
+    `check_units` asks `is-enabled` of a timer, which the weekly review passed
+    for six weeks while `iblu-weekly.service` died on a NameError every Friday.
+    systemd knew — `systemctl is-failed iblu-weekly.service` said `failed` the
+    whole time — and nothing was asking it. The only person who found out was
+    Ignas, by concluding the system gave him nothing.
+
+    `is-enabled` and `is-failed` answer different questions, and the gap
+    between them is where a scheduled job goes to die quietly.
+    """
+    found = []
+    services = {
+        (unit if unit.endswith(".service") else unit[: -len(".timer")] + ".service"): what
+        for unit, what, _severity in UNITS
+    }
+    for service, what in sorted(services.items()):
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-failed", service],
+                capture_output=True, text=True, timeout=15,
+            )
+            state = (result.stdout or result.stderr).strip()
+        except Exception:  # noqa: BLE001
+            # check_units already reports a systemctl that cannot answer at all.
+            continue
+        if state != "failed":
+            continue
+        detail = "The timer is armed and fires; the job itself exits non-zero."
+        try:
+            log = subprocess.run(
+                ["journalctl", "-u", service, "-n", "40", "--no-pager"],
+                capture_output=True, text=True, timeout=20,
+            ).stdout
+            last = [
+                line.split(": ", 1)[-1] for line in log.splitlines()
+                if any(m in line for m in ("Error", "error:", "Exception", "Traceback",
+                                           "NameError", "TypeError", "ValueError"))
+            ]
+            if last:
+                detail += f"\n\nLast error seen: {last[-1].strip()[:300]}"
+        except Exception:  # noqa: BLE001 — the finding stands without the log
+            pass
+        found.append(_flag(
+            "unit_failed",
+            f"{service} ran and failed — {what} produced nothing",
+            severity="error",
+            detail=detail + f"\n\n`journalctl -u {service} -n 50` for the rest.",
+            evidence={"unit": service},
+            fp_parts=("failed", service),
+        ))
+    return found
+
+
 def check_disk() -> list[dict]:
     usage = shutil.disk_usage("/")
     pct = round(100 * usage.used / usage.total)
@@ -437,7 +492,7 @@ def check_database(conn) -> list[dict]:
 
 # Every kind this module records, so it only ever retires its own findings.
 WATCHDOG_KINDS = (
-    "unit_down", "disk_pressure", "disk_full", "disk_filling",
+    "unit_down", "unit_failed", "disk_pressure", "disk_full", "disk_filling",
     "tick_never_ran", "tick_stale",
     "backups_unreadable", "backups_missing", "backups_stale",
     "google_auth_failed", "analyst_stale",
@@ -471,6 +526,7 @@ def run_checks(conn) -> list[dict]:
     found: list[dict] = []
     for name, fn in (
         ("units", lambda: check_units()),
+        ("unit_failures", lambda: check_unit_failures()),
         ("disk", lambda: check_disk()),
         ("tick", lambda: check_tick_freshness(conn)),
         ("backups", lambda: check_backups()),

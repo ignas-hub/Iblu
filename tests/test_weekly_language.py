@@ -125,3 +125,54 @@ def test_clean_text_has_no_violations():
         "4 times this week and she already runs the reporting side.\n"
     )
     assert validate_language(text) == []
+
+
+# --- the gate was blocking his own quoted words (2026-10-25) --------------
+#
+# `_gap_lines` quotes his Gap phrasing back beside the week's evidence — that
+# mirroring IS the intervention. The gate saw "behind" and "should have" in
+# those quotes and rejected every review containing them: "deterministic
+# template failed language validation". Together with a NameError in the same
+# 2026-09-13 commit, no weekly review was sent for six weeks, and his verdict
+# was "I was not getting any value out of that".
+
+
+def test_his_own_quoted_words_do_not_block_the_review():
+    from iblu_keeper.jobs.review_language import validate_language
+
+    text = (
+        "*Weekly review*\n\n## Gains\n- shipped the thing\n\n## Truth\n"
+        "411 signals over 5 of 7 days.\n"
+        "How the week was described: 6 of 411 messages he sent used Gap "
+        "phrasing (superlative x4, behind x1, should have x1).\n"
+        '  2026-10-22 · "you are already behind"\n'
+        '  2026-10-20 · "we should have shipped by now"\n'
+    )
+    assert validate_language(text) == []
+
+
+def test_iblu_saying_it_itself_is_still_blocked():
+    """The exemption is attribution, not a loophole."""
+    from iblu_keeper.jobs.review_language import validate_language
+
+    assert validate_language("*Weekly review*\n\n## Truth\nYou are behind on this.")
+
+
+def test_a_gap_sentence_cannot_hide_inside_quotation_marks():
+    """Only the two exact attributed shapes are exempt, not any quoted text."""
+    from iblu_keeper.jobs.review_language import validate_language
+
+    assert validate_language('*Weekly review*\n\n## Truth\n"You should have shipped."')
+    # Nor by inventing a date-like prefix without the separator the real
+    # formatter uses.
+    assert validate_language('*Weekly review*\n\n## Truth\n2026-10-22 "you are behind"')
+
+
+def test_stripping_leaves_everything_else_intact():
+    from iblu_keeper.jobs.review_language import strip_attributed
+
+    out = strip_attributed(
+        'keep this\n  2026-10-22 · "drop this"\nHow the week was described: drop\nkeep too\n'
+    )
+    assert "keep this" in out and "keep too" in out
+    assert "drop this" not in out and "How the week" not in out

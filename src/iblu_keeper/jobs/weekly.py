@@ -317,6 +317,45 @@ def _removal_body(removal: dict) -> str:
 # --------------------------------------------------------------------------
 
 
+# NOTE: these two live ABOVE the `__main__` entry point on purpose.
+# They were appended to the end of the file on 2026-09-13 (1dd5a80, the Gain
+# layer), below `raise SystemExit(main())` — so running this as a module
+# called main() before Python had reached the definitions, and every Friday
+# review since died on `NameError: name '_gap_lines' is not defined`. Six
+# weeks of weekly reviews, and the only thing that told anyone was
+# `systemctl is-failed`, which nothing was asking.
+def _gap_lines(audit: dict) -> str:
+    """His own words about the week, quoted back beside the week's evidence.
+
+    Never a judgement, never advice — a count and at most three short excerpts,
+    all of them his. Seeing "we are behind" next to what actually shipped is
+    the whole intervention; saying anything about it would be grading.
+    """
+    phrases = ", ".join(f"{label} x{n}" for label, n in audit["by_phrase"])
+    lines = [
+        f"How the week was described: {audit['findings']} of "
+        f"{audit['messages_scanned']} messages he sent used Gap phrasing"
+        + (f" ({phrases})." if phrases else ".")
+    ]
+    for q in audit["quotes"]:
+        lines.append(f'  {q["date"]} · "{q["quote"]}"')
+    return "\n".join(lines)
+
+
+def _monthly_body(statement: dict) -> str:
+    """Per venture: the baseline, then what is dated since. No adjectives."""
+    lines = [f"Measured back to {statement['since']}."]
+    for item in statement["ventures"]:
+        venture = item["venture"] or "unassigned"
+        lines.append(f"*{venture}* — baseline {item['baseline_set']}:")
+        if not item["since_then"]:
+            lines.append("  nothing recorded since — which is not nothing happening.")
+            continue
+        for entry in item["since_then"][:4]:
+            lines.append(f"  {entry['date']} · {entry['text']}")
+    return "\n".join(lines)
+
+
 def compose_review(window: str | None = None) -> tuple[str, dict]:
     """Return `(text, data)` — the three-section review and its raw numbers.
 
@@ -548,35 +587,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-
-
-def _gap_lines(audit: dict) -> str:
-    """His own words about the week, quoted back beside the week's evidence.
-
-    Never a judgement, never advice — a count and at most three short excerpts,
-    all of them his. Seeing "we are behind" next to what actually shipped is
-    the whole intervention; saying anything about it would be grading.
-    """
-    phrases = ", ".join(f"{label} x{n}" for label, n in audit["by_phrase"])
-    lines = [
-        f"How the week was described: {audit['findings']} of "
-        f"{audit['messages_scanned']} messages he sent used Gap phrasing"
-        + (f" ({phrases})." if phrases else ".")
-    ]
-    for q in audit["quotes"]:
-        lines.append(f'  {q["date"]} · "{q["quote"]}"')
-    return "\n".join(lines)
-
-
-def _monthly_body(statement: dict) -> str:
-    """Per venture: the baseline, then what is dated since. No adjectives."""
-    lines = [f"Measured back to {statement['since']}."]
-    for item in statement["ventures"]:
-        venture = item["venture"] or "unassigned"
-        lines.append(f"*{venture}* — baseline {item['baseline_set']}:")
-        if not item["since_then"]:
-            lines.append("  nothing recorded since — which is not nothing happening.")
-            continue
-        for entry in item["since_then"][:4]:
-            lines.append(f"  {entry['date']} · {entry['text']}")
-    return "\n".join(lines)

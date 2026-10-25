@@ -100,13 +100,43 @@ def _gains_section(text: str) -> str | None:
     return None
 
 
+# A dated excerpt in quotes — `  2026-10-20 · "we are behind on the launch"` —
+# and the tally that precedes it. Both are produced by `weekly._gap_lines`,
+# whose whole purpose is to quote his OWN Gap phrasing back beside the week's
+# evidence. Seeing "we are behind" next to what actually shipped is the
+# intervention; policing it is not.
+#
+# This cost six weeks. `_gap_lines` shipped on 2026-09-13 and the gate rejected
+# every review it appeared in — "deterministic template failed language
+# validation" on `behind` and `should have`, which were his words, in quotes.
+# Combined with a NameError in the same commit, no weekly review was sent from
+# 13 September to 25 October, and his verdict on the system was "I was not
+# getting any value out of that".
+#
+# Deliberately narrow: only these two exact shapes are exempt, so a model
+# cannot smuggle a Gap sentence past the gate by wrapping it in quotation
+# marks. Everything that remains is IBLU's own voice, and every rule still
+# applies to it.
+_ATTRIBUTED_QUOTE = re.compile(r'^\s*\d{4}-\d{2}-\d{2} · ".*"\s*$', re.M)
+_GAP_TALLY = re.compile(r"^How the week was described:.*$", re.M)
+
+
+def strip_attributed(text: str) -> str:
+    """Remove his quoted words, leaving only what IBLU wrote itself."""
+    return _GAP_TALLY.sub("", _ATTRIBUTED_QUOTE.sub("", text))
+
+
 def validate_language(text: str) -> list[str]:
     """Return every rule violation found in `text`; empty means it may be sent.
 
     Each entry is `"<rule>: <matched text>"` — enough for the fallback log
     line to say which validator fired (plan §1.7), never enough to need the
     caller to re-derive what happened.
+
+    Quoted excerpts of his own words are removed first: a quotation is
+    attribution, not IBLU's voice. See `strip_attributed`.
     """
+    text = strip_attributed(text)
     violations: list[str] = []
 
     def _check(pattern: re.Pattern, label: str, haystack: str) -> None:

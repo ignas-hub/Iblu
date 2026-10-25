@@ -213,13 +213,37 @@ def test_a_broken_google_account_is_an_error_and_leaks_no_url(monkeypatch):
 
 
 def test_one_failing_check_never_stops_the_others(monkeypatch):
+    # Every check is stubbed deliberately: an unstubbed one reaches the real
+    # box, and this test then depends on whether that box happens to be
+    # healthy. A new check must be added here.
     monkeypatch.setattr(W, "check_units", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     monkeypatch.setattr(W, "check_disk", lambda: [W._flag("disk_filling", "disk", severity="warn")])
+    monkeypatch.setattr(W, "check_unit_failures", lambda: [])
     monkeypatch.setattr(W, "check_backups", lambda: [])
     monkeypatch.setattr(W, "check_google_auth", lambda: [])
     monkeypatch.setattr(W, "check_tick_freshness", lambda conn, now=None: [])
+    monkeypatch.setattr(W, "check_readstate", lambda conn, now=None: [])
+    monkeypatch.setattr(W, "check_day_cards", lambda conn: [])
     monkeypatch.setattr(W, "check_database", lambda conn: [])
     assert [f["kind"] for f in W.run_checks(_Conn({}))] == ["disk_filling"]
+
+
+def test_run_checks_covers_every_check_in_the_module():
+    """A check that is never called is a check that never fires.
+
+    `run_checks` lists its checks by hand, so adding `check_something` without
+    adding it to that list leaves it dead — which is the whole failure mode
+    this module exists to prevent, applied to itself.
+    """
+    import inspect
+
+    declared = {
+        name for name, _ in inspect.getmembers(W, inspect.isfunction)
+        if name.startswith("check_")
+    }
+    called = inspect.getsource(W.run_checks)
+    missing = {n for n in declared if n + "(" not in called}
+    assert not missing, f"never called by run_checks: {sorted(missing)}"
 
 
 # --- alerting is throttled and timed --------------------------------------
@@ -551,3 +575,70 @@ def test_no_cards_at_all_is_the_timer_check_not_this_one():
 
 def test_the_daycard_finding_can_retire_itself():
     assert "daycard_unanswered" in W.WATCHDOG_KINDS
+
+
+# --- armed and failing (2026-10-25) ---------------------------------------
+#
+# `iblu-weekly.service` died on a NameError every Friday from 2026-09-13 to
+# 2026-10-25. `check_units` asks `is-enabled` of the TIMER, which was enabled
+# the whole time, so nothing fired. systemd knew: `systemctl is-failed
+# iblu-weekly.service` said `failed`. Nothing was asking it. The only person who
+# found out was Ignas, by concluding the system gave him nothing.
+
+
+def _systemctl(monkeypatch, failed: set[str]):
+    def fake(cmd, *a, **k):
+        class _R:
+            stdout = "failed" if cmd[1] == "is-failed" and cmd[2] in failed else "active"
+            stderr = ""
+        if cmd[0] == "journalctl":
+            class _J:
+                stdout = "Oct 23 16:00 host python[1]: NameError: name '_gap_lines' is not defined"
+                stderr = ""
+            return _J()
+        return _R()
+    monkeypatch.setattr(W.subprocess, "run", fake)
+
+
+def test_a_timer_whose_service_keeps_failing_is_an_error(monkeypatch):
+    _systemctl(monkeypatch, {"iblu-weekly.service"})
+    [f] = W.check_unit_failures()
+    assert f["kind"] == "unit_failed"
+    assert f["severity"] == "error"
+    assert "iblu-weekly.service" in f["summary"]
+    assert "the Friday review produced nothing" in f["summary"]
+
+
+def test_the_finding_carries_the_actual_error(monkeypatch):
+    """So the fix starts from the cause, not from a second investigation."""
+    _systemctl(monkeypatch, {"iblu-weekly.service"})
+    [f] = W.check_unit_failures()
+    assert "_gap_lines" in f["detail"]
+    assert "journalctl -u iblu-weekly.service" in f["detail"]
+
+
+def test_healthy_services_produce_nothing(monkeypatch):
+    _systemctl(monkeypatch, set())
+    assert W.check_unit_failures() == []
+
+
+def test_every_timer_in_units_has_its_service_checked(monkeypatch):
+    """A timer is armed; its .service is what actually runs and can fail."""
+    _systemctl(monkeypatch, {
+        "iblu-tick.service", "iblu-analyst.service", "iblu-weekly.service",
+        "iblu-backup.service", "iblu-daycard.service", "iblu-mcp.service",
+        "iblu-dashboard.service",
+    })
+    checked = {f["evidence"]["unit"] for f in W.check_unit_failures()}
+    for unit, _what, _sev in W.UNITS:
+        expected = unit if unit.endswith(".service") else unit[:-6] + ".service"
+        assert expected in checked, f"{unit} -> {expected} is never asked is-failed"
+
+
+def test_is_enabled_and_is_failed_are_both_asked():
+    """They answer different questions, and the gap is where a job dies quietly."""
+    import inspect
+
+    assert "is-enabled" in inspect.getsource(W.check_units)
+    assert "is-failed" in inspect.getsource(W.check_unit_failures)
+    assert "unit_failed" in W.WATCHDOG_KINDS
