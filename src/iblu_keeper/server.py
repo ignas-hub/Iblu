@@ -1437,6 +1437,15 @@ async def ping_tap(request: Request) -> HTMLResponse:
             sub = "Reply in this thread with what was wrong."
         return _tap_response(f"✓ Saved — {result['label']}", sub)
 
+    if result.get("qid") == "stage":
+        if result["moved"]:
+            sub = "That rung is a Gain. It opens next Friday's review."
+        elif result["superseded"]:
+            sub = "Already recorded at that stage."
+        else:
+            sub = "Noted — the stage is confirmed, not guessed."
+        return _tap_response(f"✓ {result['label']}", sub)
+
     sub = "Updated your earlier answer." if result["superseded"] else ""
     if result.get("qid") == "attended":
         # This tap does not rebuild the day itself (analyst/blocks.py only

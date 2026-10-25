@@ -155,11 +155,17 @@ def review(
         # named after whichever happened first. They are changes to the diary,
         # not conversations — counted, but never reported as something touched
         # repeatedly.
-        if row["source"] == "calendar":
+        # Git signals likewise: a commit has no container, so forty commits
+        # with one subject line clustered into a "thread" named after it —
+        # "User activity log: one row per thing a person does by hand — 40x,
+        # someone else started it" appeared in the review as a delegation
+        # candidate. A commit is evidence of building, counted below in
+        # `achievements.shipped`; it is not a conversation anyone can take over.
+        if row["source"] in ("calendar", "git"):
             by_venture[row["venture"] or "unclassified"] = (
                 by_venture.get(row["venture"] or "unclassified", 0) + 1
             )
-            by_source["calendar"] = by_source.get("calendar", 0) + 1
+            by_source[row["source"]] = by_source.get(row["source"], 0) + 1
             continue
 
         by_venture[row["venture"] or "unclassified"] = (
@@ -589,6 +595,184 @@ def gains(truth: dict) -> dict:
 # into whichever bucket happens to be more flattering.
 _EARLY_STAGES = {"research", "initiate", "build"}
 _LATE_STAGES = {"deliver", "maintain", "autonomous"}
+
+
+# Conventional-commit types that leave something behind. A `chore:` or a
+# `style:` changed the repo without producing anything a person asked for, so
+# it counts toward the commit total and never toward the highlights.
+SHIPPING_TYPES = ("feat", "fix", "perf", "refactor")
+
+# A thread is "closed" only if it was worked and then stopped. Both halves
+# matter: one message is not a thread, and silence on a thread touched once is
+# not an ending.
+CLOSED_MIN_TOUCHES = 3
+
+# How much quieter this week must be than last for the drop to be worth saying.
+# Two thirds, because a thread going from 30 touches to 25 is noise and from 30
+# to 4 is a week back.
+TIME_BACK_DROP = 0.66
+
+
+def achievements(truth: dict) -> dict:
+    """What this week produced, measured backward from last week.
+
+    `gains()` answers "what exists now that did not before" in three kinds that
+    mirror how he was already taught to think. This answers a blunter question
+    he asked for directly, after ten unanswered day cards and his own verdict —
+    "I stopped answering since I was not getting any value out of that":
+
+      * **shipped** — repositories that changed, with the commits that named a
+        feature or a fix. Honest wording matters: a commit is evidence
+        something was built, not that it reached a customer, and the renderer
+        must not upgrade one to the other.
+      * **closed** — threads worked three or more times that then went quiet.
+        Someone else's agenda, off the board. A thread whose name is a raw
+        `users/<id>` is skipped: "you closed users/106454719402311288628" is
+        worse than saying nothing, and ten of those appeared in the version he
+        stopped reading.
+      * **time_back** — threads that consumed him last week and did not this
+        week. The only category that needs the previous window, and the only
+        one that can be empty for a good reason.
+
+    Returns empty lists rather than raising. A week with nothing in a category
+    is a real answer about the week.
+    """
+    if settings.use_mock:
+        return {"shipped": [], "closed": [], "time_back": []}
+
+    since = datetime.fromisoformat(truth["since"])
+    until = datetime.fromisoformat(truth["until"])
+    span = until - since
+    prev_since = since - span
+
+    with db.get_conn() as conn:
+        return {
+            "shipped": _shipped(conn, since, until),
+            "closed": _closed(conn, since, until),
+            "time_back": _time_back(conn, prev_since, since, until),
+        }
+
+
+def _shipped(conn, since: datetime, until: datetime) -> list[dict]:
+    """Repositories that changed, and the commits worth naming."""
+    rows = conn.execute(
+        """
+        SELECT meta ->> 'repo' AS repo, venture, project, subject, occurred_at
+          FROM signals
+         WHERE source = 'git' AND actor = 'me' AND excluded_reason IS NULL
+           AND occurred_at >= %s AND occurred_at < %s
+           AND meta ->> 'repo' IS NOT NULL
+         ORDER BY occurred_at
+        """,
+        (since, until),
+    ).fetchall()
+
+    by_repo: dict[str, dict] = {}
+    for row in rows:
+        entry = by_repo.setdefault(row["repo"], {
+            "repo": row["repo"], "commits": 0, "highlights": [],
+            "venture": row["venture"], "project": row["project"],
+            "last": row["occurred_at"],
+        })
+        entry["commits"] += 1
+        entry["last"] = max(entry["last"], row["occurred_at"])
+        subject = (row["subject"] or "").strip()
+        kind = subject.split("(")[0].split(":")[0].strip().lower()
+        if kind in SHIPPING_TYPES:
+            entry["highlights"].append(subject)
+
+    out = []
+    for entry in by_repo.values():
+        # Newest first, and at most three: the point is to recognise the week,
+        # not to re-read the log.
+        entry["highlights"] = entry["highlights"][::-1][:3]
+        entry["date"] = entry.pop("last").date().isoformat()
+        out.append(entry)
+    return sorted(out, key=lambda e: -e["commits"])
+
+
+# A thread is a conversation. Deriving "closed" from `truth["recurring"]`
+# clustered git commits in with the chats, so the first run proposed
+# `feat(unsubscribe): build the real RFC 8058 one-click endpoint` as a thread
+# he had closed, 44 times over. A commit subject is not an agenda anyone can
+# take off his board.
+CONVERSATION_SOURCES = ("chat", "gmail", "slack")
+
+
+def _closed(conn, since: datetime, until: datetime) -> list[dict]:
+    """Conversations worked three or more times that then went quiet."""
+    rows = conn.execute(
+        """
+        SELECT coalesce(nullif(subject, ''), container) AS name,
+               count(*) AS touches,
+               max(occurred_at) AS last,
+               -- NOT min(initiator): that sorts alphabetically, so 'me'
+               -- always won and every thread claimed he started it. If any
+               -- message in the thread came in, someone else opened it.
+               bool_or(initiator = 'other') AS started_by_other,
+               mode() WITHIN GROUP (ORDER BY venture) AS venture
+          FROM signals
+         WHERE actor = 'me' AND excluded_reason IS NULL
+           AND source = ANY(%s)
+           AND occurred_at >= %s AND occurred_at < %s
+           AND coalesce(nullif(subject, ''), container) IS NOT NULL
+         GROUP BY 1
+        HAVING count(*) >= %s AND max(occurred_at) < %s
+         ORDER BY count(*) DESC
+         LIMIT 40
+        """,
+        (list(CONVERSATION_SOURCES), since, until, CLOSED_MIN_TOUCHES,
+         until - LIKELY_CLOSED_QUIET),
+    ).fetchall()
+
+    out = []
+    for row in rows:
+        name = (row["name"] or "").strip()
+        # "You closed users/106454719402311288628" is worse than saying nothing,
+        # and ten of those appeared in the version he stopped reading.
+        if not name or name.startswith("users/"):
+            continue
+        out.append({
+            "name": name,
+            "touches": int(row["touches"]),
+            "started_by": "other" if row["started_by_other"] else "me",
+            "quiet_days": (until - row["last"]).days,
+            "venture": row["venture"],
+            "date": row["last"].date().isoformat(),
+        })
+    return out
+
+
+def _time_back(conn, prev_since: datetime, since: datetime,
+               until: datetime) -> list[dict]:
+    """Threads that took his week last week and did not take it this week."""
+    def counts(start: datetime, end: datetime) -> dict[str, int]:
+        rows = conn.execute(
+            """
+            SELECT coalesce(nullif(subject, ''), container) AS name, count(*) AS n
+              FROM signals
+             WHERE actor = 'me' AND excluded_reason IS NULL
+               AND occurred_at >= %s AND occurred_at < %s
+               AND coalesce(nullif(subject, ''), container) IS NOT NULL
+             GROUP BY 1
+            """,
+            (start, end),
+        ).fetchall()
+        return {r["name"]: int(r["n"]) for r in rows}
+
+    before, now = counts(prev_since, since), counts(since, until)
+    out = []
+    for name, was in before.items():
+        if was < CLOSED_MIN_TOUCHES or name.startswith("users/"):
+            continue
+        is_now = now.get(name, 0)
+        if is_now > was * (1 - TIME_BACK_DROP):
+            continue
+        out.append({
+            "name": name, "was": was, "now": is_now,
+            "freed": was - is_now,
+        })
+    return sorted(out, key=lambda t: -t["freed"])[:5]
 
 
 def stage_truth(since: datetime, until: datetime) -> dict | None:

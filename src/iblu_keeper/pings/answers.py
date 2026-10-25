@@ -198,6 +198,14 @@ def record_tap(conn: psycopg.Connection, token: str) -> dict:
 
         return record_daycard_tap(conn, ping_id, key)
 
+    # The Friday stage card: same token machinery, same route, against
+    # `stage_checks`. Its tap is the ONLY code path that moves `projects.stage`
+    # — see jobs/stage_check.py for why scripts propose and only he decides.
+    if qid == "stage":
+        from ..jobs.stage_check import record_stage_tap
+
+        return record_stage_tap(conn, ping_id, key)
+
     # One writer at a time per (ping, question). `/q` opens its own connection
     # per request and the tap page's own error tells him to "try again", so a
     # genuine double-tap is ordinary. Without this, two requests can each run

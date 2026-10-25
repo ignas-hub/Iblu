@@ -833,3 +833,15 @@ def test_a_month_with_five_fridays_only_fires_on_the_fifth():
 
     fridays = [date(2026, 10, d) for d in (2, 9, 16, 23, 30)]
     assert [review.is_last_friday(f) for f in fridays] == [False, False, False, False, True]
+
+
+def test_a_commit_is_not_a_thread():
+    """Forty commits sharing a subject clustered into a 'thread' named after it,
+    and the review offered it as a delegation candidate. Git is counted like
+    calendar: toward venture and source, never as a conversation."""
+    import inspect
+
+    from iblu_keeper.tools import review as R
+
+    src = inspect.getsource(R.review)
+    assert 'row["source"] in ("calendar", "git")' in src

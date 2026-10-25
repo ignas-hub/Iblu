@@ -57,6 +57,7 @@ characters of a 56,000-character file. When the result says
 | 27 | 2026-09-30 | The mirror calendar is a record of the past, and it is silent |
 | 28 | 2026-09-30 | The observation log addresses itself to a Claude Code session |
 | 29 | 2026-10-01 | A password change, and the subsystem that was never watched |
+| 30 | 2026-10-25 | The Gain is a rung, and nothing was asking |
 
 There is no §11: the number was taken by a list item inside §10 and the
 sections carried on from 12. Code comments cite these numbers (`HANDOFF
@@ -1098,3 +1099,56 @@ day card (`error`) and the dashboard (`warn` — recording carries on without it
 and `test_every_installed_unit_is_watched` reads `deploy/` and fails until
 `UNITS` is told about any new unit file. `iblu-watchdog.timer` stays absent by
 design: a dead watchdog cannot report its own death.
+
+---
+
+## 30. The Gain is a rung, and nothing was asking (2026-10-25)
+
+> "all of these options are low value and dont tell me much, they dont show
+> progress, they are just random tasks closed. They do not show how I'm getting
+> closer to my goals, they dont make it strong 'gain' feeling"
+
+He said this about three layouts of the same data, and he was right about all
+three. They were activity. The mission already defines what a Gain is —
+*"an initiative reaching 'autonomous' is the largest gain"*, measured back from
+the 2026-09-13 baselines — and the ladder (`stages`), the baselines and 28
+`projects` all existed from day one. What did not exist, six weeks later, was a
+single row in `project_stage_history`. No project had moved a rung since it was
+seeded, and 0 of 28 had a `done_means`. The weekly listed tasks because tasks
+were the only movement anything recorded.
+
+Nothing recorded a rung because nothing asked. So:
+
+> **Rule: the unit of progress is a rung toward autonomous, and only Ignas can
+> confirm one.** Scripts propose; a proposal lives in the card snapshot and is
+> never written to `projects`. His tap is the only path that moves a stage,
+> writes `project_stage_history (changed_by='ignas')` and sets
+> `stage_confidence='fact'`.
+
+`jobs/stage_check.py` sends the question each Friday after the review: the
+projects with ≥8 attributed signals that week, each with its current rung, how
+long it has held it, the week's evidence, and the rung the evidence suggests —
+three taps: moved up, stayed, autonomous. The card already carries the value
+("Email Writer: deliver since 13 Sep, 106 signals this week, looks like →
+maintain"); the tap only makes it count. The following Friday's review opens
+with the rung as a Gain. His tap produces the thing he reads — the exchange the
+day card never offered, and the reason ten of those went unanswered.
+
+The weekly's Gains section is now the ladder, deterministic: rungs climbed this
+week, rungs since the baseline, how many projects are autonomous, which are one
+rung from it. The week's work — commits, closed threads, threads quieter than
+last week — appears beneath as *evidence* for the climb, never as the headline.
+Truth lost "target is 80%" (measuring 0 against 80 is Gap framing in substance)
+and caps the unmoved list at three.
+
+Also fixed on the way: the weekly review had sent nothing since 2026-09-13 —
+two functions appended below `raise SystemExit(main())` and a language gate
+that rejected his own quoted words (§29 territory, recorded there); `review()`
+clustered git commits as threads, so a commit subject appeared as a delegation
+candidate; `achievements.closed` claimed he started every thread because
+`min(initiator)` sorts `'me'` before `'other'`.
+
+What this cannot yet do, honestly: 248 of the week's 411 signals carry no
+project, so the card asked about 2 projects, not the 4 it allows. That is the
+tagging's limit, and the card says how much evidence it stands on rather than
+padding.

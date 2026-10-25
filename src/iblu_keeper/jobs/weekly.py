@@ -200,6 +200,11 @@ def _gains_lines(gains_data: dict) -> str:
     lines: list[str] = []
     for kind, label in labels.items():
         for item in gains_data.get(kind, []):
+            # "progressed" used to carry every thread that went quiet, as a
+            # bare `users/<id> (55x) — likely closed`. Those now live under
+            # Evidence with names; only what HE tapped as progress stays here.
+            if kind == "progressed" and item.get("source") != "tapped":
+                continue
             lines.append(f"- {item['date']} · {label} · {item['text']}")
     return "\n".join(lines) if lines else "Nothing computed as a dated gain this window."
 
@@ -277,17 +282,32 @@ def _truth_body(data: dict, stage_extra: dict | None) -> str:
                 f"had no signal at all."
             )
 
-    if data["recurring"]:
+    # `review()` clusters by container, which puts a Chat partner with no
+    # contact entry in as `users/<id>` and, for sources with no container, a
+    # commit subject in as a "thread". Neither is something anyone can be
+    # handed, and "delegate users/106454719402311288628" is the line that made
+    # the whole section read as noise.
+    import re as _re
+
+    _commit_shaped = _re.compile(r"^[a-z]+(\([^)]*\))?[:!] ")
+    recurring = [
+        t for t in data["recurring"]
+        if not (t["name"] or "").startswith("users/")
+        and not _commit_shaped.match(t["name"] or "")
+    ]
+    if recurring:
         lines.append("Touched 3 or more times (delegation candidates):")
-        for t in data["recurring"][:5]:
+        for t in recurring[:5]:
             who = "he started it" if t["started_by"] == "me" else "someone else started it"
             lines.append(f"- {t['name']} — {t['signals']}x, {who}")
 
     p = data["pings"]
     if p["sent"]:
         lines.append(
-            f"Pings: {p['answered']}/{p['sent']} answered ({p['answer_rate_pct']}%); "
-            f"target is {p['target_pct']}%."
+            # No "target is 80%": measuring 0 against 80 is Gap framing in
+            # substance even when every word passes the gate. The count is
+            # Truth; the target was a grade.
+            f"Pings: {p['answered']}/{p['sent']} answered."
         )
 
     if stage_extra:
@@ -299,8 +319,18 @@ def _truth_body(data: dict, stage_extra: dict | None) -> str:
             )
         stuck = stage_extra.get("stuck")
         if stuck:
-            names = ", ".join(s.get("name") or s.get("code", "?") for s in stuck)
-            lines.append(f"Stuck 30+ days in stages 5-7: {names}.")
+            # At most three. A fourteen-project list is noise, and he asked
+            # for the three that matter — the oldest, which `stage_truth`
+            # already orders first — with the rest as a count.
+            shown = stuck[:3]
+            from .stage_check import short_name
+
+            names = ", ".join(short_name(x.get("name"), x.get("code", "?")) for x in shown)
+            more = len(stuck) - len(shown)
+            lines.append(
+                f"Unmoved 30+ days in stages 5-7: {names}"
+                + (f" — and {more} more." if more > 0 else ".")
+            )
 
     return "\n".join(lines)
 
@@ -315,6 +345,75 @@ def _removal_body(removal: dict) -> str:
 # --------------------------------------------------------------------------
 # assembly
 # --------------------------------------------------------------------------
+
+
+def _ladder_body(ladder: dict | None, ach: dict | None) -> str:
+    """The Gain as the mission defines it: rungs toward autonomous, measured
+    back from 13 September. Deterministic — these are counts, and the model
+    never gets to paraphrase a count.
+
+    This replaces a list of tasks as the opening of the review. He read three
+    task-shaped drafts of the same week and said: "they do not show how I'm
+    getting closer to my goals". A rung is the unit the mission names, so a
+    rung is what opens the review; the week's work appears beneath it as the
+    EVIDENCE for the climb, never as the headline.
+
+    Wording is checked by `review_language`: no "only", no "still ... away",
+    no "will" in this section. "one rung from autonomous" is a position, not
+    a distance to a target, and it passes.
+    """
+    if not ladder:
+        return "Stage ladder unavailable this week."
+    from .stage_check import short_name
+
+    lines = [f"Measured back from {ladder['baseline']}."]
+
+    if ladder["this_week"]:
+        lines.append("")
+        lines.append("Climbed this week:")
+        for m in ladder["this_week"]:
+            rungs = m["to_ord"] - m["from_ord"]
+            lines.append(
+                f"- {short_name(m['name'], m.get('project', ''))} — {m['from_stage']} → {m['to_stage']}"
+                + (f" ({rungs} rungs)" if rungs > 1 else "")
+            )
+    sb = ladder["since_baseline"]
+    if sb["moves"]:
+        lines.append(
+            f"Since {ladder['baseline']}: {sb['rungs']} rung(s) climbed across "
+            f"{sb['projects']} project(s), confirmed by Ignas."
+        )
+    else:
+        lines.append(
+            f"Since {ladder['baseline']}: no rung confirmed yet. The stage card "
+            "that follows this review is where the count starts."
+        )
+    if ladder["at_top"]:
+        lines.append(f"Autonomous: {ladder['at_top']} of {ladder['total_active']} projects.")
+    if ladder["one_from_top"]:
+        names = ", ".join(short_name(x["name"], x["code"]) for x in ladder["one_from_top"][:6])
+        lines.append(f"One rung from autonomous: {names}.")
+
+    if ach:
+        ev = []
+        if ach.get("shipped"):
+            top = ach["shipped"][:3]
+            total = sum(x["commits"] for x in ach["shipped"])
+            ev.append(f"- Built: {total} commits — " + ", ".join(
+                f"{x['repo']} ({x['commits']})" for x in top))
+        if ach.get("closed"):
+            theirs = sum(1 for c in ach["closed"] if c["started_by"] == "other")
+            ev.append(
+                f"- Closed: {len(ach['closed'])} threads, {theirs} opened by someone else — "
+                + ", ".join(c["name"] for c in ach["closed"][:3]))
+        if ach.get("time_back"):
+            ev.append("- Quieter than last week: " + ", ".join(
+                f"{t['name']} {t['was']}→{t['now']}" for t in ach["time_back"][:3]))
+        if ev:
+            lines.append("")
+            lines.append("Evidence this week:")
+            lines.extend(ev)
+    return "\n".join(lines)
 
 
 # NOTE: these two live ABOVE the `__main__` entry point on purpose.
@@ -408,6 +507,24 @@ def compose_review(window: str | None = None) -> tuple[str, dict]:
         truth_body += "\n" + _gap_lines(gap_audit)
     removal_body = _removal_body(removal)
     gains_body, composer = _gains_body(gains_data)
+
+    # The ladder opens Gains. Both halves are optional — a review with no
+    # ladder is still a review — but the ladder is the part he asked for.
+    ladder = None
+    ach = None
+    try:
+        from . import stage_check
+
+        since_dt = datetime.fromisoformat(data["since"])
+        until_dt = datetime.fromisoformat(data["until"])
+        with db.get_conn() as conn:
+            ladder = stage_check.ladder_gains(conn, since_dt, until_dt)
+        ach = review_tools.achievements(data)
+    except Exception:  # noqa: BLE001 — never lose the review over its opening
+        logger.warning("weekly: ladder / achievements unavailable", exc_info=True)
+    data["ladder"] = ladder
+    data["achievements"] = ach
+    gains_body = _ladder_body(ladder, ach) + "\n\n" + gains_body
 
     tz = ZoneInfo(settings.iblu_timezone)
 
@@ -552,6 +669,15 @@ def run(window: str | None = None, dry: bool = False, assume_yes: bool = False) 
         )
 
     logger.info("weekly: review sent (%s signals) as %s", data["coverage"]["signals"], name)
+
+    # The question that makes next week's Gains non-empty. Its failure must
+    # never read as the review failing — the review is already sent.
+    try:
+        from . import stage_check
+
+        stage_check.run(dry=False)
+    except Exception:  # noqa: BLE001
+        logger.warning("weekly: stage card not sent", exc_info=True)
     return 0
 
 
