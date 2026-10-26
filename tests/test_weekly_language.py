@@ -176,3 +176,112 @@ def test_stripping_leaves_everything_else_intact():
     )
     assert "keep this" in out and "keep too" in out
     assert "drop this" not in out and "How the week" not in out
+
+
+# --- the split table (2026-10-26) -----------------------------------------
+#
+# "simple table of what I worked on over the week, in percentages, by couple
+# different dimensions". A Chat text message cannot render markdown tables, so
+# it is a ``` block with aligned columns. What is worth pinning is honesty:
+# the basis is named per dimension, and untagged is a row rather than a
+# quiet renormalisation.
+
+
+def _data(**kw):
+    base = {
+        "coverage": {"signals": 411, "days_with_signals": 5, "days_in_window": 7},
+        "by_venture": [{"key": "blt", "share_pct": 96}, {"key": "deadlift", "share_pct": 2}],
+        "by_project": [{"key": "(untagged)", "share_pct": 60},
+                       {"key": "email-writer", "share_pct": 26},
+                       {"key": "noshinku", "share_pct": 12}],
+        "by_source": [{"key": "chat", "share_pct": 54}, {"key": "git", "share_pct": 23}],
+        "by_work_type": [],
+        "minutes": {"by_venture": [{"key": "blt", "share_pct": 91}],
+                    "by_attention": [{"key": "present", "share_pct": 49},
+                                     {"key": "ambiguous", "share_pct": 48},
+                                     {"key": "displaced", "share_pct": 3}]},
+    }
+    base.update(kw)
+    return base
+
+
+def test_each_dimension_names_its_basis():
+    from iblu_keeper.jobs.weekly import _split_table
+
+    t = _split_table(_data(), None)
+    assert "Venture (minutes)" in t
+    assert "Project (signals)" in t
+    assert "Channel (signals)" in t
+    assert "Attention (minutes)" in t
+    assert t.startswith("```") and t.endswith("```")
+
+
+def test_untagged_is_a_row_not_a_renormalisation():
+    """60% of the week with no project is a fact about the tagging."""
+    from iblu_keeper.jobs.weekly import _split_table
+
+    t = _split_table(_data(), None)
+    assert "(untagged)" in t
+    assert " 60%" in t
+    assert " 26%" in t, "email-writer stays 26% of the week, not 65% of the tagged part"
+
+
+def test_minutes_are_preferred_over_signals_for_venture():
+    from iblu_keeper.jobs.weekly import _split_table
+
+    t = _split_table(_data(), None)
+    assert "Venture (minutes)" in t and "Venture (signals)" not in t
+    assert " 91%" in t
+
+
+def test_without_a_reconstruction_venture_falls_back_to_signals():
+    from iblu_keeper.jobs.weekly import _split_table
+
+    t = _split_table(_data(minutes=None), None)
+    assert "Venture (signals)" in t
+    assert "Attention" not in t, "no minutes, no attention split — never a confident zero"
+
+
+def test_the_long_tail_collapses_to_other():
+    from iblu_keeper.jobs.weekly import _split_table
+
+    many = [{"key": f"p{i}", "share_pct": 10} for i in range(10)]
+    t = _split_table(_data(by_project=many), None)
+    assert "other" in t
+    assert t.count("p") >= 6
+
+
+def test_the_stage_split_joins_the_table():
+    from iblu_keeper.jobs.weekly import _split_table
+
+    t = _split_table(_data(), {"by_stage": [{"key": "late (stages 6-8)", "share_pct": 70},
+                                            {"key": "other", "share_pct": 30}]})
+    assert "Stage (signals)" in t
+    assert "late (stages 6-8)" in t
+
+
+def test_the_table_passes_the_gap_gate():
+    """Percentages of the week are shares, not distances to a goal."""
+    from iblu_keeper.jobs.review_language import validate_language
+    from iblu_keeper.jobs.weekly import _split_table
+
+    t = _split_table(_data(), None)
+    assert validate_language("*Weekly review*\n\n## Gains\nx\n\n## Truth\n" + t) == []
+
+
+def test_nothing_to_split_renders_nothing():
+    from iblu_keeper.jobs.weekly import _split_table
+
+    assert _split_table({"by_venture": [], "by_project": [], "by_source": [],
+                         "minutes": None}, None) == ""
+
+
+def test_unaccounted_minutes_are_a_row_so_the_venture_column_sums():
+    """blt 57% + deadlift 2% is a column that reads as broken without it."""
+    from iblu_keeper.jobs.weekly import _split_table
+
+    d = _data()
+    d["minutes"]["by_venture"] = [{"key": "blt", "share_pct": 57}, {"key": "deadlift", "share_pct": 2}]
+    d["minutes"]["untracked"] = {"minutes": 1700, "share_pct": 41}
+    t = _split_table(d, None)
+    assert "(unaccounted)" in t and " 41%" in t

@@ -146,6 +146,11 @@ def review(
 
     by_venture: dict[str, int] = {}
     by_source: dict[str, int] = {}
+    # By project, with the untagged share stated as its own row. 248 of the
+    # 411 signals in the week of 19 Oct carried no project; a split that
+    # quietly renormalised over the other 163 would have shown email-writer
+    # at 65% when the honest figure is 26% of what he did and 60% unknown.
+    by_project: dict[str, int] = {}
     threads: dict[str, dict[str, Any]] = {}
     inbound = 0
 
@@ -161,6 +166,9 @@ def review(
         # someone else started it" appeared in the review as a delegation
         # candidate. A commit is evidence of building, counted below in
         # `achievements.shipped`; it is not a conversation anyone can take over.
+        by_project[row["project"] or "(untagged)"] = (
+            by_project.get(row["project"] or "(untagged)", 0) + 1
+        )
         if row["source"] in ("calendar", "git"):
             by_venture[row["venture"] or "unclassified"] = (
                 by_venture.get(row["venture"] or "unclassified", 0) + 1
@@ -216,8 +224,18 @@ def review(
     # How much of the window has any evidence at all. Silence is not presence:
     # a 100%-one-venture split over 3 observed hours means far less than the
     # same split over 30, and the reader must be able to tell.
-    observed_days = len({r["occurred_at"].date() for r in rows})
-    window_days = max(1, round((until - since).total_seconds() / 86400))
+    # Local dates, not `.date()` on a UTC timestamp — the same truncation bug
+    # as §25, in a third place. Monday 00:00 Zagreb is Sunday 22:00 UTC, so a
+    # Monday-morning run counted two UTC dates inside a window that held one
+    # local day and printed "2 of 1 days". And a partial day is still a day
+    # that can be observed, so the window is ceil'd, never rounded to zero.
+    import math
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(settings.iblu_timezone)
+    observed_days = len({r["occurred_at"].astimezone(tz).date() for r in rows})
+    window_days = max(1, math.ceil((until - since).total_seconds() / 86400))
+    observed_days = min(observed_days, window_days)
 
     # Untracked share: the fraction of the window with no evidence at all.
     # Reported as its own number (never folded into `by_venture`, where a gap
@@ -257,6 +275,7 @@ def review(
         "minutes": minutes,
         "by_venture": _share(by_venture),
         "by_source": _share(by_source),
+        "by_project": _share(by_project),
         "by_work_type": _share({r["work_type"]: r["n"] for r in tapped}),
         "work_type_note": (
             "Only from answers Ignas tapped — never inferred. Empty means the "

@@ -94,6 +94,7 @@ def test_review_shape_against_the_real_database(monkeypatch):
     class _Live:
         use_mock = False
         dry_run = False
+        iblu_timezone = "Europe/Zagreb"
 
     monkeypatch.setattr(review, "settings", _Live())
     out = review.review("7d")
@@ -137,6 +138,7 @@ def test_work_type_comes_only_from_tapped_answers(monkeypatch):
     class _Live:
         use_mock = False
         dry_run = False
+        iblu_timezone = "Europe/Zagreb"
 
     monkeypatch.setattr(review, "settings", _Live())
 
@@ -168,6 +170,7 @@ def test_gains_reads_all_three_kinds_and_merges_tapped_entries(monkeypatch):
     class _Live:
         use_mock = False
         dry_run = False
+        iblu_timezone = "Europe/Zagreb"
 
     monkeypatch.setattr(review, "settings", _Live())
 
@@ -520,6 +523,7 @@ def test_calendar_signals_are_never_clustered_as_threads(monkeypatch):
     class _Live:
         use_mock = False
         dry_run = False
+        iblu_timezone = "Europe/Zagreb"
 
     monkeypatch.setattr(review, "settings", _Live())
     now = datetime.now(timezone.utc)
@@ -569,6 +573,7 @@ def test_group_demand_never_enters_the_attention_split(monkeypatch):
     class _Live:
         use_mock = False
         dry_run = False
+        iblu_timezone = "Europe/Zagreb"
 
     monkeypatch.setattr(review, "settings", _Live())
     now = datetime.now(timezone.utc)
@@ -845,3 +850,17 @@ def test_a_commit_is_not_a_thread():
 
     src = inspect.getsource(R.review)
     assert 'row["source"] in ("calendar", "git")' in src
+
+
+def test_coverage_days_are_local_and_a_partial_day_counts():
+    """Monday 00:00 Zagreb is Sunday 22:00 UTC. Counting UTC dates printed
+    "2 of 1 days" on a Monday-morning run; rounding a 9-hour window to zero
+    days was the other half of it."""
+    import inspect
+
+    from iblu_keeper.tools import review as R
+
+    src = inspect.getsource(R.review)
+    assert 'r["occurred_at"].astimezone(tz).date()' in src
+    assert "math.ceil((until - since)" in src
+    assert "observed_days = min(observed_days, window_days)" in src

@@ -228,11 +228,82 @@ def _gains_body(gains_data: dict) -> tuple[str, str]:
 # --------------------------------------------------------------------------
 
 
+# How many rows one dimension shows. Six is the whole venture list; beyond
+# that the project split turns into the log again.
+SPLIT_ROWS = 6
+
+
+def _split_table(data: dict, stage_extra: dict | None) -> str:
+    """The week as percentages, by dimension, in one monospace block.
+
+    Asked for directly: "simple table of what I worked on over the week, in
+    percentages, by couple different dimensions". A Chat text message cannot
+    render a markdown table, so this is a ``` block with hand-aligned columns,
+    which a phone shows exactly as written.
+
+    Each dimension names its basis, because they differ and must not be read
+    as one number: minutes come from the reconstructed day and count time;
+    signals count things he did, so a chatty thread weighs more than a long
+    quiet build. "(untagged)" is a row, never a renormalisation — 60% of a
+    week with no project is a fact about the tagging and he should see it.
+    """
+    blocks: list[tuple[str, list[tuple[str, int]]]] = []
+    mins = data.get("minutes") or {}
+
+    def rows(items: list[dict]) -> list[tuple[str, int]]:
+        shown = [(i["key"], int(i["share_pct"])) for i in items if int(i["share_pct"]) > 0]
+        head, tail = shown[:SPLIT_ROWS], shown[SPLIT_ROWS:]
+        if tail:
+            head.append(("other", sum(pct for _, pct in tail)))
+        return head
+
+    if mins.get("by_venture"):
+        venture = rows(mins["by_venture"])
+        # Minutes with no venture are a row, for the same reason "(untagged)"
+        # is: without it blt 57% + deadlift 2% is a column that sums to 59%
+        # and reads as broken. Unaccounted is unknown, never idle.
+        unaccounted = int((mins.get("untracked") or {}).get("share_pct") or 0)
+        if unaccounted:
+            venture.append(("(unaccounted)", unaccounted))
+        blocks.append(("Venture (minutes)", venture))
+    elif data.get("by_venture"):
+        blocks.append(("Venture (signals)", rows(data["by_venture"])))
+    if data.get("by_project"):
+        blocks.append(("Project (signals)", rows(data["by_project"])))
+    if data.get("by_source"):
+        blocks.append(("Channel (signals)", rows(data["by_source"])))
+    if mins.get("by_attention"):
+        blocks.append(("Attention (minutes)", rows(mins["by_attention"])))
+    if stage_extra and stage_extra.get("by_stage"):
+        blocks.append(("Stage (signals)", rows(stage_extra["by_stage"])))
+
+    blocks = [(t, items) for t, items in blocks if items]
+    if not blocks:
+        return ""
+
+    width = min(max(max(len(n) for _, items in blocks for n, _ in items), 10), 22)
+    out = ["```"]
+    for i, (title, items) in enumerate(blocks):
+        if i:
+            out.append("")
+        out.append(title)
+        for name, pct in items:
+            label = name if len(name) <= width else name[: width - 1] + "…"
+            out.append(f"  {label:<{width}} {pct:>3}%")
+    out.append("```")
+    return "\n".join(out)
+
+
 def _truth_body(data: dict, stage_extra: dict | None) -> str:
     cov = data["coverage"]
     lines = [f"{cov['signals']} signals over {cov['days_with_signals']} of {cov['days_in_window']} days."]
 
-    if data["by_venture"]:
+    # The split table replaces the one-line "Where:" — venture is its first
+    # block, basis named — and absorbs the "Attention by stage" line below.
+    table = _split_table(data, stage_extra)
+    if table:
+        lines.append(table)
+    elif data["by_venture"]:
         lines.append(
             "Where: " + " · ".join(f"{v['key']} {v['share_pct']}%" for v in data["by_venture"])
         )
@@ -311,12 +382,7 @@ def _truth_body(data: dict, stage_extra: dict | None) -> str:
         )
 
     if stage_extra:
-        by_stage = stage_extra.get("by_stage")
-        if by_stage:
-            lines.append(
-                "Attention by stage: "
-                + " · ".join(f"{s['key']} {s['share_pct']}%" for s in by_stage)
-            )
+        # "Attention by stage" now lives in the split table as its own block.
         stuck = stage_extra.get("stuck")
         if stuck:
             # At most three. A fourteen-project list is noise, and he asked
