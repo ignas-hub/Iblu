@@ -187,3 +187,52 @@ def test_the_primary_keeps_pubsub_and_the_others_do_not():
             f"{alias}'s Workspace enforces Google Cloud session control; a Cloud "
             "scope there means invalid_rapt on every refresh"
         )
+
+
+# --- Forms scopes are opt-in, because widening breaks refresh (2026-10-26) --
+
+
+def _settings_with_forms(monkeypatch, enabled: bool):
+    import iblu_keeper.google_auth as ga
+    from iblu_keeper.config import settings as real
+
+    class _S:
+        primary_alias = real.primary_alias
+        forms_enabled = enabled
+
+    monkeypatch.setattr("iblu_keeper.config.settings", _S())
+    return ga
+
+
+def test_forms_scopes_are_absent_until_he_opts_in(monkeypatch):
+    """Adding them silently would fail every refresh of the existing token
+    with 'Not all requested scopes were granted' — the primary account offline
+    until a sign-in, with no change he made to explain it."""
+    ga = _settings_with_forms(monkeypatch, enabled=False)
+    scopes = ga.scopes_for(None)
+    assert not any(s in scopes for s in ga.FORMS_SCOPES)
+
+
+def test_forms_scopes_appear_only_with_the_flag(monkeypatch):
+    ga = _settings_with_forms(monkeypatch, enabled=True)
+    scopes = ga.scopes_for(None)
+    assert all(s in scopes for s in ga.FORMS_SCOPES)
+    assert "https://www.googleapis.com/auth/pubsub" in scopes, "the flag adds, never removes"
+
+
+def test_non_primary_accounts_never_get_forms_scopes(monkeypatch):
+    """Deadlift and Choco already pay for a Cloud-scope policy on every refresh;
+    they do not get a second experiment."""
+    ga = _settings_with_forms(monkeypatch, enabled=True)
+    for alias in ("deadlift", "choco"):
+        assert not any(s in ga.scopes_for(alias) for s in ga.FORMS_SCOPES)
+
+
+def test_the_gate_is_documented_as_the_widening_hazard():
+    import inspect
+
+    import iblu_keeper.google_auth as ga
+
+    src = inspect.getsource(ga)
+    assert "WIDENING is not" in src
+    assert "Not all requested scopes were granted" in src

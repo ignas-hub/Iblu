@@ -98,13 +98,29 @@ PRIMARY_ONLY_SCOPES: frozenset[str] = frozenset({
 })
 
 
+# Opt-in, primary only, and gated for a reason that is easy to get backwards.
+# Narrowing a token's requested scopes is safe (verified 2026-10-01: refresh
+# keeps working with fewer scopes than the grant). WIDENING is not: the moment
+# these appear in `scopes_for('blt')`, every refresh of the existing token
+# fails with "Not all requested scopes were granted" until he signs in again.
+# So they are behind `settings.forms_enabled`, which he flips in .env
+# immediately before running `scripts/connect_google.py --manual` once.
+FORMS_SCOPES: tuple[str, ...] = (
+    "https://www.googleapis.com/auth/forms.body",
+    "https://www.googleapis.com/auth/forms.responses.readonly",
+)
+
+
 def scopes_for(alias: str | None) -> list[str]:
     """The scopes one account should request. Narrower for non-primary ones."""
     from .config import settings
 
     alias = (alias or settings.primary_alias).lower()
     if alias == settings.primary_alias:
-        return list(SCOPES)
+        scopes = list(SCOPES)
+        if settings.forms_enabled:
+            scopes.extend(FORMS_SCOPES)
+        return scopes
     return [s for s in SCOPES if s not in PRIMARY_ONLY_SCOPES]
 
 logger = logging.getLogger("iblu_keeper.google_auth")

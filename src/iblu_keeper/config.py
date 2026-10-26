@@ -42,6 +42,13 @@ class Settings:
     # return mock data and never touch Google APIs. This lets the whole system
     # be developed before the service-account access test concludes.
     dry_run: bool = field(default_factory=lambda: _bool("DRY_RUN", True))
+    # Google Forms needs two scopes the original consent never asked for.
+    # Requesting a scope the grant does not hold is the ONE direction that
+    # breaks refresh — google-auth rejects a request wider than the grant — so
+    # the scopes are added only when this is on, and turning it on means one
+    # re-authorisation (`scripts/connect_google.py --manual`) before anything
+    # works. Off by default so an existing token keeps refreshing untouched.
+    forms_enabled: bool = field(default_factory=lambda: _bool("IBLU_FORMS", False))
 
     # --- Google OAuth (single-user) ---
     # The assistant accesses ONLY this user's account via an OAuth refresh
