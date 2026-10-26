@@ -1754,6 +1754,39 @@ def slides_manage(
     )
 
 
+@mcp.tool(name="analytics_read", annotations={"title": "Google Analytics (GA4) Reports", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("analytics_read")
+@with_retry("analytics_read")
+def analytics_read(
+    action: Annotated[str, Field(description="properties | landing_pages | pages | sources | trend | realtime | report")],
+    property_id: Annotated[str | None, Field(default=None, description="Numeric GA4 property id — get it from action='properties'")] = None,
+    start: Annotated[str, Field(default="28daysAgo", description="YYYY-MM-DD or GA relative: 28daysAgo, yesterday, today")] = "28daysAgo",
+    end: Annotated[str, Field(default="today")] = "today",
+    limit: Annotated[int, Field(default=25, ge=1, le=1000)] = 25,
+    path_filter: Annotated[str | None, Field(default=None, description="Only landing pages / paths containing this text")] = None,
+    dimensions: Annotated[list[str] | None, Field(default=None, description="report: GA4 dimension names (max 9)")] = None,
+    metrics: Annotated[list[str] | None, Field(default=None, description="report: GA4 metric names (max 10)")] = None,
+    account: Annotated[str | None, Field(default=None, description="Which Workspace's GA: blt (default), deadlift, choco")] = None,
+) -> dict:
+    """Landing-page performance from GA4, read-only. Start with
+    ``properties`` to find the numeric property id, then ``landing_pages``
+    (sessions, users, engagement, bounce, key events by landing page),
+    ``pages``, ``sources``, ``trend`` by day, ``realtime``, or a free-form
+    ``report``. Rates are GA's own figures, never computed here; a metric GA
+    did not send is None, never 0; totals appear only when GA sends them.
+
+    Needs the GA4 Data and Admin APIs enabled in that account's Cloud project
+    and the account named in IBLU_ANALYTICS plus one re-authorisation; until
+    then the exact steps come back instead of data.
+    """
+    from .tools import analytics as analytics_tools
+    return analytics_tools.analytics_read(
+        action=action, property_id=property_id, start=start, end=end, limit=limit,
+        path_filter=path_filter, dimensions=dimensions, metrics=metrics, account=account,
+    )
+
+
 @mcp.tool(name="get_infra_status", annotations={"title": "Get Infrastructure Status", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def get_infra_status() -> dict:

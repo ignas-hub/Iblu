@@ -58,6 +58,7 @@ characters of a 56,000-character file. When the result says
 | 28 | 2026-09-30 | The observation log addresses itself to a Claude Code session |
 | 29 | 2026-10-01 | A password change, and the subsystem that was never watched |
 | 30 | 2026-10-25 | The Gain is a rung, and nothing was asking |
+| 31 | 2026-10-26 | Seventeen tools in a day, and the two rules that made it safe |
 
 There is no §11: the number was taken by a list item inside §10 and the
 sections carried on from 12. Code comments cite these numbers (`HANDOFF
@@ -1152,3 +1153,77 @@ What this cannot yet do, honestly: 248 of the week's 411 signals carry no
 project, so the card asked about 2 projects, not the 4 it allows. That is the
 tagging's limit, and the card says how much evidence it stands on rather than
 padding.
+
+
+---
+
+## 31. Seventeen tools in a day, and the two rules that made it safe (2026-10-26)
+
+> "It's crazy how many times I have to ask to add tools — please add as many
+> tools as possible from google workspace"
+
+He was right about the cadence: `gdoc_insert_table`, `gdoc_add_comment`,
+`gdoc_resolve_comment`, one per request. This section is the batch that ended
+it — 45 tools to 62 in one day, ~130 actions, built by five worktree agents in
+parallel against the conventions in `tools/drive.py`, registered and
+documented by hand. The two rules that kept it from being 130 tools:
+
+> **Rule (§12, held): one read tool and one write tool per domain, each
+> dispatching on `action`.** Every `@mcp.tool` costs a permission click
+> forever. `drive_read` carries nine actions and costs one click.
+
+> **Rule: send-to-a-human is its own side-effect class.** `forward` and
+> `send_draft` put mail in front of a person; the permission test insists
+> anything that does so must prompt, and making all of `gmail_manage` prompt
+> would make every label change ask. So those two actions live in
+> `gmail_dispatch`, which asks, and `gmail_manage` refuses them by name.
+> `chat_reply` asks for the same reason. `MUST_ASK` in
+> `tests/test_tool_permissions.py` is the list.
+
+**What is reachable, and what is not, was probed before anything was built**
+(§12 territory, now with numbers): Sheets, Drive, Docs, Gmail incl. filters,
+Calendar events, Chat, and the Workspace directory needed no new consent.
+Slides needed only an API switch — the `drive` scope already covers it.
+Forms and GA4 needed both a switch and a scope.
+
+> **Rule: widening a token's requested scopes is the direction that breaks.**
+> Narrowing was verified safe on 2026-10-01. Requesting a scope the grant
+> does not hold fails every refresh with "Not all requested scopes were
+> granted" — an account offline with no change he made to explain it. So
+> optional scopes live in `google_auth.OPTIONAL_SCOPES` behind per-account
+> flags (`IBLU_FORMS`, `IBLU_ANALYTICS`: an alias list, or `true` for the
+> primary), and naming an account means re-authorising it once. A non-primary
+> account named in a flag gains that scope and nothing else — `pubsub`, the
+> Cloud scope that broke Deadlift daily, cannot come back through a flag
+> (pinned).
+
+**Cloud APIs are not Workspace APIs.** He enabled Speech-to-Text and
+Translate on the way; both need a Cloud Platform scope (the `invalid_rapt`
+hazard), both are billed, and Claude does both natively. Enabled and unused is
+harmless; the rule of thumb is in the conversation and here: if the API is
+named after a Workspace product it belongs in IBLU, if it is a Cloud product
+it does not. `analytics.googleapis.com` was the Universal Analytics API, shut
+down in 2023-24; GA4 is `analyticsdata` + `analyticsadmin`, enabled per Cloud
+project — BLT's is 751405989189, Deadlift's 691086881287, Choco's
+211391710406, all read off the OAuth client ids.
+
+**Never-delete, everywhere.** Drive: trash only, pinned by a test that
+`files().delete` does not appear. Sheets: no tab or spreadsheet delete.
+Slides: `delete_slide` with `confirm`, never a presentation. Forms:
+`delete_question` with `confirm`, never a form. Gmail: trash only. Calendar:
+`cancel` sets status, never `events.delete`, so the mirror keeps its
+tombstone (§13).
+
+**Honest limits recorded in the code rather than discovered later:** Chat has
+no server-side text search for a user token, so `chat_read search` scans a
+bounded window and says so; GA `rates` are GA's own, never computed, and an
+absent metric is None not 0; `find_replace` in Sheets cannot be pre-counted;
+Slides' `deleteText ALL` on an empty shape and `insertionIndex` semantics are
+from the reference and not yet seen live; `drivemcp.googleapis.com` is
+Google's own hosted MCP for Drive and a fair side-by-side once this is live,
+but it is one account per connector and knows none of his rules.
+
+Also found: `_file_id` in drive.py names document|spreadsheets|presentation
+and not forms, so `forms_read.form_id()` exists; and the readstate worker
+rebuilds its cache from empty on every restart, which the watchdog
+deliberately does not flag.
