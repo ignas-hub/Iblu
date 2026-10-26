@@ -113,3 +113,17 @@ def test_with_rejects_a_name_that_is_not_a_scope_set():
 
     src = inspect.getsource(cg.main)
     assert "unknown --with" in src
+
+
+def test_a_code_from_a_different_link_is_named_as_such():
+    """Google rejects it as a bare invalid_grant, which reads like expiry and
+    is not — the first live run pasted a code from an older link and the hint
+    said "run again", sending him round the loop once more."""
+    assert cg.state_from_paste("http://localhost:8765/?state=abc&code=4/0A") == "abc"
+    assert cg.state_from_paste("4/0AbareCode") is None
+    import inspect
+
+    src = inspect.getsource(cg.main)
+    assert "pasted_state != issued_state" in src
+    assert "DIFFERENT sign-in link" in src
+    assert src.index("pasted_state != issued_state") < src.index("flow.fetch_token(code=code)")

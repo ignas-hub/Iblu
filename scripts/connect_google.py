@@ -74,6 +74,16 @@ def code_from_paste(pasted: str) -> str:
     return codes[0].strip()
 
 
+def state_from_paste(pasted: str) -> str | None:
+    """The `state` in a pasted redirect URL, if it is a URL at all."""
+    from urllib.parse import parse_qs, urlparse
+
+    pasted = pasted.strip().strip('"').strip("'")
+    if "://" not in pasted:
+        return None
+    return (parse_qs(urlparse(pasted).query).get("state") or [None])[0]
+
+
 def main() -> int:
     import argparse
 
@@ -168,7 +178,7 @@ def main() -> int:
 
     if args.manual:
         flow.redirect_uri = REDIRECT_URI
-        url, _ = flow.authorization_url(**auth_kwargs)
+        url, issued_state = flow.authorization_url(**auth_kwargs)
         print(
             f"\n1. Open this on the phone, signed in as {account['email']}:\n\n"
             f"{url}\n\n"
@@ -187,6 +197,20 @@ def main() -> int:
             code = code_from_paste(pasted)
         except ValueError as exc:
             print(f"\nFAIL: {exc}")
+            return 1
+        # The code is bound to THIS run's link by PKCE: a code from any other
+        # link — an older run, a tab left open from yesterday — is rejected by
+        # Google as a bare "invalid_grant", which reads like expiry and is not.
+        # The `state` in the redirect says which link the code came from, so
+        # say so before asking Google.
+        pasted_state = state_from_paste(pasted)
+        if pasted_state and pasted_state != issued_state:
+            print(
+                "\nFAIL: that address came from a DIFFERENT sign-in link, not the "
+                "one printed above (its state does not match). Each run makes a "
+                "fresh link; open the one above, tap Allow, and paste that page's "
+                "address. Nothing was saved."
+            )
             return 1
         try:
             flow.fetch_token(code=code)
