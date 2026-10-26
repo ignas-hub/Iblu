@@ -37,7 +37,13 @@ SERVER = Path(__file__).resolve().parents[1] / "src" / "iblu_keeper" / "server.p
 
 # The only tools that may ask. Each puts a message in front of another person
 # and cannot be taken back.
-MUST_ASK = {"gmail_send_email", "chat_send_message", "gmail_reply"}
+# Everything that puts a message in front of a person. `gmail_dispatch` exists
+# so that forward/send_draft can ask while `gmail_manage` (labels, archive,
+# filters) never does — send-to-a-human is its own side-effect class.
+MUST_ASK = {
+    "gmail_send_email", "chat_send_message", "gmail_reply",
+    "gmail_dispatch", "chat_reply",
+}
 
 ANNOTATION_KEYS = {
     "readOnlyHint",
@@ -106,3 +112,28 @@ def test_the_tool_count_is_what_the_docs_claim():
     assert f"**{count} tools**" in readme, (
         f"{count} tools registered, README does not say so"
     )
+
+
+def test_gmail_manage_refuses_the_two_actions_that_reach_a_person():
+    """Without this, forward and send_draft would run under an auto-allowed
+    tool and mail would leave the mailbox with no prompt — the one thing the
+    MUST_ASK set exists to prevent."""
+    from iblu_keeper import server
+
+    fn = server.gmail_manage.fn if hasattr(server.gmail_manage, "fn") else server.gmail_manage
+    import pytest as _pytest
+
+    for action in ("forward", "send_draft"):
+        with _pytest.raises(ValueError, match="gmail_dispatch"):
+            fn(action=action, message_id="m1", to="a@b.com", draft_id="d1")
+
+
+def test_gmail_dispatch_only_sends():
+    """The asking tool must not quietly become a second manage tool."""
+    from iblu_keeper import server
+
+    fn = server.gmail_dispatch.fn if hasattr(server.gmail_dispatch, "fn") else server.gmail_dispatch
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="gmail_manage"):
+        fn(action="archive", message_id="m1")

@@ -1444,6 +1444,188 @@ def gdoc_edit(
     )
 
 
+@mcp.tool(name="gmail_read", annotations={"title": "Read Gmail Threads, Labels, Drafts, Filters", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("gmail_read")
+@with_retry("gmail_read")
+def gmail_read(
+    action: Annotated[str, Field(description="thread | labels | drafts | draft | filters | profile | sent_recent")],
+    thread_id: Annotated[str | None, Field(default=None, description="thread: the thread id")] = None,
+    draft_id: Annotated[str | None, Field(default=None, description="draft: the draft id")] = None,
+    limit: Annotated[int, Field(default=10, ge=1, le=50, description="drafts/sent_recent: how many")] = 10,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """Read what ``gmail_search`` and ``gmail_get_message`` do not: a whole
+    ``thread`` (every message, bodies capped at 4,000 chars each), ``labels``
+    with counts, ``drafts`` and one ``draft``, the user's ``filters`` in plain
+    words, the account ``profile``, and ``sent_recent``. Read-only.
+
+    One tool with an ``action`` rather than seven: every new tool costs a
+    permission click forever (HANDOFF §12).
+    """
+    from .tools import gmail_read as gmail_read_tools
+    return gmail_read_tools.gmail_read(action=action, thread_id=thread_id, draft_id=draft_id,
+                                       limit=limit, account=account)
+
+
+_GMAIL_SEND_ACTIONS = frozenset({"forward", "send_draft"})
+
+
+@mcp.tool(name="gmail_manage", annotations={"title": "Organise Gmail: Labels, Archive, Drafts, Filters", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("gmail_manage")
+@with_retry("gmail_manage")
+def gmail_manage(
+    action: Annotated[str, Field(description="label | unlabel | archive | unarchive | trash | untrash | star | unstar | mark_important | unmark_important | create_label | update_draft | discard_draft | create_filter | delete_filter")],
+    message_id: Annotated[str | None, Field(default=None, description="Act on one message (exactly one of message_id / thread_id)")] = None,
+    thread_id: Annotated[str | None, Field(default=None, description="Act on a whole thread")] = None,
+    labels: Annotated[list[str] | str | None, Field(default=None, description="label/unlabel/create_filter: label names")] = None,
+    create: Annotated[bool, Field(default=False, description="label: create a missing user label")] = False,
+    name: Annotated[str | None, Field(default=None, description="create_label: the name")] = None,
+    color: Annotated[str | None, Field(default=None, description="create_label: hex background colour")] = None,
+    draft_id: Annotated[str | None, Field(default=None, description="update_draft/discard_draft")] = None,
+    to: Annotated[str | None, Field(default=None, description="update_draft: recipient")] = None,
+    subject: Annotated[str | None, Field(default=None, description="update_draft")] = None,
+    body: Annotated[str | None, Field(default=None, max_length=50000, description="update_draft")] = None,
+    filter_from: Annotated[str | None, Field(default=None, description="create_filter criterion")] = None,
+    filter_to: Annotated[str | None, Field(default=None, description="create_filter criterion")] = None,
+    filter_subject: Annotated[str | None, Field(default=None, description="create_filter criterion")] = None,
+    query: Annotated[str | None, Field(default=None, description="create_filter: Gmail search criterion")] = None,
+    archive: Annotated[bool, Field(default=False, description="create_filter action: skip the inbox")] = False,
+    star: Annotated[bool, Field(default=False, description="create_filter action")] = False,
+    mark_read: Annotated[bool, Field(default=False, description="create_filter action")] = False,
+    filter_id: Annotated[str | None, Field(default=None, description="delete_filter")] = None,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """Everything that changes a mailbox without putting mail in front of a
+    person: labels (names, not ids; ``create=True`` to make a missing one),
+    archive, trash and untrash (**no permanent delete, ever**), star,
+    importance, new labels, editing or discarding a draft, and filters.
+
+    ``forward`` and ``send_draft`` are deliberately NOT here — they reach a
+    human, so they live in ``gmail_dispatch``, which asks first.
+    """
+    if action in _GMAIL_SEND_ACTIONS:
+        raise ValueError(
+            f"{action!r} puts mail in front of a person — use gmail_dispatch, which asks first."
+        )
+    from .tools import gmail_manage as gmail_manage_tools
+    return gmail_manage_tools.gmail_manage(
+        action=action, message_id=message_id, thread_id=thread_id, labels=labels,
+        create=create, name=name, color=color, draft_id=draft_id, to=to, subject=subject,
+        body=body, filter_from=filter_from, filter_to=filter_to, filter_subject=filter_subject,
+        query=query, archive=archive, star=star, mark_read=mark_read, filter_id=filter_id,
+        account=account,
+    )
+
+
+@mcp.tool(name="gmail_dispatch", annotations={"title": "Forward Mail or Send a Draft", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+@stamped
+@with_google_errors("gmail_dispatch")
+@with_retry("gmail_dispatch")
+def gmail_dispatch(
+    action: Annotated[str, Field(description="forward | send_draft")],
+    message_id: Annotated[str | None, Field(default=None, description="forward: the message to forward")] = None,
+    to: Annotated[str | None, Field(default=None, description="forward: recipient(s)")] = None,
+    note: Annotated[str | None, Field(default=None, max_length=10000, description="forward: your note above the quoted original")] = None,
+    draft_id: Annotated[str | None, Field(default=None, description="send_draft: the draft to send")] = None,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """The two Gmail actions that reach a person: ``forward`` a message (the
+    original quoted, its attachments re-attached) and ``send_draft``. Kept
+    apart from ``gmail_manage`` so that organising a mailbox never prompts and
+    sending always does — the same rule as ``gmail_send_email``.
+    """
+    if action not in _GMAIL_SEND_ACTIONS:
+        raise ValueError(f"gmail_dispatch handles {sorted(_GMAIL_SEND_ACTIONS)}; {action!r} belongs in gmail_manage.")
+    from .tools import gmail_manage as gmail_manage_tools
+    return gmail_manage_tools.gmail_manage(
+        action=action, message_id=message_id, to=to, note=note, draft_id=draft_id, account=account,
+    )
+
+
+@mcp.tool(name="calendar_edit", annotations={"title": "Edit Calendar Events", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("calendar_edit")
+@with_retry("calendar_edit")
+def calendar_edit(
+    action: Annotated[str, Field(description="get | update | cancel | rsvp | move | instances | quick_add | list_range")],
+    event_id: Annotated[str | None, Field(default=None)] = None,
+    calendar_id: Annotated[str, Field(default="primary")] = "primary",
+    title: Annotated[str | None, Field(default=None, description="update")] = None,
+    start: Annotated[str | None, Field(default=None, description="update/instances/list_range: ISO-8601, or YYYY-MM-DD for all-day")] = None,
+    end: Annotated[str | None, Field(default=None, description="update/list_range")] = None,
+    description: Annotated[str | None, Field(default=None, description="update")] = None,
+    location: Annotated[str | None, Field(default=None, description="update")] = None,
+    add_attendees: Annotated[list[str] | str | None, Field(default=None, description="update")] = None,
+    remove_attendees: Annotated[list[str] | str | None, Field(default=None, description="update")] = None,
+    send_updates: Annotated[str, Field(default="none", description="update/cancel: none | all | externalOnly — attendees are NOT emailed unless you say so")] = "none",
+    response: Annotated[str | None, Field(default=None, description="rsvp: accepted | declined | tentative")] = None,
+    comment: Annotated[str | None, Field(default=None, description="rsvp")] = None,
+    destination_calendar_id: Annotated[str | None, Field(default=None, description="move")] = None,
+    text: Annotated[str | None, Field(default=None, description="quick_add: natural-language event")] = None,
+    query: Annotated[str | None, Field(default=None, description="list_range: free-text filter")] = None,
+    limit: Annotated[int, Field(default=25, ge=1, le=250, description="instances/list_range")] = 25,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """Change events that already exist: ``get``, ``update`` (fields and
+    attendees — nobody is emailed unless ``send_updates`` says so),
+    ``cancel`` (status, never a delete, so the mirror calendar keeps its
+    tombstone), ``rsvp`` as yourself, ``move`` to another calendar, the next
+    ``instances`` of a recurring event, ``quick_add`` from a sentence, and
+    ``list_range``. ``calendar_create_event`` still creates.
+    """
+    from .tools import calendar_edit as calendar_edit_tools
+    return calendar_edit_tools.calendar_edit(
+        action=action, event_id=event_id, calendar_id=calendar_id, title=title, start=start,
+        end=end, description=description, location=location, add_attendees=add_attendees,
+        remove_attendees=remove_attendees, send_updates=send_updates, response=response,
+        comment=comment, destination_calendar_id=destination_calendar_id, text=text,
+        query=query, limit=limit, account=account,
+    )
+
+
+@mcp.tool(name="chat_read", annotations={"title": "Read Chat Threads, Members, Spaces", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("chat_read")
+@with_retry("chat_read")
+def chat_read(
+    action: Annotated[str, Field(description="thread | search | members | space | my_spaces")],
+    space: Annotated[str | None, Field(default=None, description="Space name (spaces/…) or id")] = None,
+    thread: Annotated[str | None, Field(default=None, description="thread: thread name or id")] = None,
+    query: Annotated[str | None, Field(default=None, description="search: words that must all appear")] = None,
+    limit: Annotated[int, Field(default=20, ge=1, le=100)] = 20,
+    days: Annotated[int, Field(default=30, ge=1, le=365, description="search: how far back")] = 30,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """One ``thread`` in order, ``search`` recent messages for words (Chat
+    has no server-side text search for a user token, so this scans the last
+    ``days`` and says so), a space's ``members`` with emails where the
+    directory allows, a ``space``'s details, and ``my_spaces`` with unread
+    state. Read-only.
+    """
+    from .tools import chat_read as chat_read_tools
+    return chat_read_tools.chat_read(action=action, space=space, thread=thread, query=query,
+                                     limit=limit, days=days, account=account)
+
+
+@mcp.tool(name="chat_reply", annotations={"title": "Reply in a Chat Thread", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+@stamped
+@with_google_errors("chat_reply")
+@with_retry("chat_reply")
+def chat_reply(
+    space: Annotated[str, Field(min_length=1, description="Space name (spaces/…) — required, no default")],
+    thread: Annotated[str, Field(min_length=1, description="Thread name or id to reply in")],
+    text: Annotated[str, Field(min_length=1, max_length=4000)],
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """Reply inside an existing Chat thread. Reaches a person, so it asks
+    first — same rule as ``chat_send_message``. Never defaults to any space.
+    """
+    from .tools import chat_read as chat_read_tools
+    return chat_read_tools.chat_reply(space=space, thread=thread, text=text, account=account)
+
+
 @mcp.tool(name="get_infra_status", annotations={"title": "Get Infrastructure Status", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def get_infra_status() -> dict:

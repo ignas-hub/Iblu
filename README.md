@@ -30,7 +30,7 @@ Phase 2 is being built to the plan in
 Two components, one repo:
 
 ### 1. MCP server (Python, FastMCP)
-Remote MCP server Claude connects to over HTTPS. **51 tools** organised by
+Remote MCP server Claude connects to over HTTPS. **57 tools** organised by
 service, with MCP tool annotations (`readOnlyHint` / `destructiveHint`) so
 Claude.ai picks safe permission defaults automatically:
 
@@ -65,6 +65,12 @@ Claude.ai picks safe permission defaults automatically:
 | `drive_read` | Search and inspect Drive: search, get, recent, shared-with-me, permissions, revisions, export as text (paged), comments, storage | auto-allow |
 | `drive_manage` | Copy, rename, move, trash/untrash, star, describe, share/unshare, shortcuts — no permanent delete, owner never granted | auto-allow |
 | `gdoc_edit` | Docs edits by name: heading, bullets, link, style, page break, image, insert after, delete text, find, outline | auto-allow |
+| `gmail_read` | Whole thread, labels with counts, drafts, filters in plain words, profile, recent sent | auto-allow |
+| `gmail_manage` | Labels, archive, trash/untrash (no permanent delete), star, importance, create label, edit/discard draft, filters | auto-allow |
+| `gmail_dispatch` | Forward a message or send a draft — the two Gmail actions that reach a person | **ask** |
+| `calendar_edit` | Get, update (attendees not emailed unless asked), cancel (never delete), RSVP, move, instances, quick-add, list a range | auto-allow |
+| `chat_read` | A thread in order, search recent messages, members with emails, space details, my spaces with unread state | auto-allow |
+| `chat_reply` | Reply inside an existing Chat thread — required space, no default | **ask** |
 | `calendar` | See and manage the calendar: list / find free time / create / move / update / delete | auto-allow |
 | `calendar_create_event` | Create a Calendar event (superseded by `calendar`) | auto-allow |
 | `calendar_add_label` | Attach a custom label to a Calendar event | auto-allow |
