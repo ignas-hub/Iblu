@@ -199,6 +199,7 @@ def _settings_with_forms(monkeypatch, enabled: bool):
     class _S:
         primary_alias = real.primary_alias
         forms_enabled = enabled
+        analytics_enabled = False
 
     monkeypatch.setattr("iblu_keeper.config.settings", _S())
     return ga
@@ -236,3 +237,30 @@ def test_the_gate_is_documented_as_the_widening_hazard():
     src = inspect.getsource(ga)
     assert "WIDENING is not" in src
     assert "Not all requested scopes were granted" in src
+
+
+def test_analytics_scope_is_gated_exactly_like_forms(monkeypatch):
+    """A second optional scope must go through the same gate, or the next one
+    gets added to SCOPES directly and takes the primary offline."""
+    import iblu_keeper.google_auth as ga
+    from iblu_keeper.config import settings as real
+
+    class _S:
+        primary_alias = real.primary_alias
+        forms_enabled = False
+        analytics_enabled = True
+
+    monkeypatch.setattr("iblu_keeper.config.settings", _S())
+    scopes = ga.scopes_for(None)
+    assert "https://www.googleapis.com/auth/analytics.readonly" in scopes
+    assert not any(s in scopes for s in ga.FORMS_SCOPES), "flags are independent"
+    assert "analytics_enabled" in ga.OPTIONAL_SCOPES and "forms_enabled" in ga.OPTIONAL_SCOPES
+
+
+def test_every_optional_scope_set_is_behind_a_real_setting():
+    """A typo in the flag name would silently never add the scope."""
+    import iblu_keeper.google_auth as ga
+    from iblu_keeper.config import Settings
+
+    for flag in ga.OPTIONAL_SCOPES:
+        assert flag in Settings.__dataclass_fields__, flag

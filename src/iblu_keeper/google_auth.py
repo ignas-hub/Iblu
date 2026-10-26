@@ -109,6 +109,17 @@ FORMS_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/forms.body",
     "https://www.googleapis.com/auth/forms.responses.readonly",
 )
+ANALYTICS_SCOPES: tuple[str, ...] = (
+    "https://www.googleapis.com/auth/analytics.readonly",
+)
+
+# settings flag -> scopes it adds to the PRIMARY account. One re-authorisation
+# picks up every flag that is on at the time, so turn on everything wanted
+# before running `scripts/connect_google.py --manual`, not one at a time.
+OPTIONAL_SCOPES: dict[str, tuple[str, ...]] = {
+    "forms_enabled": FORMS_SCOPES,
+    "analytics_enabled": ANALYTICS_SCOPES,
+}
 
 
 def scopes_for(alias: str | None) -> list[str]:
@@ -118,8 +129,9 @@ def scopes_for(alias: str | None) -> list[str]:
     alias = (alias or settings.primary_alias).lower()
     if alias == settings.primary_alias:
         scopes = list(SCOPES)
-        if settings.forms_enabled:
-            scopes.extend(FORMS_SCOPES)
+        for flag, extra in OPTIONAL_SCOPES.items():
+            if getattr(settings, flag, False):
+                scopes.extend(s for s in extra if s not in scopes)
         return scopes
     return [s for s in SCOPES if s not in PRIMARY_ONLY_SCOPES]
 

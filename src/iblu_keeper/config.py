@@ -49,6 +49,13 @@ class Settings:
     # re-authorisation (`scripts/connect_google.py --manual`) before anything
     # works. Off by default so an existing token keeps refreshing untouched.
     forms_enabled: bool = field(default_factory=lambda: _bool("IBLU_FORMS", False))
+    # Google Analytics (GA4 Data + Admin APIs) — `analytics.readonly`. Same
+    # gate, same reason, same one re-authorisation. Not a Cloud Platform scope,
+    # so it should not drag the token under Cloud session control the way
+    # `cloud-platform` would — but that is a belief, not something verified on
+    # this Workspace, and the first invalid_rapt on the primary after enabling
+    # it is the test.
+    analytics_enabled: bool = field(default_factory=lambda: _bool("IBLU_ANALYTICS", False))
 
     # --- Google OAuth (single-user) ---
     # The assistant accesses ONLY this user's account via an OAuth refresh
