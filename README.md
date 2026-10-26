@@ -30,7 +30,7 @@ Phase 2 is being built to the plan in
 Two components, one repo:
 
 ### 1. MCP server (Python, FastMCP)
-Remote MCP server Claude connects to over HTTPS. **48 tools** organised by
+Remote MCP server Claude connects to over HTTPS. **51 tools** organised by
 service, with MCP tool annotations (`readOnlyHint` / `destructiveHint`) so
 Claude.ai picks safe permission defaults automatically:
 
@@ -62,6 +62,9 @@ Claude.ai picks safe permission defaults automatically:
 | `sheets_info` | Explore a spreadsheet: tabs, info, find a value, headers, named ranges, preview — one tool, six actions | auto-allow |
 | `sheets_manage` | Reshape a spreadsheet: create, tabs, append, clear (confirm for whole tab), find/replace, insert rows/cols, freeze, sort — never deletes | auto-allow |
 | `directory_search` | Who is X — name, email, title, department from the Workspace directory | auto-allow |
+| `drive_read` | Search and inspect Drive: search, get, recent, shared-with-me, permissions, revisions, export as text (paged), comments, storage | auto-allow |
+| `drive_manage` | Copy, rename, move, trash/untrash, star, describe, share/unshare, shortcuts — no permanent delete, owner never granted | auto-allow |
+| `gdoc_edit` | Docs edits by name: heading, bullets, link, style, page break, image, insert after, delete text, find, outline | auto-allow |
 | `calendar` | See and manage the calendar: list / find free time / create / move / update / delete | auto-allow |
 | `calendar_create_event` | Create a Calendar event (superseded by `calendar`) | auto-allow |
 | `calendar_add_label` | Attach a custom label to a Calendar event | auto-allow |

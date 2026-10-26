@@ -1347,6 +1347,103 @@ def directory_search(
     return directory_tools.directory_search(query=query, limit=limit, account=account)
 
 
+@mcp.tool(name="drive_read", annotations={"title": "Search and Inspect Drive", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("drive_read")
+@with_retry("drive_read")
+def drive_read(
+    action: Annotated[str, Field(description="search | get | recent | shared_with_me | permissions | revisions | export_text | comments | storage")],
+    file_id_or_url: Annotated[str | None, Field(default=None, description="File ID or URL (not needed for search/recent/shared_with_me/storage)")] = None,
+    query: Annotated[str | None, Field(default=None, description="search: plain words, or a Drive `q` expression")] = None,
+    limit: Annotated[int, Field(default=20, ge=1, le=100)] = 20,
+    page_token: Annotated[str | None, Field(default=None, description="Continue a paginated search/recent/revisions")] = None,
+    max_chars: Annotated[int, Field(default=20000, ge=200, le=20000, description="export_text: characters per call")] = 20000,
+    offset: Annotated[int, Field(default=0, ge=0, description="export_text: continue from a previous `next_offset`")] = 0,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """Find and inspect anything in Drive without writing. ``search`` takes
+    plain words or a Drive ``q`` expression; ``get`` is full metadata;
+    ``recent`` and ``shared_with_me`` need no id; ``permissions`` says who has
+    what role; ``revisions`` lists history; ``export_text`` returns a Doc,
+    Sheet or Slides as text, 20,000 characters per call with ``next_offset``
+    for the rest — page it before summarising, exactly like ``repo``;
+    ``comments`` lists every thread with ids; ``storage`` is the quota.
+
+    One tool with an ``action`` rather than nine: every new tool costs a
+    permission click forever (HANDOFF §12).
+    """
+    from .tools import drive_read as drive_read_tools
+    return drive_read_tools.drive_read(
+        action=action, file_id_or_url=file_id_or_url, query=query, limit=limit,
+        page_token=page_token, account=account, max_chars=max_chars, offset=offset,
+    )
+
+
+@mcp.tool(name="drive_manage", annotations={"title": "Organise and Share Drive Files", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("drive_manage")
+@with_retry("drive_manage")
+def drive_manage(
+    action: Annotated[str, Field(description="copy | rename | move | trash | untrash | star | unstar | set_description | share | unshare | create_shortcut")],
+    file_id_or_url: Annotated[str, Field(min_length=1, description="File ID or URL")],
+    new_name: Annotated[str | None, Field(default=None, description="copy/rename/create_shortcut: the name")] = None,
+    folder_id_or_url: Annotated[str | None, Field(default=None, description="copy/move/create_shortcut: destination folder")] = None,
+    email: Annotated[str | None, Field(default=None, description="share/unshare: the person")] = None,
+    role: Annotated[str, Field(default="viewer", description="share: viewer | commenter | writer (owner is refused)")] = "viewer",
+    notify: Annotated[bool, Field(default=False, description="share: email them (off by default)")] = False,
+    message: Annotated[str | None, Field(default=None, description="share: note in the notification, only when notify=True")] = None,
+    description: Annotated[str | None, Field(default=None, description="set_description")] = None,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """Copy, rename, move, star, describe, share and unshare files, and make
+    shortcuts. Trash and untrash only — **there is no permanent delete**,
+    deliberately; trash can be undone from Drive. ``share`` never grants
+    ``owner`` and does not email the person unless ``notify=True``.
+    """
+    from .tools import drive_manage as drive_manage_tools
+    return drive_manage_tools.drive_manage(
+        action=action, file_id_or_url=file_id_or_url, new_name=new_name,
+        folder_id_or_url=folder_id_or_url, email=email, role=role, notify=notify,
+        message=message, description=description, account=account,
+    )
+
+
+@mcp.tool(name="gdoc_edit", annotations={"title": "Edit Google Doc Structure", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("gdoc_edit")
+@with_retry("gdoc_edit")
+def gdoc_edit(
+    action: Annotated[str, Field(description="heading | bullets | link | style | page_break | image | insert_after | delete_text | find | outline")],
+    doc_id_or_url: Annotated[str, Field(min_length=1, description="Doc ID or URL")],
+    text: Annotated[str | None, Field(default=None, max_length=20000, description="heading/insert_after: the text · delete_text/find: the exact substring")] = None,
+    anchor_text: Annotated[str | None, Field(default=None, max_length=2000, description="Exact substring to position after or act on (first match; result reports occurrences)")] = None,
+    level: Annotated[int, Field(default=1, ge=1, le=6, description="heading: 1-6")] = 1,
+    items: Annotated[list[str] | None, Field(default=None, description="bullets: the items")] = None,
+    numbered: Annotated[bool, Field(default=False, description="bullets: numbered instead of bulleted")] = False,
+    url: Annotated[str | None, Field(default=None, description="link: the target URL")] = None,
+    style: Annotated[str | None, Field(default=None, description="style: bold, italic, underline (comma-separable)")] = None,
+    on: Annotated[bool, Field(default=True, description="style: apply (True) or remove (False)")] = True,
+    image_url: Annotated[str | None, Field(default=None, description="image: public URL of the image")] = None,
+    width_pt: Annotated[float | None, Field(default=None, gt=0, le=600, description="image: width in points, aspect preserved")] = None,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """The Docs edits ``gdoc_batch_update`` makes painful, by name: a heading,
+    a bulleted or numbered list, a link on existing text, bold/italic/
+    underline, a page break, an inline image, text after an anchor, deleting
+    one exact substring (refused above 2,000 characters), and two reads —
+    ``find`` (where a phrase is, with context) and ``outline`` (the headings).
+
+    Indices come from the live document on every call, never a cache. An
+    anchor that matches more than once uses the first and says so.
+    """
+    from .tools import gdoc_edit as gdoc_edit_tools
+    return gdoc_edit_tools.gdoc_edit(
+        action=action, doc_id_or_url=doc_id_or_url, text=text, anchor_text=anchor_text,
+        level=level, items=items, numbered=numbered, url=url, style=style, on=on,
+        image_url=image_url, width_pt=width_pt, account=account,
+    )
+
+
 @mcp.tool(name="get_infra_status", annotations={"title": "Get Infrastructure Status", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def get_infra_status() -> dict:
