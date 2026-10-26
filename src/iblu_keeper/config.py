@@ -42,20 +42,40 @@ class Settings:
     # return mock data and never touch Google APIs. This lets the whole system
     # be developed before the service-account access test concludes.
     dry_run: bool = field(default_factory=lambda: _bool("DRY_RUN", True))
-    # Google Forms needs two scopes the original consent never asked for.
-    # Requesting a scope the grant does not hold is the ONE direction that
-    # breaks refresh — google-auth rejects a request wider than the grant — so
-    # the scopes are added only when this is on, and turning it on means one
-    # re-authorisation (`scripts/connect_google.py --manual`) before anything
-    # works. Off by default so an existing token keeps refreshing untouched.
-    forms_enabled: bool = field(default_factory=lambda: _bool("IBLU_FORMS", False))
-    # Google Analytics (GA4 Data + Admin APIs) — `analytics.readonly`. Same
-    # gate, same reason, same one re-authorisation. Not a Cloud Platform scope,
-    # so it should not drag the token under Cloud session control the way
+    # Optional Google scopes, per account. Google Forms and GA4 need scopes the
+    # original consents never asked for, and requesting a scope the grant does
+    # not hold is the ONE direction that breaks refresh — google-auth rejects a
+    # request wider than the grant — so each is added only for the accounts
+    # named here, and naming an account means one re-authorisation of it
+    # (`scripts/connect_google.py --account <alias> --manual`) before anything
+    # works. Value: a comma-separated list of aliases ("blt,deadlift"); a bare
+    # "true" means the primary account only. Empty by default so every existing
+    # token keeps refreshing untouched.
+    forms_accounts: str = field(default_factory=lambda: os.getenv("IBLU_FORMS", ""))
+    # GA4 Data + Admin (`analytics.readonly`). Not a Cloud Platform scope, so it
+    # should not drag a token under Cloud session control the way
     # `cloud-platform` would — but that is a belief, not something verified on
-    # this Workspace, and the first invalid_rapt on the primary after enabling
-    # it is the test.
-    analytics_enabled: bool = field(default_factory=lambda: _bool("IBLU_ANALYTICS", False))
+    # the Deadlift Workspace, which DOES enforce that policy. The first
+    # invalid_rapt on an account after enabling this is the test, and the
+    # watchdog names it within thirty minutes.
+    analytics_accounts: str = field(default_factory=lambda: os.getenv("IBLU_ANALYTICS", ""))
+
+    def optional_scope_accounts(self, flag: str) -> frozenset[str]:
+        """Which aliases an optional-scope flag is on for."""
+        raw = (getattr(self, flag, "") or "").strip().lower()
+        if not raw or raw in {"0", "false", "no", "off"}:
+            return frozenset()
+        if raw in {"1", "true", "yes", "on"}:
+            return frozenset({self.primary_alias})
+        return frozenset(a.strip() for a in raw.split(",") if a.strip())
+
+    @property
+    def forms_enabled(self) -> bool:
+        return self.primary_alias in self.optional_scope_accounts("forms_accounts")
+
+    @property
+    def analytics_enabled(self) -> bool:
+        return self.primary_alias in self.optional_scope_accounts("analytics_accounts")
 
     # --- Google OAuth (single-user) ---
     # The assistant accesses ONLY this user's account via an OAuth refresh

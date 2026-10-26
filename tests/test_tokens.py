@@ -189,44 +189,67 @@ def test_the_primary_keeps_pubsub_and_the_others_do_not():
         )
 
 
-# --- Forms scopes are opt-in, because widening breaks refresh (2026-10-26) --
+# --- optional scopes are opt-in PER ACCOUNT, because widening breaks refresh --
+#
+# 2026-10-26. Forms and GA4 need scopes the original consents never asked for.
+# Requesting one the grant does not hold fails every refresh with "Not all
+# requested scopes were granted" — the primary offline until a sign-in, with
+# no change he made to explain it. So each scope set is added only for the
+# accounts named in its flag, and naming one means re-authorising it.
 
 
-def _settings_with_forms(monkeypatch, enabled: bool):
+def _settings(monkeypatch, forms="", analytics=""):
     import iblu_keeper.google_auth as ga
-    from iblu_keeper.config import settings as real
+    from iblu_keeper.config import Settings, settings as real
 
     class _S:
         primary_alias = real.primary_alias
-        forms_enabled = enabled
-        analytics_enabled = False
+        forms_accounts = forms
+        analytics_accounts = analytics
+        optional_scope_accounts = Settings.optional_scope_accounts
 
     monkeypatch.setattr("iblu_keeper.config.settings", _S())
     return ga
 
 
-def test_forms_scopes_are_absent_until_he_opts_in(monkeypatch):
-    """Adding them silently would fail every refresh of the existing token
-    with 'Not all requested scopes were granted' — the primary account offline
-    until a sign-in, with no change he made to explain it."""
-    ga = _settings_with_forms(monkeypatch, enabled=False)
-    scopes = ga.scopes_for(None)
-    assert not any(s in scopes for s in ga.FORMS_SCOPES)
+def test_optional_scopes_are_absent_until_an_account_is_named(monkeypatch):
+    ga = _settings(monkeypatch)
+    for alias in (None, "deadlift", "choco"):
+        scopes = ga.scopes_for(alias)
+        assert not any(s in scopes for s in ga.FORMS_SCOPES + ga.ANALYTICS_SCOPES)
 
 
-def test_forms_scopes_appear_only_with_the_flag(monkeypatch):
-    ga = _settings_with_forms(monkeypatch, enabled=True)
-    scopes = ga.scopes_for(None)
-    assert all(s in scopes for s in ga.FORMS_SCOPES)
-    assert "https://www.googleapis.com/auth/pubsub" in scopes, "the flag adds, never removes"
+def test_a_bare_true_means_the_primary_only(monkeypatch):
+    ga = _settings(monkeypatch, analytics="true")
+    assert ga.ANALYTICS_SCOPES[0] in ga.scopes_for(None)
+    assert ga.ANALYTICS_SCOPES[0] not in ga.scopes_for("deadlift")
 
 
-def test_non_primary_accounts_never_get_forms_scopes(monkeypatch):
-    """Deadlift and Choco already pay for a Cloud-scope policy on every refresh;
-    they do not get a second experiment."""
-    ga = _settings_with_forms(monkeypatch, enabled=True)
-    for alias in ("deadlift", "choco"):
-        assert not any(s in ga.scopes_for(alias) for s in ga.FORMS_SCOPES)
+def test_an_alias_list_names_exactly_those_accounts(monkeypatch):
+    """He asked for GA on admin@deadlift.io; the primary is not implied."""
+    ga = _settings(monkeypatch, analytics="deadlift")
+    assert ga.ANALYTICS_SCOPES[0] in ga.scopes_for("deadlift")
+    assert ga.ANALYTICS_SCOPES[0] not in ga.scopes_for(None)
+    ga = _settings(monkeypatch, analytics="blt,deadlift", forms="blt")
+    assert ga.ANALYTICS_SCOPES[0] in ga.scopes_for("deadlift")
+    assert ga.ANALYTICS_SCOPES[0] in ga.scopes_for(None)
+    assert ga.FORMS_SCOPES[0] in ga.scopes_for(None)
+    assert ga.FORMS_SCOPES[0] not in ga.scopes_for("deadlift"), "flags are independent"
+
+
+def test_a_non_primary_account_never_gains_pubsub_from_a_flag(monkeypatch):
+    """The Cloud scope that broke Deadlift daily must not come back by accident."""
+    ga = _settings(monkeypatch, analytics="deadlift", forms="deadlift")
+    assert "https://www.googleapis.com/auth/pubsub" not in ga.scopes_for("deadlift")
+
+
+def test_every_optional_scope_set_is_behind_a_real_setting():
+    """A typo in the flag name would silently never add the scope."""
+    import iblu_keeper.google_auth as ga
+    from iblu_keeper.config import Settings
+
+    for flag in ga.OPTIONAL_SCOPES:
+        assert flag in Settings.__dataclass_fields__, flag
 
 
 def test_the_gate_is_documented_as_the_widening_hazard():
@@ -237,30 +260,3 @@ def test_the_gate_is_documented_as_the_widening_hazard():
     src = inspect.getsource(ga)
     assert "WIDENING is not" in src
     assert "Not all requested scopes were granted" in src
-
-
-def test_analytics_scope_is_gated_exactly_like_forms(monkeypatch):
-    """A second optional scope must go through the same gate, or the next one
-    gets added to SCOPES directly and takes the primary offline."""
-    import iblu_keeper.google_auth as ga
-    from iblu_keeper.config import settings as real
-
-    class _S:
-        primary_alias = real.primary_alias
-        forms_enabled = False
-        analytics_enabled = True
-
-    monkeypatch.setattr("iblu_keeper.config.settings", _S())
-    scopes = ga.scopes_for(None)
-    assert "https://www.googleapis.com/auth/analytics.readonly" in scopes
-    assert not any(s in scopes for s in ga.FORMS_SCOPES), "flags are independent"
-    assert "analytics_enabled" in ga.OPTIONAL_SCOPES and "forms_enabled" in ga.OPTIONAL_SCOPES
-
-
-def test_every_optional_scope_set_is_behind_a_real_setting():
-    """A typo in the flag name would silently never add the scope."""
-    import iblu_keeper.google_auth as ga
-    from iblu_keeper.config import Settings
-
-    for flag in ga.OPTIONAL_SCOPES:
-        assert flag in Settings.__dataclass_fields__, flag

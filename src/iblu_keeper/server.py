@@ -1626,6 +1626,134 @@ def chat_reply(
     return chat_read_tools.chat_reply(space=space, thread=thread, text=text, account=account)
 
 
+@mcp.tool(name="forms_read", annotations={"title": "Read a Google Form and its Responses", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("forms_read")
+@with_retry("forms_read")
+def forms_read(
+    action: Annotated[str, Field(description="info | structure | responses | response | summary")],
+    form_id_or_url: Annotated[str, Field(min_length=1, description="Form ID or edit URL (docs.google.com/forms/d/<id>/edit — not the /e/ responder link)")],
+    response_id: Annotated[str | None, Field(default=None, description="response: one response id")] = None,
+    limit: Annotated[int, Field(default=50, ge=1, le=500, description="responses: page size")] = 50,
+    page_token: Annotated[str | None, Field(default=None, description="responses: continue a page")] = None,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """A form's ``info``, its ``structure`` (every question, typed, with
+    options), its ``responses`` with answers resolved to question titles, one
+    ``response``, and a ``summary`` of counts per option for every choice and
+    scale question (refused above 2,000 responses). Read-only.
+
+    Needs the Forms scope: until the account is named in IBLU_FORMS and
+    re-authorised once, this returns the exact steps instead of data.
+    """
+    from .tools import forms_read as forms_read_tools
+    return forms_read_tools.forms_read(action=action, form_id_or_url=form_id_or_url,
+                                       response_id=response_id, limit=limit,
+                                       page_token=page_token, account=account)
+
+
+@mcp.tool(name="forms_manage", annotations={"title": "Create and Edit Google Forms", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("forms_manage")
+@with_retry("forms_manage")
+def forms_manage(
+    action: Annotated[str, Field(description="create | set_title | add_question | update_question | move_question | delete_question | add_section | set_quiz")],
+    form_id_or_url: Annotated[str | None, Field(default=None, description="Form ID or edit URL (not needed for create)")] = None,
+    title: Annotated[str | None, Field(default=None, description="create/set_title/add_question/add_section/update_question")] = None,
+    description: Annotated[str | None, Field(default=None)] = None,
+    question_type: Annotated[str | None, Field(default=None, description="add_question: short_text | paragraph | multiple_choice | checkbox | dropdown | scale | date | time")] = None,
+    options: Annotated[list[str] | None, Field(default=None, description="choice questions: the options")] = None,
+    required: Annotated[bool | None, Field(default=None)] = None,
+    scale_low: Annotated[int | None, Field(default=None, ge=0, le=1)] = None,
+    scale_high: Annotated[int | None, Field(default=None, ge=2, le=10)] = None,
+    scale_low_label: Annotated[str | None, Field(default=None)] = None,
+    scale_high_label: Annotated[str | None, Field(default=None)] = None,
+    at: Annotated[int | None, Field(default=None, ge=1, description="add_question/add_section/move_question: 1-based position")] = None,
+    item_id: Annotated[str | None, Field(default=None, description="update/move/delete_question: the item id from structure")] = None,
+    enabled: Annotated[bool, Field(default=True, description="set_quiz")] = True,
+    confirm: Annotated[bool, Field(default=False, description="delete_question: required — there is no trash for a question")] = False,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """Create a form, set its title, add and edit typed questions, move or
+    (with ``confirm``) delete one, add a section, toggle quiz mode. Never
+    deletes a form — that is ``drive_manage(action='trash')``. Needs the
+    Forms scope (IBLU_FORMS + one re-authorisation).
+    """
+    from .tools import forms_manage as forms_manage_tools
+    return forms_manage_tools.forms_manage(
+        action=action, form_id_or_url=form_id_or_url, title=title, description=description,
+        question_type=question_type, options=options, required=required, scale_low=scale_low,
+        scale_high=scale_high, scale_low_label=scale_low_label, scale_high_label=scale_high_label,
+        at=at, item_id=item_id, enabled=enabled, confirm=confirm, account=account,
+    )
+
+
+@mcp.tool(name="slides_read", annotations={"title": "Read a Google Slides Deck", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("slides_read")
+@with_retry("slides_read")
+def slides_read(
+    action: Annotated[str, Field(description="outline | slide | text | info")],
+    presentation_id_or_url: Annotated[str, Field(min_length=1, description="Presentation ID or URL")],
+    slide: Annotated[int | None, Field(default=None, ge=1, description="slide: 1-based index")] = None,
+    max_chars: Annotated[int, Field(default=20000, ge=200, le=20000, description="text: characters per call")] = 20000,
+    offset: Annotated[int, Field(default=0, ge=0, description="text: continue from a previous next_offset")] = 0,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """A deck's ``outline`` (every slide: layout, title, first line of body,
+    whether it has notes), one ``slide`` in full (text with object ids,
+    images, tables, speaker notes), the whole deck as ``text`` paged 20,000
+    characters at a time with ``next_offset`` — page it before summarising —
+    and ``info``. Read-only.
+    """
+    from .tools import slides_read as slides_read_tools
+    return slides_read_tools.slides_read(action=action, presentation_id_or_url=presentation_id_or_url,
+                                         slide=slide, max_chars=max_chars, offset=offset, account=account)
+
+
+@mcp.tool(name="slides_manage", annotations={"title": "Build and Edit Google Slides", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("slides_manage")
+@with_retry("slides_manage")
+def slides_manage(
+    action: Annotated[str, Field(description="create | add_slide | set_text | replace_text | add_text_box | add_image | duplicate_slide | move_slide | delete_slide | speaker_notes | rename")],
+    presentation_id_or_url: Annotated[str | None, Field(default=None, description="Presentation ID or URL (not needed for create)")] = None,
+    slide: Annotated[int | None, Field(default=None, ge=1, description="1-based slide index for slide-level actions")] = None,
+    title: Annotated[str | None, Field(default=None, description="create/rename: deck title · add_slide: title placeholder text")] = None,
+    body: Annotated[str | None, Field(default=None, description="add_slide: body placeholder text")] = None,
+    text: Annotated[str | None, Field(default=None, max_length=20000, description="set_text / add_text_box / speaker_notes")] = None,
+    layout: Annotated[str, Field(default="TITLE_AND_BODY", description="add_slide: TITLE_AND_BODY | TITLE_ONLY | BLANK | SECTION_HEADER | TITLE")] = "TITLE_AND_BODY",
+    at: Annotated[int | None, Field(default=None, ge=1, description="add_slide/move_slide: 1-based position")] = None,
+    object_id: Annotated[str | None, Field(default=None, description="set_text: a shape's objectId from slides_read")] = None,
+    placeholder: Annotated[str | None, Field(default=None, description="set_text: title | body (instead of object_id)")] = None,
+    find: Annotated[str | None, Field(default=None, description="replace_text")] = None,
+    replace_with: Annotated[str | None, Field(default=None, description="replace_text")] = None,
+    match_case: Annotated[bool, Field(default=False)] = False,
+    image_url: Annotated[str | None, Field(default=None, description="add_image: public URL")] = None,
+    x: Annotated[float | None, Field(default=None, description="add_text_box/add_image: points from the left")] = None,
+    y: Annotated[float | None, Field(default=None, description="points from the top")] = None,
+    width: Annotated[float | None, Field(default=None, gt=0)] = None,
+    height: Annotated[float | None, Field(default=None, gt=0)] = None,
+    confirm: Annotated[bool, Field(default=False, description="delete_slide: required")] = False,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """Build and change decks: ``create``, ``add_slide`` with a layout and
+    placeholder text, ``set_text`` on a shape or the title/body placeholder,
+    ``replace_text`` across the deck, ``add_text_box``, ``add_image``,
+    ``duplicate_slide``, ``move_slide``, ``delete_slide`` (needs ``confirm``;
+    the deck's version history is the undo), ``speaker_notes``, ``rename``.
+    Never deletes a presentation — that is ``drive_manage(action='trash')``.
+    Slide indices are resolved against the live deck on every call.
+    """
+    from .tools import slides_manage as slides_manage_tools
+    return slides_manage_tools.slides_manage(
+        action=action, presentation_id_or_url=presentation_id_or_url, slide=slide, title=title,
+        body=body, text=text, layout=layout, at=at, object_id=object_id, placeholder=placeholder,
+        find=find, replace_with=replace_with, match_case=match_case, image_url=image_url,
+        x=x, y=y, width=width, height=height, confirm=confirm, account=account,
+    )
+
+
 @mcp.tool(name="get_infra_status", annotations={"title": "Get Infrastructure Status", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def get_infra_status() -> dict:

@@ -30,7 +30,7 @@ Phase 2 is being built to the plan in
 Two components, one repo:
 
 ### 1. MCP server (Python, FastMCP)
-Remote MCP server Claude connects to over HTTPS. **57 tools** organised by
+Remote MCP server Claude connects to over HTTPS. **61 tools** organised by
 service, with MCP tool annotations (`readOnlyHint` / `destructiveHint`) so
 Claude.ai picks safe permission defaults automatically:
 
@@ -71,6 +71,10 @@ Claude.ai picks safe permission defaults automatically:
 | `calendar_edit` | Get, update (attendees not emailed unless asked), cancel (never delete), RSVP, move, instances, quick-add, list a range | auto-allow |
 | `chat_read` | A thread in order, search recent messages, members with emails, space details, my spaces with unread state | auto-allow |
 | `chat_reply` | Reply inside an existing Chat thread — required space, no default | **ask** |
+| `forms_read` | A form's info, structure, responses (answers by question title), one response, per-option summary | auto-allow |
+| `forms_manage` | Create a form, title, add/update/move questions, delete one (confirm), sections, quiz mode — never deletes a form | auto-allow |
+| `slides_read` | A deck's outline, one slide in full, the whole deck as paged text, info | auto-allow |
+| `slides_manage` | Create a deck, add slides by layout, set/replace text, text boxes, images, duplicate/move/delete (confirm) slides, speaker notes, rename | auto-allow |
 | `calendar` | See and manage the calendar: list / find free time / create / move / update / delete | auto-allow |
 | `calendar_create_event` | Create a Calendar event (superseded by `calendar`) | auto-allow |
 | `calendar_add_label` | Attach a custom label to a Calendar event | auto-allow |
