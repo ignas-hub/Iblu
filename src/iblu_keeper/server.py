@@ -1253,6 +1253,100 @@ def repo(
     )
 
 
+@mcp.tool(name="sheets_info", annotations={"title": "Explore a Google Sheet", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("sheets_info")
+@with_retry("sheets_info")
+def sheets_info(
+    action: Annotated[str, Field(description="tabs | info | find | headers | named_ranges | preview")],
+    spreadsheet_id_or_url: Annotated[str, Field(min_length=1, description="Spreadsheet ID or URL")],
+    tab: Annotated[str | None, Field(default=None, description="Tab title (default: first tab, or all tabs for find)")] = None,
+    query: Annotated[str | None, Field(default=None, description="find: case-insensitive substring to look for")] = None,
+    rows: Annotated[int, Field(default=10, ge=1, le=200, description="preview: how many rows")] = 10,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """Explore a spreadsheet's structure without reading a range. Read-only.
+
+    ``sheets_read`` reads an A1 range you already know. This answers the
+    questions that come before that: ``tabs`` (what tabs exist, how big),
+    ``info`` (title, locale, timezone), ``find`` (which cell holds "Q3
+    invoice" — up to 100 matches across tabs), ``headers`` (row 1 of a tab),
+    ``named_ranges``, ``preview`` (the first N rows of a tab).
+
+    One tool with an ``action`` rather than six tools: every new tool costs a
+    permission click forever (HANDOFF §12).
+    """
+    from .tools import sheets_read as sheets_read_tools
+    return sheets_read_tools.sheets_read(
+        action=action, spreadsheet_id_or_url=spreadsheet_id_or_url, tab=tab,
+        query=query, rows=rows, account=account,
+    )
+
+
+@mcp.tool(name="sheets_manage", annotations={"title": "Change a Google Sheet's Structure", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+@with_google_errors("sheets_manage")
+@with_retry("sheets_manage")
+def sheets_manage(
+    action: Annotated[str, Field(description="create | add_tab | rename_tab | clear | append | find_replace | insert_rows | insert_columns | freeze | format_header | set_column_width | sort")],
+    spreadsheet_id_or_url: Annotated[str | None, Field(default=None, description="Spreadsheet ID or URL (not needed for create)")] = None,
+    title: Annotated[str | None, Field(default=None, description="create: spreadsheet title · add_tab: new tab title")] = None,
+    tab: Annotated[str | None, Field(default=None, description="Tab the action applies to")] = None,
+    new_title: Annotated[str | None, Field(default=None, description="rename_tab: the new title")] = None,
+    range: Annotated[str | None, Field(default=None, description="clear: A1 range")] = None,
+    rows: Annotated[list[list] | None, Field(default=None, description="append: rows of cell values")] = None,
+    find: Annotated[str | None, Field(default=None, description="find_replace: text to find")] = None,
+    replace: Annotated[str | None, Field(default=None, description="find_replace: replacement")] = None,
+    match_case: Annotated[bool, Field(default=False)] = False,
+    at: Annotated[int | None, Field(default=None, description="insert_rows/insert_columns: 1-based position to insert before")] = None,
+    count: Annotated[int, Field(default=1, ge=1, le=1000)] = 1,
+    column: Annotated[str | None, Field(default=None, description="insert_columns/set_column_width/sort: column letter")] = None,
+    freeze_rows: Annotated[int | None, Field(default=None, ge=0)] = None,
+    freeze_cols: Annotated[int | None, Field(default=None, ge=0)] = None,
+    pixels: Annotated[int | None, Field(default=None, ge=10, le=2000, description="set_column_width")] = None,
+    ascending: Annotated[bool, Field(default=True, description="sort")] = True,
+    has_header: Annotated[bool, Field(default=True, description="sort: keep row 1 in place")] = True,
+    confirm: Annotated[bool, Field(default=False, description="clear: required to clear a whole tab or an open-ended range")] = False,
+    account: Annotated[str | None, Field(default=None, description="Account alias (choco, deadlift); default primary")] = None,
+) -> dict:
+    """Create and reshape spreadsheets: tabs, rows, columns, freezes, sorting,
+    find-and-replace, header formatting. ``sheets_write`` writes values into a
+    range; this changes the structure around them.
+
+    Nothing here deletes a tab or a spreadsheet — that is Drive's ``trash``,
+    which can be undone. ``clear`` on a whole tab needs ``confirm=True``. Any
+    action touching more than 50,000 cells is refused; ``find_replace`` cannot
+    be pre-counted, so it reports ``occurrences_changed`` afterwards instead.
+    """
+    from .tools import sheets_manage as sheets_manage_tools
+    return sheets_manage_tools.sheets_manage(
+        action=action, spreadsheet_id_or_url=spreadsheet_id_or_url, title=title,
+        tab=tab, new_title=new_title, range=range, rows=rows, find=find,
+        replace=replace, match_case=match_case, at=at, count=count, column=column,
+        freeze_rows=freeze_rows, freeze_cols=freeze_cols, pixels=pixels,
+        ascending=ascending, has_header=has_header, confirm=confirm, account=account,
+    )
+
+
+@mcp.tool(name="directory_search", annotations={"title": "Search the Workspace Directory", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+@with_google_errors("directory_search")
+@with_retry("directory_search")
+def directory_search(
+    query: Annotated[str, Field(min_length=1, description="A name, part of a name, or an email")],
+    limit: Annotated[int, Field(default=10, ge=1, le=50)] = 10,
+    account: Annotated[str | None, Field(default=None, description="Which Workspace to search: blt (default), deadlift, choco")] = None,
+) -> dict:
+    """Who is X, and what is their email? Searches the Workspace directory of
+    the chosen account: name, email, title, department, phone. Read-only.
+
+    Personal contacts are not searchable: that needs the ``contacts`` scope,
+    which the token deliberately does not hold.
+    """
+    from .tools import directory as directory_tools
+    return directory_tools.directory_search(query=query, limit=limit, account=account)
+
+
 @mcp.tool(name="get_infra_status", annotations={"title": "Get Infrastructure Status", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 def get_infra_status() -> dict:
