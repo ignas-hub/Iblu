@@ -94,6 +94,14 @@ def main() -> int:
         help="print the URL and wait for the redirect to be pasted back — for a "
              "phone, or anywhere without an SSH tunnel to port 8765",
     )
+    parser.add_argument(
+        "--with",
+        dest="extra",
+        default="",
+        help="optional scope sets to request at sign-in, comma-separated: "
+             "forms, analytics. Sign in with these FIRST, then set the matching "
+             "IBLU_* flag in .env — never the other way round (see below).",
+    )
     args = parser.parse_args()
 
     alias = (args.account or settings.primary_alias).lower()
@@ -126,6 +134,23 @@ def main() -> int:
     # single sign-in. Only the readstate worker uses Pub/Sub, and only on the
     # primary account.
     scopes = scopes_for(alias)
+    # Optional scope sets, requested at sign-in on top of whatever the flags
+    # already add. The ORDER matters and is the reason this flag exists: a
+    # saved token holding more scopes than `scopes_for` requests is fine
+    # (narrowing), but an IBLU_* flag set before the sign-in makes every
+    # refresh of the old token fail with "Not all requested scopes were
+    # granted" until the sign-in happens. So: sign in with --with first, then
+    # set the flag, then restart. Both orders end in the same token; only one
+    # of them leaves an account offline in between.
+    if args.extra:
+        from iblu_keeper.google_auth import OPTIONAL_SCOPES
+
+        by_name = {k.replace("_accounts", ""): v for k, v in OPTIONAL_SCOPES.items()}
+        for name in (x.strip().lower() for x in args.extra.split(",") if x.strip()):
+            if name not in by_name:
+                print(f"FAIL: unknown --with {name!r}; choose from {', '.join(sorted(by_name))}.")
+                return 1
+            scopes.extend(x for x in by_name[name] if x not in scopes)
     flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
     print(f"Requesting {len(scopes)} scopes"
           + ("" if alias == settings.primary_alias else " (no Pub/Sub — see comment above)"))

@@ -94,3 +94,22 @@ def test_the_wrong_account_is_still_refused_in_manual_mode():
     check_at = source.index("you signed in as")
     assert source.index("args.manual") < check_at
     assert source.index("flow.run_local_server") < check_at
+
+
+def test_with_adds_optional_scopes_at_sign_in_without_a_flag():
+    """The safe order is sign in first, flag second. Without --with, the only
+    way to get the scope was to set the flag first — which fails every refresh
+    of the old token until the sign-in happens."""
+    import inspect
+
+    src = inspect.getsource(cg.main)
+    assert '"--with"' in src
+    assert "OPTIONAL_SCOPES" in src
+    assert "sign in with --with first, then" in src
+
+
+def test_with_rejects_a_name_that_is_not_a_scope_set():
+    import inspect
+
+    src = inspect.getsource(cg.main)
+    assert "unknown --with" in src
