@@ -200,11 +200,20 @@ def render_text(proposals: list[dict]) -> str:
 
 
 def build_card(check_id: int, proposals: list[dict], self_id: str,
-               base_url: str, secret: str) -> dict:
+               base_url: str, secret: str, mode: str = "link") -> dict:
+    """`mode="app"`: buttons act in place, carrying the signed token
+    (`chat_app.build_action_button`). `"link"`: the `/q/<token>` URL."""
     from ..pings.tokens import make_token, tap_url
+
+    if mode not in ("app", "link"):
+        raise ValueError(f"build_card mode must be 'app' or 'link', not {mode!r}")
 
     def button(text: str, letter: str, choice: str) -> dict:
         token = make_token(check_id, "stage", f"{letter}{choice}", secret)
+        if mode == "app":
+            from .. import chat_app
+
+            return chat_app.build_action_button(text, token)
         return {"text": text, "onClick": {"openLink": {"url": tap_url(base_url, token)}}}
 
     sections = []
@@ -263,9 +272,24 @@ def _upsert(conn, on: date, proposals: list[dict]) -> int:
 
 
 def send(check_id: int, proposals: list[dict], self_id: str) -> dict:
+    """Chat app when its key is on disk (buttons answer in place), else the
+    webhook and `/q/<token>` links. The signed token is the authority either way."""
     import requests
 
+    from .. import chat_app
     from ..pings.deliver import DeliveryError, _scrub, preflight_tap_route
+
+    if not settings.ping_signing_secret:
+        raise DeliveryError("PING_SIGNING_SECRET is not set — tap links would be unsignable")
+
+    if chat_app.app_configured():
+        body = build_card(check_id, proposals, self_id, settings.mcp_public_base_url,
+                          settings.ping_signing_secret, mode="app")
+        refs = chat_app.send_as_app(
+            settings.secretary_space, body, thread_key=f"stage-{check_id}",
+        )
+        logger.info("stage_check: %s sent as %s (chat app)", check_id, refs["message_ref"])
+        return refs
 
     if not settings.secretary_webhook_url:
         raise DeliveryError("SECRETARY_WEBHOOK_URL is not set")

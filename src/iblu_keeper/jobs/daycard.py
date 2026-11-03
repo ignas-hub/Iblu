@@ -329,8 +329,22 @@ def render_card_text(lines: list[dict]) -> str:
 # --------------------------------------------------------------------------
 
 
-def build_card(day_card_id: int, lines: list[dict], self_id: str, base_url: str, secret: str) -> dict:
+def build_card(day_card_id: int, lines: list[dict], self_id: str, base_url: str, secret: str,
+               mode: str = "link") -> dict:
+    """The Chat message body. `mode="app"` gives the buttons an in-place
+    action carrying the signed token (`chat_app.build_action_button`);
+    `"link"` is the `/q/<token>` URL the webhook path has always used."""
     from ..pings.tokens import make_token, tap_url
+
+    if mode not in ("app", "link"):
+        raise ValueError(f"build_card mode must be 'app' or 'link', not {mode!r}")
+
+    def button(text: str, token: str) -> dict:
+        if mode == "app":
+            from .. import chat_app
+
+            return chat_app.build_action_button(text, token)
+        return {"text": text, "onClick": {"openLink": {"url": tap_url(base_url, token)}}}
 
     token_all = make_token(day_card_id, "daycard", "A", secret)
     token_wrong = make_token(day_card_id, "daycard", "B", secret)
@@ -345,10 +359,8 @@ def build_card(day_card_id: int, lines: list[dict], self_id: str, base_url: str,
                 "sections": [
                     {"widgets": [{"textParagraph": {"text": body}}]},
                     {"widgets": [{"buttonList": {"buttons": [
-                        {"text": "All correct",
-                         "onClick": {"openLink": {"url": tap_url(base_url, token_all)}}},
-                        {"text": "Something's wrong → reply",
-                         "onClick": {"openLink": {"url": tap_url(base_url, token_wrong)}}},
+                        button("All correct", token_all),
+                        button("Something's wrong → reply", token_wrong),
                     ]}}]},
                     {"widgets": [{"textParagraph": {
                         "text": f"Reply like: {reply_example(lines)}"
@@ -360,10 +372,28 @@ def build_card(day_card_id: int, lines: list[dict], self_id: str, base_url: str,
 
 
 def send(day_card_id: int, lines: list[dict], self_id: str) -> dict:
-    """POST the card. Returns `{message_ref, thread_ref}`; raises on failure."""
+    """POST the card. Returns `{message_ref, thread_ref}`; raises on failure.
+
+    Prefers the Chat app (buttons answer in place) when its key is on disk;
+    otherwise the webhook and `/q/<token>` links, exactly as before. The
+    signed token is the authority either way.
+    """
     import requests
 
+    from .. import chat_app
     from ..pings.deliver import DeliveryError, _scrub, preflight_tap_route
+
+    if not settings.ping_signing_secret:
+        raise DeliveryError("PING_SIGNING_SECRET is not set — tap links would be unsignable")
+
+    if chat_app.app_configured():
+        body = build_card(day_card_id, lines, self_id, settings.mcp_public_base_url,
+                          settings.ping_signing_secret, mode="app")
+        refs = chat_app.send_as_app(
+            settings.secretary_space, body, thread_key=f"daycard-{day_card_id}",
+        )
+        logger.info("daycard: %s sent as %s (chat app)", day_card_id, refs["message_ref"])
+        return refs
 
     if not settings.secretary_webhook_url:
         raise DeliveryError("SECRETARY_WEBHOOK_URL is not set")

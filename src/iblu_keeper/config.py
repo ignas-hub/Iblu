@@ -368,8 +368,28 @@ class Settings:
     secretary_webhook_url: str = field(
         default_factory=lambda: os.getenv("SECRETARY_WEBHOOK_URL", "")
     )
+    # `spaces/XXXX` of the Secretary space. The reply reader and the Chat-app
+    # sender (`chat_app.send_as_app`) need it; the webhook never did, because
+    # the space is baked into its URL.
     secretary_space: str = field(
         default_factory=lambda: os.getenv("SECRETARY_SPACE", "")
+    )
+
+    # --- IBLU as a Google Chat app (in-place card buttons, `chat_app.py`) ---
+    # Service-account key for the Chat APP's identity and nothing else: the
+    # account holds no roles, is granted only the `chat.bot` scope, and cannot
+    # act as any user — which is why a key is acceptable here where
+    # domain-wide delegation (HANDOFF §3.1) was not. Lives under data/, which
+    # is git-ignored. When the file is absent the card jobs fall back to the
+    # webhook and `/q/<token>` links.
+    chat_app_key_file: str = field(
+        default_factory=lambda: os.getenv("CHAT_APP_KEY_FILE", "data/service-account-chat.json")
+    )
+    # Cloud project NUMBER (not id) of the project the Chat app is configured
+    # in. Google signs every event it sends the app with a JWT whose audience
+    # is this number; `/chat/events` refuses everything when it is unset.
+    chat_app_project_number: str = field(
+        default_factory=lambda: os.getenv("CHAT_APP_PROJECT_NUMBER", "")
     )
 
     # Tap-link signing. Without it the /q endpoint refuses every token.

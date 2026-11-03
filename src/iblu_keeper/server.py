@@ -20,7 +20,7 @@ from pydantic import Field
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.google import GoogleProvider
@@ -1988,6 +1988,29 @@ async def ping_tap(request: Request) -> HTMLResponse:
         note = "The Secretary calendar updates at the next analyst run."
         sub = f"{sub} {note}".strip() if sub else note
     return _tap_response(f"✓ Saved — {result['key']} · {result['label']}", sub)
+
+
+# --------------------------------------------------------------------------- #
+# Google Chat app endpoint — where card taps land once IBLU posts as an app
+# rather than through a webhook. A webhook card can only open a URL, which on
+# the Gmail/Chat iPhone app means a browser and Google's "Redirect Notice"
+# before every answer; an app card's buttons post back here and the card is
+# updated in place. Verification, dispatch and the never-500 rule live in
+# chat_app_route.py / chat_app.py.
+# --------------------------------------------------------------------------- #
+from .chat_app_route import chat_events  # noqa: E402
+
+mcp.custom_route("/chat/events", methods=["POST"])(chat_events)
+
+
+@mcp.custom_route("/icon.png", methods=["GET"])
+async def icon(_request: Request) -> Response:
+    """The Chat app's avatar. Google needs an https URL for it."""
+    from pathlib import Path
+
+    data = (Path(__file__).parent / "static" / "icon.png").read_bytes()
+    return Response(data, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @mcp.custom_route("/", methods=["GET"])

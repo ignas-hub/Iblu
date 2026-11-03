@@ -1,5 +1,8 @@
 """Getting the card onto Ignas's phone (plan §7.4).
 
+TODO: switch to `chat_app` (in-place buttons, `send_as_app`) exactly as
+`jobs/daycard.py` and `jobs/stage_check.py` did; the webhook path stays until then.
+
 Delivery is an incoming webhook, not the Chat API, for one blunt reason: a
 message you send yourself never raises a notification, and cards with link
 buttons need app authority. The webhook posts as an app, so it notifies — and
