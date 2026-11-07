@@ -1,0 +1,25 @@
+[Unit]
+Description=Claude Code Remote Control for IBLU — drive sessions on this box from claude.ai/code
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ignas
+WorkingDirectory=/home/ignas/iblu
+# A SECOND Claude account, kept apart from the one the desktop app uses on this
+# box. CLAUDE_CONFIG_DIR isolates credentials, settings and the workspace-trust
+# record, so signing this account in never touches the other. Log it in once
+# with: CLAUDE_CONFIG_DIR=/home/ignas/.claude-rc claude auth login
+Environment=CLAUDE_CONFIG_DIR=/home/ignas/.claude-rc
+Environment=HOME=/home/ignas
+Environment=PATH=/home/ignas/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+# worktree spawn: every browser session gets its own git worktree, so a remote
+# session and the desktop session never edit the same checkout at once.
+ExecStart=/home/ignas/.npm-global/bin/claude remote-control --name iblu --spawn worktree --permission-mode default
+Restart=always
+RestartSec=15
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
