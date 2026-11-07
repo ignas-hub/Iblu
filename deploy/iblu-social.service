@@ -1,0 +1,19 @@
+[Unit]
+Description=iblu-keeper social worker — publish scheduled posts, clean up hosted media
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ignas
+WorkingDirectory=/home/ignas/iblu
+EnvironmentFile=/home/ignas/iblu/.env
+ExecStart=/home/ignas/iblu/.venv/bin/python -m iblu_keeper.jobs.social_worker
+# A carousel waits up to 5 minutes for Instagram to finish processing, per
+# platform; anything still 'publishing' after 15 is marked failed, never retried.
+TimeoutStartSec=900
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

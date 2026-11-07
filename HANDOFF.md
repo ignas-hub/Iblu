@@ -1,6 +1,6 @@
 # iblu-keeper — Handoff and decision record
 
-_Started 2026-06-10. Newest section: §29, 2026-10-01 — see the index below._
+_Started 2026-06-10. Newest section: §32, 2026-11-07 — see the index below._
 
 This began as the handoff after the first build session and became the decision
 record: what exists, what was validated against the real Google account, and —
@@ -59,6 +59,7 @@ characters of a 56,000-character file. When the result says
 | 29 | 2026-10-01 | A password change, and the subsystem that was never watched |
 | 30 | 2026-10-25 | The Gain is a rung, and nothing was asking |
 | 31 | 2026-10-26 | Seventeen tools in a day, and the two rules that made it safe |
+| 32 | 2026-11-07 | social_publish: what he saw is what goes live |
 
 There is no §11: the number was taken by a list item inside §10 and the
 sections carried on from 12. Code comments cite these numbers (`HANDOFF
@@ -1227,3 +1228,72 @@ Also found: `_file_id` in drive.py names document|spreadsheets|presentation
 and not forms, so `forms_read.form_id()` exists; and the readstate worker
 rebuilds its cache from empty on every restart, which the watchdog
 deliberately does not flag.
+
+
+## 32. social_publish: what he saw is what goes live (2026-11-07)
+
+Built from the spec Doc "IBLU — social_publish tool (Instagram + Facebook) —
+build spec for Claude Code" (7 Nov 2026), in dry-run. One tool, seven actions:
+`preview`, `publish`, `schedule`, `list_scheduled`, `cancel`, `status`,
+`limits`. Code: `tools/social_publish.py` (actions, rules, Drive, store),
+`tools/social_render.py` (port of the export's `tools/render.py`),
+`tools/social_meta.py` (Graph API), `jobs/social_worker.py` (every minute),
+migration 016, `deploy/iblu-social.{service,timer}`.
+
+> **Rule: publishing to the public is send-class.** `social_publish` is in
+> `MUST_ASK`. Its preview asks too — the spec chose one tool, and a tool cannot
+> ask for some actions only. `confirm=true` is refused unless literally `True`,
+> and is only ever passed after Ignas has seen the preview and said yes.
+
+> **Rule: what he saw is what goes live.** A preview stores the SHA-256 of
+> each hosted JPG and of each slide's source (the `.dc.html` plus every image
+> it references). `publish`, `schedule` and the worker at fire time re-hash
+> both; a difference is a refusal naming the slide. The source is re-read from
+> Drive rather than re-rendered, so the check does not depend on Chromium
+> producing byte-identical JPEGs twice.
+
+> **Rule: a dry run never goes live.** `SOCIAL_DRY_RUN=true` (the default)
+> runs render, Drive, hosting and the database for real and records every Meta
+> POST instead of sending it; GETs still run when a token exists, which proves
+> the token without posting. A schedule made in dry run stays dry run at fire
+> time even if the switch has since been turned off. Dry runs never write a
+> work_log entry — nothing happened.
+
+**Where it departs from the spec, and why.**
+- *SQLite → Postgres.* The rest of IBLU is in Postgres, backed up nightly and
+  migrated by one runner; a second database file would have neither, and the
+  natural place for it, `data/`, is off-limits to sessions.
+- *nginx static location → a `/media/<token>/<file>` route on the MCP app.*
+  TLS on this box is terminated by `radovi-nginx-1`, a container of `~/Radovi`,
+  which sessions must not touch. That proxy already forwards
+  mcp.iblugames.com to the MCP server, so the route serves from
+  `SOCIAL_MEDIA_ROOT` on the same domain: exact token + file name, no listing.
+- *The 24-hour preview rule is checked when he confirms,* not at fire time —
+  a schedule can be 30 days out and could never pass it then. The hash rules
+  are checked at both.
+- *Media cleanup waits for pending schedules.* "Delete 7 days after creation
+  if never published" would delete the images of a post scheduled 8+ days out.
+- *A process that dies mid-publish is never retried.* After 15 minutes a row
+  still `publishing` is marked failed with "Meta may or may not have posted
+  it"; a retry could be a duplicate on a public account.
+
+**The Meta side, done 2026-11-07.** Token in `.env` belongs to the system
+user "BLT Publisher". Ignas ticked 15 permissions and `GET /me/permissions`
+returned all 15 `granted`: business_management, instagram_basic,
+instagram_branded_content_brand, instagram_content_publish,
+instagram_manage_comments, instagram_manage_contents,
+instagram_manage_insights, instagram_manage_messages,
+pages_manage_engagement, pages_manage_metadata, pages_manage_posts,
+pages_read_engagement, pages_read_user_content, pages_show_list,
+read_insights. social_publish uses six; the rest cover the out-of-scope
+comments / DMs / insights without a new token. It sees one Page, Blank Label
+Team (`META_PAGE_ID=106540705843642`), linked to @blanklabel.team
+(`META_IG_USER_ID=17841455747003000`). Quota read: 0 of 100 used.
+
+**Not verified yet.** No POST has reached Meta — only the read-only checks
+above. `tools/gen23.py`
+(acceptance test 1) is not in the export bundle in Drive, so post C23 could
+not be generated. The renderer was checked against the designer's own JPGs
+(`rendered/01-brands-1.jpg`: mean difference 2/255, fonts and layout match)
+and the B22 carousel was previewed end to end.
+

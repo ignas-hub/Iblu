@@ -409,6 +409,46 @@ class Settings:
         default_factory=lambda: os.getenv("PING_EVENING", "17:00-18:30")
     )
 
+    # --- social_publish (Instagram @blanklabel.team + its Facebook Page) ---
+    # Spec: "IBLU — social_publish tool — build spec for Claude Code",
+    # 2026-11-07. None of these values is ever returned by a tool.
+    #
+    # SOCIAL_DRY_RUN defaults to TRUE: rendering, Drive, public hosting and the
+    # database all run for real, and every Meta POST is logged instead of sent.
+    # It is a separate switch from DRY_RUN because the rest of IBLU is live.
+    meta_system_user_token: str = field(
+        default_factory=lambda: os.getenv("META_SYSTEM_USER_TOKEN", "")
+    )
+    meta_page_id: str = field(default_factory=lambda: os.getenv("META_PAGE_ID", ""))
+    meta_ig_user_id: str = field(default_factory=lambda: os.getenv("META_IG_USER_ID", ""))
+    # Latest stable at build time (v26.0, released 2026-07-29).
+    meta_graph_version: str = field(
+        default_factory=lambda: os.getenv("META_GRAPH_VERSION", "v26.0")
+    )
+    # Local folder the `/media/<token>/<file>` route serves from.
+    social_media_root: str = field(
+        default_factory=lambda: os.getenv("SOCIAL_MEDIA_ROOT", "/home/ignas/iblu-media")
+    )
+    # Public base for those files; the MCP domain already reaches this server.
+    social_public_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "SOCIAL_PUBLIC_BASE_URL",
+            (os.getenv("MCP_PUBLIC_BASE_URL", "").rstrip("/") + "/media")
+            if os.getenv("MCP_PUBLIC_BASE_URL") else "",
+        )
+    )
+    social_dry_run: bool = field(default_factory=lambda: _bool("SOCIAL_DRY_RUN", True))
+    # The Shared Drive folder "BLT-Instagram-Design-Export" (holds project/,
+    # assets/, tools/, rendered/ and blob-map.json), and which account reads it.
+    social_drive_folder_id: str = field(
+        default_factory=lambda: os.getenv(
+            "SOCIAL_DRIVE_FOLDER_ID", "1Vi8rDY8IvbcPbuGFmtfXPz63qX4hMCNA"
+        )
+    )
+    social_drive_account: str = field(
+        default_factory=lambda: os.getenv("SOCIAL_DRIVE_ACCOUNT", "")
+    )
+
     @property
     def ping_day_set(self) -> frozenset[str]:
         """PING_DAYS parsed into upper-case three-letter day codes."""

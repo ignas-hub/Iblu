@@ -22,3 +22,8 @@ anthropic>=0.40.0
 
 # --- Dev / tests ---
 pytest>=8.2.0
+
+# --- social_publish (render artboards → JPG; check image size) ---
+# Pinned to the Chromium build already on the box (~/.cache/ms-playwright/chromium-1208).
+playwright==1.58.0
+Pillow>=10.0

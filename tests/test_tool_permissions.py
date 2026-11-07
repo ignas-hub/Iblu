@@ -40,9 +40,12 @@ SERVER = Path(__file__).resolve().parents[1] / "src" / "iblu_keeper" / "server.p
 # Everything that puts a message in front of a person. `gmail_dispatch` exists
 # so that forward/send_draft can ask while `gmail_manage` (labels, archive,
 # filters) never does — send-to-a-human is its own side-effect class.
+# `social_publish` publishes to Instagram and Facebook — the public, which is
+# more people than any email. Its preview action asks too: the spec chose one
+# tool, and one tool cannot ask for some actions and not others.
 MUST_ASK = {
     "gmail_send_email", "chat_send_message", "gmail_reply",
-    "gmail_dispatch", "chat_reply",
+    "gmail_dispatch", "chat_reply", "social_publish",
 }
 
 ANNOTATION_KEYS = {

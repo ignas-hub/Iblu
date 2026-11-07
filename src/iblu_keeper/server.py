@@ -1544,6 +1544,55 @@ def gmail_dispatch(
     )
 
 
+@mcp.tool(name="social_publish", annotations={"title": "Preview and Publish Instagram / Facebook Posts", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+@stamped
+@with_google_errors("social_publish")
+def social_publish(
+    action: Annotated[str, Field(description="preview | publish | schedule | list_scheduled | cancel | status | limits")],
+    post_id: Annotated[str | None, Field(default=None, description="preview: post id used in file names, e.g. 'C23'")] = None,
+    slides: Annotated[list[str] | None, Field(default=None, description="preview: ordered .dc.html names in the project folder, 1-10 (1 = single image)")] = None,
+    caption: Annotated[str | None, Field(default=None, max_length=2200, description="preview: the post caption")] = None,
+    preview_id: Annotated[str | None, Field(default=None, description="publish / schedule / status: from preview")] = None,
+    platforms: Annotated[list[str] | None, Field(default=None, description="publish / schedule: instagram, facebook (default both)")] = None,
+    confirm: Annotated[bool, Field(default=False, description="publish / schedule: true ONLY after Ignas saw the preview and said yes in chat")] = False,
+    force: Annotated[bool, Field(default=False, description="publish: allow a second post of the same preview to the same platform")] = False,
+    publish_at: Annotated[str | None, Field(default=None, description="schedule: ISO 8601; Europe/Zagreb unless an offset is given; 10 min to 30 days out")] = None,
+    schedule_id: Annotated[int | None, Field(default=None, description="cancel: from list_scheduled")] = None,
+) -> dict:
+    """Blank Label Team posts to Instagram @blanklabel.team and its Facebook Page.
+
+    ``preview`` renders the slides (1080x1350 JPGs), saves them to Drive
+    (BLT-Instagram-Design-Export/rendered/<post_id>/), hosts them publicly and
+    returns the links, caption, hashtag and character counts, and a
+    ``preview_id``. SHOW IGNAS EVERY IMAGE AND THE CAPTION.
+
+    Publishing reaches the public — the same rule as sending email. Call
+    ``publish`` (now) or ``schedule`` (later) with ``confirm=true`` only after
+    he has said yes in chat to that preview. Both refuse: a preview older than
+    24 hours, any slide changed since the preview, and a second post of the
+    same preview to the same platform without ``force``.
+
+    ``status`` (per platform: rendered, scheduled, publishing, published with
+    permalink, failed with Meta's error verbatim), ``list_scheduled``,
+    ``cancel``, and ``limits`` (Instagram's 24-hour API quota) are reads.
+    While the server runs with SOCIAL_DRY_RUN on, publish logs the Meta calls
+    it would make and posts nothing — say so when reporting the result.
+
+    Rights. Claude: this tool always asks Ignas before running; never pass
+    confirm=true without his yes to the exact preview. Meta: the server's
+    token (system user "BLT Publisher") reaches one Page, Blank Label Team, and
+    its Instagram @blanklabel.team; this tool uses only its publishing rights
+    (instagram_content_publish, pages_manage_posts, and the reads they need).
+    It never deletes, comments, messages, or reads insights.
+    """
+    from .tools import social_publish as social_tools
+    return social_tools.social_publish(
+        action=action, post_id=post_id, slides=slides, caption=caption, preview_id=preview_id,
+        platforms=platforms, confirm=confirm, force=force, publish_at=publish_at,
+        schedule_id=schedule_id,
+    )
+
+
 @mcp.tool(name="calendar_edit", annotations={"title": "Edit Calendar Events", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
 @stamped
 @with_google_errors("calendar_edit")
@@ -2011,6 +2060,22 @@ async def icon(_request: Request) -> Response:
     data = (Path(__file__).parent / "static" / "icon.png").read_bytes()
     return Response(data, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
+
+
+@mcp.custom_route("/media/{token}/{name}", methods=["GET", "HEAD"])
+async def social_media(request: Request) -> Response:
+    """Rendered post JPGs for Meta to fetch (social_publish). Public by design:
+    Instagram needs a public URL. The 32-character random token is the only
+    key; there is no listing — anything not an exact file is a bare 404."""
+    from starlette.responses import FileResponse
+
+    from .tools import social_publish as social_tools
+
+    path = social_tools.media_file(request.path_params.get("token", ""),
+                                   request.path_params.get("name", ""))
+    if path is None:
+        return PlainTextResponse("not found", status_code=404)
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @mcp.custom_route("/", methods=["GET"])

@@ -63,6 +63,14 @@ UNITS = (
     # A warning, not an error: recording continues without the dashboard. What
     # stops is his ability to look at any of it.
     ("iblu-dashboard.service", "the dashboard he reads his own data on", "warn"),
+    # Added 2026-11-07 with social_publish. Without it a scheduled post never
+    # goes out and hosted images are never cleaned up; publishing now still works.
+    ("iblu-social.timer", "the social post scheduler (Instagram / Facebook)", "warn"),
+    # Added 2026-11-07: installed and enabled with e3efaa0 but never listed, so
+    # test_every_installed_unit_is_watched failed. A warning: IBLU itself keeps
+    # running without it; only driving the box from claude.ai/code stops.
+    ("iblu-remote-control.service",
+     "Remote Control — driving this box from claude.ai/code", "warn"),
 )
 
 DISK_WARN_PCT = 85

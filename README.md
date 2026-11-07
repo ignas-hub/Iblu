@@ -30,7 +30,7 @@ Phase 2 is being built to the plan in
 Two components, one repo:
 
 ### 1. MCP server (Python, FastMCP)
-Remote MCP server Claude connects to over HTTPS. **62 tools** organised by
+Remote MCP server Claude connects to over HTTPS. **63 tools** organised by
 service, with MCP tool annotations (`readOnlyHint` / `destructiveHint`) so
 Claude.ai picks safe permission defaults automatically:
 
@@ -76,6 +76,7 @@ Claude.ai picks safe permission defaults automatically:
 | `slides_read` | A deck's outline, one slide in full, the whole deck as paged text, info | auto-allow |
 | `slides_manage` | Create a deck, add slides by layout, set/replace text, text boxes, images, duplicate/move/delete (confirm) slides, speaker notes, rename | auto-allow |
 | `analytics_read` | GA4: list properties, landing-page performance, pages, sources, daily trend, realtime, free-form report — per Workspace | auto-allow |
+| `social_publish` | Blank Label Team posts: render slides to 1080x1350 JPGs, preview (Drive + public link), then publish or schedule to Instagram @blanklabel.team and its Facebook Page with `confirm=true` after Ignas says yes; status, list/cancel schedules, quota. Refuses stale (>24h) or changed previews and duplicate posts. `SOCIAL_DRY_RUN=true` (default) logs every Meta POST instead of sending | **ask** |
 | `calendar` | See and manage the calendar: list / find free time / create / move / update / delete | auto-allow |
 | `calendar_create_event` | Create a Calendar event (superseded by `calendar`) | auto-allow |
 | `calendar_add_label` | Attach a custom label to a Calendar event | auto-allow |

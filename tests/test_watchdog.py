@@ -627,7 +627,7 @@ def test_every_timer_in_units_has_its_service_checked(monkeypatch):
     _systemctl(monkeypatch, {
         "iblu-tick.service", "iblu-analyst.service", "iblu-weekly.service",
         "iblu-backup.service", "iblu-daycard.service", "iblu-mcp.service",
-        "iblu-dashboard.service",
+        "iblu-dashboard.service", "iblu-social.service", "iblu-remote-control.service",
     })
     checked = {f["evidence"]["unit"] for f in W.check_unit_failures()}
     for unit, _what, _sev in W.UNITS:

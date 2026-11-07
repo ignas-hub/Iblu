@@ -1,0 +1,17 @@
+[Unit]
+Description=Publish due social_publish schedules, every minute
+
+[Timer]
+# Every minute, every day: a post scheduled for Saturday 18:30 is due then.
+# The Instagram API has no native scheduling, so this is the one mechanism for
+# both platforms. A run still going when the next is due is simply not
+# started twice (systemd does not overlap a oneshot with itself).
+OnCalendar=*-*-* *:*:00
+# Do not catch up after downtime by firing a burst; the next run picks up
+# everything already due anyway.
+Persistent=false
+AccuracySec=5s
+Unit=iblu-social.service
+
+[Install]
+WantedBy=timers.target
