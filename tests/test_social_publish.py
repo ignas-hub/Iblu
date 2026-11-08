@@ -643,3 +643,14 @@ def test_social_publish_also_answers_recent_posts_and_never_writes(env):
     assert all(m == "GET" for m, *_ in env["http"].sent)
     assert env["deps"].store.pubs == [] and env["logged"] == []
     assert out == sp.social_read(action="recent_posts", limit=20, deps=env["deps"])
+
+
+def test_health_reports_whether_this_process_publishes_for_real():
+    """.env is read once at start; only the running process can say whether
+    a publish goes out. Added when live publishing was switched on."""
+    import inspect
+    from iblu_keeper import server
+
+    src = inspect.getsource(server)
+    assert '"social_publish": {"dry_run": settings.social_dry_run}' in src
+    assert '"social_dry_run": settings.social_dry_run' in src

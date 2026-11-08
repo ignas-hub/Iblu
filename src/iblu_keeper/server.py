@@ -1956,6 +1956,9 @@ def server_health() -> dict:
         "readstate_worker": readstate_worker.snapshot(),
         "database": db.healthcheck(),
         "memory": _process_memory(),
+        # What this running process believes — it reads .env only at start,
+        # so this, not the file, says whether social_publish posts for real.
+        "social_publish": {"dry_run": settings.social_dry_run},
     }
 
 
@@ -1979,6 +1982,7 @@ async def health(request: Request) -> JSONResponse:
         "misconfigured_live": settings.misconfigured_live,
         "server_time": now_iso(),
         "memory": _process_memory(),
+        "social_dry_run": settings.social_dry_run,
     }
     if settings.misconfigured_live:
         body["warning"] = (
