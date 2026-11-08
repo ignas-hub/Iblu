@@ -186,6 +186,7 @@ class Store(Protocol):
     def get_preview(self, preview_id: str) -> dict | None: ...
     def claim_platforms(self, preview_id: str, platforms: list[str], *, force: bool,
                         dry_run: bool, schedule_id: int | None) -> dict[str, int]: ...
+    def published_post(self, post_id: str) -> dict[str, str | None]: ...
     def finish_publication(self, pub_id: int, **fields: Any) -> None: ...
     def publications(self, preview_id: str) -> list[dict]: ...
     def insert_schedule(self, row: dict) -> int: ...
@@ -244,11 +245,18 @@ def _public_url(token: str, name: str) -> str:
 # --- actions -----------------------------------------------------------------
 
 
+def _refresh(deps: Deps) -> None:
+    refresh = getattr(deps.source, "refresh", None)
+    if refresh:
+        refresh()
+
+
 def preview(deps: Deps, post_id: str, slides: list[str], caption: str) -> dict:
     checks = validate_inputs(post_id, slides, caption)
     if isinstance(slides, str):
         slides = [slides]
 
+    _refresh(deps)
     fonts = deps.source.fonts()
     sources, pages = [], []
     for name in slides:
@@ -331,6 +339,7 @@ def verify_preview(deps: Deps, pv: dict, *, check_age: bool = True) -> None:
     if pv.get("media_deleted_at"):
         raise SocialRefused(f"preview {pv['preview_id']}'s hosted images were cleaned up — run preview again.")
     folder = _media_dir(pv["media_token"])
+    _refresh(deps)
     for s in pv["slides"]:
         path = folder / s["file"]
         if not path.is_file():
@@ -381,7 +390,7 @@ def run_publish(deps: Deps, pv: dict, platforms: list[str], *, force: bool, dry_
     ig_id = settings.meta_ig_user_id or ("{ig-user-id}" if dry_run else "")
     page_id = settings.meta_page_id or ("{page-id}" if dry_run else "")
     results: dict[str, dict] = {}
-    for platform in platforms:
+    for idx, platform in enumerate(platforms):
         client = deps.graph(dry_run)
         try:
             if platform == "instagram":
@@ -396,9 +405,14 @@ def run_publish(deps: Deps, pv: dict, platforms: list[str], *, force: bool, dry_
                                           error=str(exc))
             results[platform] = {"status": "failed", "error": str(exc),
                                  "meta_message": exc.meta_message, "calls": client.calls}
-        except Exception as exc:  # noqa: BLE001 — the row must not stay 'publishing'
-            deps.store.finish_publication(claims[platform], status="failed", calls=client.calls,
-                                          error=f"{type(exc).__name__}: {social_meta.scrub(str(exc))}")
+        except Exception as exc:  # noqa: BLE001 — no claimed row may stay 'publishing'
+            why = f"{type(exc).__name__}: {social_meta.scrub(str(exc))}"
+            deps.store.finish_publication(claims[platform], status="failed", calls=client.calls, error=why)
+            # The platforms after this one were claimed but never tried: say so,
+            # rather than leaving them for fail_stuck's "may or may not have posted".
+            for later in platforms[idx + 1:]:
+                deps.store.finish_publication(claims[later], status="failed", calls=[],
+                                              error=f"not attempted: {platform} failed first ({why})")
             raise
 
     published = {p: r["permalink"] for p, r in results.items() if r["status"] == "published"}
@@ -418,24 +432,16 @@ def run_publish(deps: Deps, pv: dict, platforms: list[str], *, force: bool, dry_
     }
 
 
-def publish(deps: Deps, preview_id: str, platforms, confirm: bool, force: bool) -> dict:
-    if confirm is not True:
-        raise SocialRefused(
-            "refused: publish needs confirm=true, and confirm=true only after Ignas has seen the "
-            "preview and said yes in chat."
-        )
+def publish(deps: Deps, preview_id: str, platforms, force: bool) -> dict:
+    """Assumes confirm was checked by ``social_publish`` (the only caller)."""
     plats = normalise_platforms(platforms)
     pv = _load_preview(deps, preview_id)
     verify_preview(deps, pv)
     return run_publish(deps, pv, plats, force=bool(force), dry_run=_effective_dry_run())
 
 
-def schedule(deps: Deps, preview_id: str, publish_at: str, platforms, confirm: bool) -> dict:
-    if confirm is not True:
-        raise SocialRefused(
-            "refused: schedule needs confirm=true, and confirm=true only after Ignas has seen the "
-            "preview and said yes in chat."
-        )
+def schedule(deps: Deps, preview_id: str, publish_at: str, platforms) -> dict:
+    """Assumes confirm was checked by ``social_publish`` (the only caller)."""
     plats = normalise_platforms(platforms)
     now = deps.now()
     when = parse_publish_at(publish_at, now)
@@ -444,12 +450,19 @@ def schedule(deps: Deps, preview_id: str, publish_at: str, platforms, confirm: b
     # rules are checked again (a 30-day schedule could never pass a 24h age
     # check at fire time).
     verify_preview(deps, pv)
-    done = {p["platform"] for p in deps.store.publications(preview_id)
-            if p["status"] in ("published", "publishing") and not p["dry_run"]}
+    done = deps.store.published_post(pv["post_id"])
     already = [p for p in plats if p in done]
     if already:
-        raise SocialRefused(f"preview {preview_id} is already published to {already}; "
-                            "use publish with force=true if a second post is really wanted.")
+        raise SocialRefused(f"post {pv['post_id']} is already published to {already} "
+                            f"({', '.join(done[p] or '?' for p in already)}); use publish with force=true "
+                            "if a second post is really wanted.")
+    pending = [s for s in deps.store.schedules(preview_id=preview_id)
+               if s["status"] in ("pending", "publishing") and set(s["platforms"]) & set(plats)]
+    if pending:
+        raise SocialRefused(
+            f"schedule {pending[0]['id']} already covers this preview on {sorted(set(pending[0]['platforms']) & set(plats))}"
+            " — cancel it first to change the time."
+        )
     dry = _effective_dry_run()
     sid = deps.store.insert_schedule({"preview_id": preview_id, "platforms": plats,
                                       "publish_at": when, "dry_run": dry})
@@ -593,11 +606,16 @@ class PgStore:
         """Atomically refuse duplicates and mark each platform 'publishing'.
         The preview row lock serialises two publishes of the same preview."""
         with self._conn() as conn:
-            conn.execute("SELECT 1 FROM social_previews WHERE preview_id = %s FOR UPDATE", (preview_id,))
+            post_id = conn.execute("SELECT post_id FROM social_previews WHERE preview_id = %s FOR UPDATE",
+                                   (preview_id,)).fetchone()["post_id"]
+            # Keyed on the POST, not the preview: a second preview of the same
+            # post_id must not become a second public post (code review 2026-11-08).
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("social:" + post_id,))
             taken = {r["platform"]: r["status"] for r in conn.execute(
-                """SELECT platform, status FROM social_publications
-                   WHERE preview_id = %s AND status IN ('published', 'publishing') AND NOT dry_run""",
-                (preview_id,),
+                """SELECT u.platform, u.status FROM social_publications u
+                   JOIN social_previews p USING (preview_id)
+                   WHERE p.post_id = %s AND u.status IN ('published', 'publishing') AND NOT u.dry_run""",
+                (post_id,),
             ).fetchall()}
             in_flight = [p for p in platforms if taken.get(p) == "publishing"]
             if in_flight:
@@ -605,7 +623,7 @@ class PgStore:
             dup = [p for p in platforms if p in taken]
             if dup and not force:
                 raise SocialRefused(
-                    f"preview {preview_id} is already published to {dup}. Refused: a second post needs "
+                    f"post {post_id} is already published to {dup}. Refused: a second post needs "
                     "force=true, and Ignas's explicit yes for a duplicate."
                 )
             ids = {}
@@ -627,6 +645,16 @@ class PgStore:
                 (f["status"], Jsonb(f.get("calls") or []), f.get("remote_id"), f.get("permalink"),
                  f.get("error"), pub_id),
             )
+
+    def published_post(self, post_id):
+        """platform -> permalink for every live publication of this post_id."""
+        with self._conn() as conn:
+            return {r["platform"]: r["permalink"] for r in conn.execute(
+                """SELECT u.platform, u.permalink FROM social_publications u
+                   JOIN social_previews p USING (preview_id)
+                   WHERE p.post_id = %s AND u.status IN ('published', 'publishing') AND NOT u.dry_run""",
+                (post_id,),
+            ).fetchall()}
 
     def publications(self, preview_id):
         with self._conn() as conn:
@@ -676,6 +704,16 @@ class DriveSource:
         self._children: dict[str, dict[str, dict]] = {}
         self._blob_map: dict | None = None
         self._asset_cache: dict[str, tuple[str, bytes]] = {}
+        self._dupes: set[tuple[str, str]] = set()
+
+    def refresh(self) -> None:
+        """Forget folder listings and images: the next read sees Drive as it is
+        now. Called once at the start of a preview or a verification — the hash
+        check exists to notice an edit."""
+        self._children.clear()
+        self._dupes.clear()
+        self._blob_map = None
+        self._asset_cache.clear()
 
     @property
     def svc(self):
@@ -698,6 +736,8 @@ class DriveSource:
                     supportsAllDrives=True, includeItemsFromAllDrives=True,
                 ).execute()
                 for f in resp.get("files", []):
+                    if f["name"] in out:
+                        self._dupes.add((folder, f["name"]))
                     out.setdefault(f["name"], f)
                 token = resp.get("nextPageToken")
                 if not token:
@@ -722,11 +762,13 @@ class DriveSource:
         return buf.getvalue()
 
     def slide(self, name: str) -> bytes:
-        # Always fresh: the whole point of the hash check is noticing an edit.
-        self._children.pop(self._sub("project"), None)
-        f = self._list(self._sub("project")).get(name)
+        project = self._sub("project")
+        f = self._list(project).get(name)
         if not f:
             raise SocialError(f"{name!r} is not in BLT-Instagram-Design-Export/project.")
+        if (project, name) in self._dupes:
+            raise SocialError(f"there are two files named {name!r} in the project folder — trash or "
+                              "rename one so it is clear which slide is meant.")
         return self._download(f["id"])
 
     def fonts(self) -> dict[str, bytes]:
@@ -829,9 +871,9 @@ def _dispatch(action: str, deps: Deps | None, **kw) -> dict:
     if action == "preview":
         return preview(deps, kw["post_id"], kw["slides"], kw["caption"])
     if action == "publish":
-        return publish(deps, kw["preview_id"], kw["platforms"], kw["confirm"], kw["force"])
+        return publish(deps, kw["preview_id"], kw["platforms"], kw["force"])
     if action == "schedule":
-        return schedule(deps, kw["preview_id"], kw["publish_at"], kw["platforms"], kw["confirm"])
+        return schedule(deps, kw["preview_id"], kw["publish_at"], kw["platforms"])
     if action == "cancel":
         return cancel(deps, kw["schedule_id"])
     if action == "recent_posts":

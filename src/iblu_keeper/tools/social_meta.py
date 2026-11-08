@@ -131,8 +131,9 @@ class GraphClient:
         except ValueError:
             body = {"raw": scrub(resp.text[:500])}
         if resp.status_code >= 400 or (isinstance(body, dict) and "error" in body):
-            err = body.get("error", {}) if isinstance(body, dict) else {}
-            msg = err.get("message") or body.get("raw", "") or f"HTTP {resp.status_code}"
+            err = (body.get("error") or {}) if isinstance(body, dict) else {}
+            raw = body.get("raw", "") if isinstance(body, dict) else scrub(str(body)[:500])
+            msg = err.get("message") or raw or f"HTTP {resp.status_code}"
             code, sub = err.get("code"), err.get("error_subcode")
             entry["error"] = msg
             raise MetaError(_explain(code, sub, msg, needs), msg, code, sub, f"{method} {path}")

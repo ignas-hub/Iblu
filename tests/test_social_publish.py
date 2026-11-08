@@ -72,9 +72,13 @@ class FakeStore:
     def get_preview(self, pid):
         return self.previews.get(pid)
 
+    def published_post(self, post_id):
+        return {p["platform"]: p.get("permalink") for p in self.pubs
+                if self.previews[p["preview_id"]]["post_id"] == post_id
+                and p["status"] in ("published", "publishing") and not p["dry_run"]}
+
     def claim_platforms(self, pid, platforms, *, force, dry_run, schedule_id):
-        taken = {p["platform"] for p in self.pubs
-                 if p["preview_id"] == pid and p["status"] in ("published", "publishing") and not p["dry_run"]}
+        taken = set(self.published_post(self.previews[pid]["post_id"]))
         dup = [p for p in platforms if p in taken]
         if dup and not force:
             raise sp.SocialRefused(f"already published to {dup}")
@@ -551,3 +555,73 @@ def test_recent_posts_reports_each_platform_separately(env):
     out = sp.social_read(action="recent_posts", deps=env["deps"])
     assert out["platforms"]["instagram"]["count"] == 3
     assert "META_PAGE_ID" in out["platforms"]["facebook"]["error"]
+
+
+# --- code review 2026-11-08 ------------------------------------------------------
+
+
+def test_a_second_preview_of_a_published_post_is_still_a_duplicate(env):
+    """Review finding: the guard was keyed on preview_id, so re-previewing C23
+    could post C23 again without force."""
+    env["settings"].social_dry_run = False
+    env["settings"].meta_system_user_token = "T"
+    first = _preview(env)
+    sp.social_publish(action="publish", preview_id=first["preview_id"], platforms=["instagram"],
+                      confirm=True, deps=env["deps"])
+    again = _preview(env)
+    with pytest.raises(sp.SocialRefused, match="already published"):
+        sp.social_publish(action="publish", preview_id=again["preview_id"], platforms=["instagram"],
+                          confirm=True, deps=env["deps"])
+    with pytest.raises(sp.SocialRefused, match="already published"):
+        sp.social_publish(action="schedule", preview_id=again["preview_id"], platforms=["instagram"],
+                          publish_at="2026-11-08T10:00", confirm=True, deps=env["deps"])
+
+
+def test_a_crash_on_the_first_platform_does_not_strand_the_second(env):
+    """Review finding: a non-Meta error left the untried platform 'publishing'
+    for 15 minutes, then labelled 'may or may not have posted'."""
+    env["settings"].social_dry_run = False
+    env["settings"].meta_system_user_token = "T"
+    http = env["http"]
+    http.post = lambda *a, **k: http._resp({"no_id_here": True})  # 200 without an id -> KeyError
+    pv = _preview(env)
+    with pytest.raises(KeyError):
+        sp.social_publish(action="publish", preview_id=pv["preview_id"], confirm=True, deps=env["deps"])
+    rows = {p["platform"]: p for p in env["deps"].store.pubs}
+    assert rows["instagram"]["status"] == "failed"
+    assert rows["facebook"]["status"] == "failed"
+    assert rows["facebook"]["error"].startswith("not attempted: instagram failed first")
+
+
+def test_a_second_schedule_for_the_same_slot_is_refused(env):
+    pv = _preview(env)
+    sp.social_publish(action="schedule", preview_id=pv["preview_id"], publish_at="2026-11-07T18:00",
+                      confirm=True, deps=env["deps"])
+    with pytest.raises(sp.SocialRefused, match="cancel it first"):
+        sp.social_publish(action="schedule", preview_id=pv["preview_id"], publish_at="2026-11-07T19:00",
+                          platforms=["facebook"], confirm=True, deps=env["deps"])
+
+
+def test_a_non_dict_error_body_is_a_meta_error():
+    class H:
+        def get(self, *a, **k):
+            class R:
+                status_code = 502
+                text = ""
+                def json(self):
+                    return ["bad", "gateway"]
+            return R()
+    c = social_meta.GraphClient("T", "v26.0", dry_run=False, session=H())
+    with pytest.raises(social_meta.MetaError):
+        c.get("x", needs="instagram_basic")
+
+
+def test_duplicate_slide_names_in_drive_are_refused():
+    src = sp.DriveSource.__new__(sp.DriveSource)
+    src.root, src.account, src._svc = "root", None, None
+    src._children = {"root": {"project": {"id": "proj", "mimeType": "application/vnd.google-apps.folder"}},
+                     "proj": {"C23-S1.dc.html": {"id": "a"}}}
+    src._dupes = {("proj", "C23-S1.dc.html")}
+    src._blob_map, src._asset_cache = None, {}
+    with pytest.raises(sp.SocialError, match="two files named"):
+        src.slide("C23-S1.dc.html")

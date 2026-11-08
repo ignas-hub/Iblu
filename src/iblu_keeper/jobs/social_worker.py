@@ -50,9 +50,11 @@ def run_due(deps: sp.Deps | None = None) -> list[dict]:
             ).fetchone()
         if not row:
             return done
-        deps = deps or sp.production_deps()
         result: dict
         try:
+            # Inside the try: the schedule is already claimed, so any failure
+            # here must land on its row, not leave it 'publishing'.
+            deps = deps or sp.production_deps()
             pv = deps.store.get_preview(row["preview_id"])
             sp.verify_preview(deps, pv, check_age=False)
             result = sp.run_publish(deps, pv, list(row["platforms"]), force=False,
@@ -100,8 +102,9 @@ def fail_stuck() -> int:
         ).rowcount
     if a or b:
         observations.record_safe(source="social_publish", kind="publish_interrupted", severity="error",
-                                 summary=f"{a + b} social publish(es) were interrupted mid-call",
-                                 detail=note)
+                                 summary="a social publish was interrupted mid-call",
+                                 detail=f"{a} schedule(s) and {b} publication(s) marked failed. {note}",
+                                 fp="social-publish-interrupted")
     return a + b
 
 

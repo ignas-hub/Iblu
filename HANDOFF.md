@@ -1,6 +1,6 @@
 # iblu-keeper — Handoff and decision record
 
-_Started 2026-06-10. Newest section: §32, 2026-11-07 — see the index below._
+_Started 2026-06-10. Newest section: §33, 2026-11-08 — see the index below._
 
 This began as the handoff after the first build session and became the decision
 record: what exists, what was validated against the real Google account, and —
@@ -60,6 +60,7 @@ characters of a 56,000-character file. When the result says
 | 30 | 2026-10-25 | The Gain is a rung, and nothing was asking |
 | 31 | 2026-10-26 | Seventeen tools in a day, and the two rules that made it safe |
 | 32 | 2026-11-07 | social_publish: what he saw is what goes live |
+| 33 | 2026-11-08 | The night the box ran out of memory, and social_read |
 
 There is no §11: the number was taken by a list item inside §10 and the
 sections carried on from 12. Code comments cite these numbers (`HANDOFF
@@ -1296,4 +1297,66 @@ above. `tools/gen23.py`
 not be generated. The renderer was checked against the designer's own JPGs
 (`rendered/01-brands-1.jpg`: mean difference 2/255, fonts and layout match)
 and the B22 carousel was previewed end to end.
+
+
+## 33. The night the box ran out of memory, and social_read (2026-11-08)
+
+**What happened, 7 Nov 2026 (UTC).** At 20:51:47 the proxy logged the last
+completed `/mcp` request (200, zero bytes). For ten minutes nothing completed:
+load average reached 80, memory pressure `full avg300` 53%, no swap. At
+21:01:21 Claude gave up on a call (499); at 21:01:25 the Radovi container
+`radovi-app-1` exited (exit 0, its first death that night; 46 restarts in five
+months) and the box recovered within seconds. At 21:19:13 the IBLU server died
+with no traffic, and systemd restarted it (`NRestarts=1`). At 21:01 that
+process held 730 MB (peak 745 MB), 25 minutes after starting at ~140 MB; its
+replacement held 138 MB after 2.5 hours.
+
+**What is known and what is not.** The kernel's OOM killer has 57 kills since
+boot, but this account cannot read the journal (not in `systemd-journal`), so
+neither the 21:19 kill nor the call that grew the server to 730 MB could be
+identified. Measured in a separate process: 30 ordinary tool calls add ~45 MB;
+three full social_publish previews add ~25 MB (Chromium runs as its own
+process). So social_publish did not cause it — nothing had been previewed,
+published or scheduled — and the cause is **unidentified**. The box runs six
+long-lived Claude CLI sessions (~1.3 GB together), Radovi's Next.js dev
+server, Postgres ×3 and IBLU on 3.8 GB with no swap: any spike tips it.
+
+> **Rule: one runaway must not take the box.** `deploy/iblu-mcp.service.d/memory.conf`
+> (a drop-in, so the installed unit's paths are untouched): `MemoryHigh=800M`,
+> `MemoryMax=1100M`. A repeat costs a ~3 s restart of IBLU alone.
+> `server_health` and `/health` now report `memory: {rss_mb, peak_rss_mb}`.
+
+> **Rule: the agent must be able to read the logs.** Until `ignas` is in
+> `systemd-journal`, every incident like this one ends at "cause unknown".
+
+**social_read.** Ignas asked for `recent_posts` with no approval. Ask/Allow is
+per tool, so it could not live in `social_publish` (which asks). Split per
+§31: `social_read` (read-only, never asks) holds `recent_posts`, `status`,
+`list_scheduled`, `limits`; `social_publish` keeps `preview`, `publish`,
+`schedule`, `cancel`, and each refuses the other's actions by name.
+`recent_posts` is GET only (the client is built with `dry_run=True`, so a
+POST could not leave even by mistake) and returns per platform: date,
+caption, permalink, image_count, item_count. First live read: Instagram 15
+posts, Facebook 17; the newest, a 5-image carousel posted 7 Nov 19:59 UTC,
+was not posted by IBLU.
+
+**Claude chats denied the Instagram tool exists.** The connect-time
+instructions still described IBLU as "Chat, Gmail, Docs, Calendar"; with 64
+tools a client loads only some definitions up front, and a model that read
+the summary concluded the capability was missing. The instructions now carry
+a map of every domain with its tool names and a rule to search before saying
+a tool is missing; `test_the_instructions_map_names_every_tool` fails when a
+tool is added without updating it, or the stated count drifts.
+
+**Code review of §32–33 (9 findings, all fixed, tests first-failing):** the
+duplicate guard is now keyed on `post_id`, not `preview_id` (a re-preview
+could post the same post twice) — a deliberate tightening of the spec; a
+crash on the first platform no longer strands the second in `publishing`;
+the worker's claimed schedule can no longer be stranded by a setup error; a
+second schedule for the same preview and platform is refused; two Drive files
+with one name are refused instead of picked at random; a non-dict Meta error
+body is a MetaError; the interrupted-publish observation has a fixed
+fingerprint; Drive is listed once per pass, not once per slide; the confirm
+check lives in one place. Drive also connects on first use now, not on every
+call.
 
