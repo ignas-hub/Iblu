@@ -477,6 +477,8 @@ def test_each_tool_refuses_the_others_actions(env):
     """The Claude app's Ask/Allow is per tool: a read inside social_publish
     would ask every time, a write inside social_read would never ask."""
     for action in sp.READ_ACTIONS:
+        if action == "recent_posts":
+            continue  # in both tools on purpose (Ignas, 2026-11-08)
         with pytest.raises(sp.SocialError, match="social_read"):
             sp.social_publish(action=action, deps=env["deps"])
     for action in sp.WRITE_ACTIONS:
@@ -625,3 +627,19 @@ def test_duplicate_slide_names_in_drive_are_refused():
     src._blob_map, src._asset_cache = None, {}
     with pytest.raises(sp.SocialError, match="two files named"):
         src.slide("C23-S1.dc.html")
+
+
+def test_social_publish_also_answers_recent_posts_and_never_writes(env):
+    """Ignas, 2026-11-08: recent_posts in social_publish as well — the same
+    GET-only read, live posting switched on or not."""
+    env["settings"].social_dry_run = False
+    env["settings"].meta_system_user_token = "T"
+    _feeds(env)
+    out = sp.social_publish(action="recent_posts", limit=20, deps=env["deps"])
+    assert [p["image_count"] for p in out["platforms"]["instagram"]["posts"]] == [4, 1, 0]
+    assert [p["image_count"] for p in out["platforms"]["facebook"]["posts"]] == [5, 1, 0]
+    first = out["platforms"]["instagram"]["posts"][0]
+    assert {"date", "caption", "permalink", "image_count"} <= set(first)
+    assert all(m == "GET" for m, *_ in env["http"].sent)
+    assert env["deps"].store.pubs == [] and env["logged"] == []
+    assert out == sp.social_read(action="recent_posts", limit=20, deps=env["deps"])

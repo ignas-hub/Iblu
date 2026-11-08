@@ -51,6 +51,11 @@ logger = logging.getLogger("iblu_keeper.tools.social_publish")
 WRITE_ACTIONS = ("preview", "publish", "schedule", "cancel")
 READ_ACTIONS = ("recent_posts", "status", "list_scheduled", "limits")
 ACTIONS = WRITE_ACTIONS + READ_ACTIONS
+# Ignas, 2026-11-08: recent_posts in social_publish too, so a chat already in
+# the publishing tool can look at what is live. It is the same GET-only read;
+# in social_publish the Claude app asks first (that tool always does), in
+# social_read it never asks.
+PUBLISH_TOOL_ACTIONS = WRITE_ACTIONS + ("recent_posts",)
 PLATFORMS = ("instagram", "facebook")
 
 ZAGREB = ZoneInfo("Europe/Zagreb")
@@ -887,12 +892,13 @@ def _dispatch(action: str, deps: Deps | None, **kw) -> dict:
 
 def social_publish(*, action: str, post_id=None, slides=None, caption=None, preview_id=None,
                    platforms=None, confirm=False, force=False, publish_at=None, schedule_id=None,
-                   deps: Deps | None = None) -> dict:
-    """The asking tool: preview, publish, schedule, cancel."""
-    if action in READ_ACTIONS:
+                   limit=None, deps: Deps | None = None) -> dict:
+    """The asking tool: preview, publish, schedule, cancel — and recent_posts,
+    a GET-only read of what is already live."""
+    if action in READ_ACTIONS and action not in PUBLISH_TOOL_ACTIONS:
         raise SocialError(f"{action!r} is a read — use social_read, which never asks.")
-    if action not in WRITE_ACTIONS:
-        raise SocialError(f"unknown action {action!r} — social_publish does {list(WRITE_ACTIONS)}; "
+    if action not in PUBLISH_TOOL_ACTIONS:
+        raise SocialError(f"unknown action {action!r} — social_publish does {list(PUBLISH_TOOL_ACTIONS)}; "
                           f"social_read does {list(READ_ACTIONS)}")
     if action == "preview":
         validate_inputs(post_id, slides, caption)
@@ -903,7 +909,7 @@ def social_publish(*, action: str, post_id=None, slides=None, caption=None, prev
         )
     return _dispatch(action, deps, post_id=post_id, slides=slides, caption=caption,
                      preview_id=preview_id, platforms=platforms, confirm=confirm, force=force,
-                     publish_at=publish_at, schedule_id=schedule_id)
+                     publish_at=publish_at, schedule_id=schedule_id, limit=limit)
 
 
 def social_read(*, action: str, preview_id=None, platforms=None, limit=None,

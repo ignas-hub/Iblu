@@ -119,7 +119,7 @@ mcp = FastMCP(
         "WHAT IBLU CAN DO (64 tools; tool names in brackets):\n"
         "- Instagram @blanklabel.team + Blank Label Team Facebook Page: recent "
         "posts, post status, schedule, quota [social_read — never asks]; make, "
-        "publish, schedule a post [social_publish].\n"
+        "publish, schedule a post, and recent posts [social_publish].\n"
         "- Gmail [gmail_*], Google Chat [chat_*], Calendar [calendar, "
         "calendar_*], Drive [drive_*], Docs [gdoc_*], Sheets [sheets_*], "
         "Slides [slides_*], Forms [forms_*], Google Analytics GA4 "
@@ -1584,7 +1584,7 @@ def social_read(
 @stamped
 @with_google_errors("social_publish")
 def social_publish(
-    action: Annotated[str, Field(description="preview | publish | schedule | cancel")],
+    action: Annotated[str, Field(description="preview | publish | schedule | cancel | recent_posts")],
     post_id: Annotated[str | None, Field(default=None, description="preview: post id used in file names, e.g. 'C23'")] = None,
     slides: Annotated[list[str] | None, Field(default=None, description="preview: ordered .dc.html names in the project folder, 1-10 (1 = single image)")] = None,
     caption: Annotated[str | None, Field(default=None, max_length=2200, description="preview: the post caption")] = None,
@@ -1594,9 +1594,15 @@ def social_publish(
     force: Annotated[bool, Field(default=False, description="publish: allow a second post of the same preview to the same platform")] = False,
     publish_at: Annotated[str | None, Field(default=None, description="schedule: ISO 8601; Europe/Zagreb unless an offset is given; 10 min to 30 days out")] = None,
     schedule_id: Annotated[int | None, Field(default=None, description="cancel: from social_read list_scheduled")] = None,
+    limit: Annotated[int, Field(default=20, ge=1, le=50, description="recent_posts: how many posts per platform")] = 20,
 ) -> dict:
     """Instagram @blanklabel.team + Blank Label Team Facebook Page: make and
-    publish a post (carousel or single image).
+    publish a post (carousel or single image), and see what is already live.
+
+    ``recent_posts`` (read-only): the last 20 posts on each platform — date,
+    caption, permalink, image count — read live from Meta with GET calls only.
+    It never posts or changes anything. ``social_read`` has the same action
+    without the approval prompt.
 
     ``preview`` renders the slides (1080x1350 JPGs) from the Shared Drive folder
     BLT-Instagram-Design-Export/project, saves them to .../rendered/<post_id>/,
@@ -1625,7 +1631,7 @@ def social_publish(
     return social_tools.social_publish(
         action=action, post_id=post_id, slides=slides, caption=caption, preview_id=preview_id,
         platforms=platforms, confirm=confirm, force=force, publish_at=publish_at,
-        schedule_id=schedule_id,
+        schedule_id=schedule_id, limit=limit,
     )
 
 

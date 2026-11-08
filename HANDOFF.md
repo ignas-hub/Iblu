@@ -1,6 +1,6 @@
 # iblu-keeper — Handoff and decision record
 
-_Started 2026-06-10. Newest section: §33, 2026-11-08 — see the index below._
+_Started 2026-06-10. Newest section: §34, 2026-11-08 — see the index below._
 
 This began as the handoff after the first build session and became the decision
 record: what exists, what was validated against the real Google account, and —
@@ -61,6 +61,7 @@ characters of a 56,000-character file. When the result says
 | 31 | 2026-10-26 | Seventeen tools in a day, and the two rules that made it safe |
 | 32 | 2026-11-07 | social_publish: what he saw is what goes live |
 | 33 | 2026-11-08 | The night the box ran out of memory, and social_read |
+| 34 | 2026-11-08 | Live publishing switched on, and recent_posts in social_publish |
 
 There is no §11: the number was taken by a list item inside §10 and the
 sections carried on from 12. Code comments cite these numbers (`HANDOFF
@@ -1359,4 +1360,36 @@ body is a MetaError; the interrupted-publish observation has a fixed
 fingerprint; Drive is listed once per pass, not once per slide; the confirm
 check lives in one place. Drive also connects on first use now, not on every
 call.
+
+
+## 34. Live publishing switched on, and recent_posts in social_publish (2026-11-08)
+
+**`SOCIAL_DRY_RUN=false`, set 2026-11-08 18:57 UTC at Ignas's explicit request.**
+From here a `publish` with `confirm=true` posts for real to Instagram
+@blanklabel.team and the Blank Label Team Facebook Page. Checked before the
+switch: no schedules at all, two previews and two publications, both
+`dry_run`. A schedule made earlier in dry run would have stayed dry run
+(§32); there were none.
+
+What reads the switch, and when:
+- `iblu-social.service` (the every-minute worker) loads `.env` on each run,
+  so it was live from 18:58; its first run after the change exited 0.
+- `iblu-mcp` (the MCP server) reads it once at start, so `publish` from a
+  Claude chat stays dry run until the server is restarted. The restart needs
+  sudo, which a session on this box does not have (NoNewPrivileges): Ignas
+  runs it.
+
+Rules unchanged: Claude never passes `confirm=true` without Ignas's yes to the
+exact preview; a dry run never becomes live retroactively; the duplicate
+guard is keyed on post_id.
+
+**`recent_posts` in `social_publish` as well.** Ignas asked for it there.
+It is the same GET-only read as in `social_read` (§33): last 20 posts per
+platform, with date, caption, permalink, image_count. The trade-off is
+recorded rather than hidden: `social_publish` is in the asking class, so
+from that tool the Claude app asks before running it; `social_read` keeps it
+prompt-free. `social_publish` still refuses the other reads (status,
+list_scheduled, limits) by name and points to `social_read`. Test:
+`test_social_publish_also_answers_recent_posts_and_never_writes` asserts
+GET-only with live publishing on and identical output to `social_read`.
 
