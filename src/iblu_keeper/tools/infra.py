@@ -137,7 +137,10 @@ def _derive_status(latest_json: dict) -> tuple[str, str]:
     stale: list[str] = []
     for h in hosts:
         name = h.get("host", "?")
-        ts = _parse_iso(h.get("ts", ""))
+        # Collectors disagree on the field name: the Hetzner hub and play write
+        # `ts`, appsprod, appsdev and the n8n VM write `timestamp`. Reading
+        # only `ts` showed three live hosts as stale in every report.
+        ts = _parse_iso(h.get("ts") or h.get("timestamp") or "")
         if ts is None:
             stale.append(name)
             continue
