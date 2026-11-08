@@ -283,7 +283,7 @@ def test_dry_run_publish_walks_every_step_and_posts_nothing(env):
     assert not [s for s in env["http"].sent if s[0] == "POST"], "dry run must never POST to Meta"
     assert out["platforms"]["instagram"]["permalink"] is None
     assert env["logged"] == [], "a dry run is not a publish and must not enter the work log"
-    st = sp.social_publish(action="status", preview_id=pv["preview_id"], deps=env["deps"])
+    st = sp.social_read(action="status", preview_id=pv["preview_id"], deps=env["deps"])
     assert st["platforms"]["instagram"]["status"] == "dry_run"
 
 
@@ -392,7 +392,7 @@ def test_an_expired_token_is_named_in_plain_language(env):
     ig = out["platforms"]["instagram"]
     assert ig["status"] == "failed" and "expired or was revoked" in ig["error"]
     assert ig["meta_message"] == "Error validating access token: Session has expired"
-    st = sp.social_publish(action="status", preview_id=pv["preview_id"], deps=env["deps"])
+    st = sp.social_read(action="status", preview_id=pv["preview_id"], deps=env["deps"])
     assert "Session has expired" in st["platforms"]["instagram"]["error"], "Meta's message, verbatim"
     assert env["logged"] == []
 
@@ -425,12 +425,12 @@ def test_schedule_list_and_cancel(env):
     out = sp.social_publish(action="schedule", preview_id=pv["preview_id"], publish_at="2026-11-07T13:30",
                             platforms=["instagram", "facebook"], confirm=True, deps=env["deps"])
     assert out["status"] == "scheduled" and out["publish_at_zagreb"].startswith("2026-11-07T13:30")
-    listed = sp.social_publish(action="list_scheduled", deps=env["deps"])
+    listed = sp.social_read(action="list_scheduled", deps=env["deps"])
     assert [s["schedule_id"] for s in listed["items"]] == [out["schedule_id"]]
-    st = sp.social_publish(action="status", preview_id=pv["preview_id"], deps=env["deps"])
+    st = sp.social_read(action="status", preview_id=pv["preview_id"], deps=env["deps"])
     assert st["platforms"]["facebook"]["status"] == "scheduled"
     sp.social_publish(action="cancel", schedule_id=out["schedule_id"], deps=env["deps"])
-    assert sp.social_publish(action="list_scheduled", deps=env["deps"])["items"] == []
+    assert sp.social_read(action="list_scheduled", deps=env["deps"])["items"] == []
     with pytest.raises(sp.SocialRefused, match="not pending"):
         sp.social_publish(action="cancel", schedule_id=out["schedule_id"], deps=env["deps"])
     assert env["deps"].store.pubs == [], "cancelling posts nothing"
@@ -438,14 +438,14 @@ def test_schedule_list_and_cancel(env):
 
 def test_limits_reads_the_quota(env):
     env["settings"].meta_system_user_token = "T"
-    out = sp.social_publish(action="limits", deps=env["deps"])
+    out = sp.social_read(action="limits", deps=env["deps"])
     assert out["quota_usage"] == 3 and out["quota_total"] == 100
     env["settings"].meta_system_user_token = ""
-    assert "META_SYSTEM_USER_TOKEN" in sp.social_publish(action="limits", deps=env["deps"])["error"]
+    assert "META_SYSTEM_USER_TOKEN" in sp.social_read(action="limits", deps=env["deps"])["error"]
 
 
 def test_mock_mode_touches_nothing():
-    out = sp.social_publish(action="list_scheduled")
+    out = sp.social_read(action="list_scheduled")
     assert out["_mock"] is True and out["status"] == "not_list_scheduled_mock"
 
 
@@ -464,3 +464,90 @@ def test_dry_run_walks_every_step_before_meta_is_set_up(env):
     assert out["platforms"]["facebook"]["status"] == "dry_run"
     assert out["platforms"]["instagram"]["calls"][0]["path"] == "{ig-user-id}/media"
     assert any(c["path"] == "{page-id}/feed" for c in out["platforms"]["facebook"]["calls"])
+
+
+# --- the read/write split ---------------------------------------------------------
+
+
+def test_each_tool_refuses_the_others_actions(env):
+    """The Claude app's Ask/Allow is per tool: a read inside social_publish
+    would ask every time, a write inside social_read would never ask."""
+    for action in sp.READ_ACTIONS:
+        with pytest.raises(sp.SocialError, match="social_read"):
+            sp.social_publish(action=action, deps=env["deps"])
+    for action in sp.WRITE_ACTIONS:
+        with pytest.raises(sp.SocialError, match="social_publish"):
+            sp.social_read(action=action, deps=env["deps"])
+
+
+# --- recent_posts -----------------------------------------------------------------
+
+IG_MEDIA = {"data": [
+    {"id": "1", "caption": "Winter event", "media_type": "CAROUSEL_ALBUM", "timestamp": "2026-11-07T19:59:53+0000",
+     "permalink": "https://www.instagram.com/p/A/",
+     "children": {"data": [{"media_type": "IMAGE"}] * 4 + [{"media_type": "VIDEO"}]}},
+    {"id": "2", "media_type": "IMAGE", "timestamp": "2026-10-13T15:57:06+0000",
+     "permalink": "https://www.instagram.com/p/B/"},
+    {"id": "3", "caption": "reel", "media_type": "VIDEO", "timestamp": "2026-10-01T10:00:00+0000",
+     "permalink": "https://www.instagram.com/p/C/"},
+]}
+FB_POSTS = {"data": [
+    {"id": "p1", "message": "Winter event", "created_time": "2026-11-07T19:59:48+0000",
+     "permalink_url": "https://www.facebook.com/x/posts/1",
+     "attachments": {"data": [{"media_type": "album", "subattachments": {"data": [{"media_type": "photo"}] * 5}}]}},
+    {"id": "p2", "created_time": "2026-10-13T15:57:02+0000", "permalink_url": "https://www.facebook.com/x/posts/2",
+     "attachments": {"data": [{"media_type": "photo"}]}},
+    {"id": "p3", "message": "just text", "created_time": "2026-10-01T10:00:00+0000",
+     "permalink_url": "https://www.facebook.com/x/posts/3"},
+]}
+
+
+def _feeds(env):
+    http = env["http"]
+    orig = http.get
+
+    def get(url, params=None, headers=None, timeout=None):
+        if url.endswith("/IG1/media"):
+            http.sent.append(("GET", url, params, headers))
+            return http._resp(IG_MEDIA)
+        if url.endswith("/PAGE1/posts"):
+            http.sent.append(("GET", url, params, headers))
+            return http._resp(FB_POSTS)
+        return orig(url, params, headers=headers, timeout=timeout)
+    http.get = get
+
+
+def test_recent_posts_reads_both_platforms(env):
+    env["settings"].meta_system_user_token = "SYSTEM-TOKEN-SECRET"
+    _feeds(env)
+    out = sp.social_read(action="recent_posts", deps=env["deps"])
+    ig = out["platforms"]["instagram"]["posts"]
+    assert [p["image_count"] for p in ig] == [4, 1, 0], "carousel counts its images, a video has none"
+    assert ig[0]["item_count"] == 5 and ig[1]["caption"] == ""
+    assert ig[0]["date"] == "2026-11-07T19:59:53+0000" and ig[0]["permalink"] == "https://www.instagram.com/p/A/"
+    fb = out["platforms"]["facebook"]["posts"]
+    assert [p["image_count"] for p in fb] == [5, 1, 0]
+    assert fb[0]["caption"] == "Winter event" and fb[2]["permalink"].endswith("/3")
+    ig_call = next(s for s in env["http"].sent if s[1].endswith("/IG1/media"))
+    assert ig_call[2]["limit"] == "20"
+    fb_call = next(s for s in env["http"].sent if s[1].endswith("/PAGE1/posts"))
+    assert fb_call[3]["Authorization"] == "Bearer PAGE-TOKEN-SECRET", "Page posts are read with the Page token"
+    assert "SECRET" not in repr(out)
+
+
+def test_recent_posts_never_writes_even_when_publishing_is_live(env):
+    env["settings"].social_dry_run = False
+    env["settings"].meta_system_user_token = "T"
+    _feeds(env)
+    sp.social_read(action="recent_posts", platforms=["instagram", "facebook"], limit=3, deps=env["deps"])
+    assert env["http"].sent and all(m == "GET" for m, *_ in env["http"].sent)
+    assert env["deps"].store.pubs == [] and env["logged"] == []
+
+
+def test_recent_posts_reports_each_platform_separately(env):
+    env["settings"].meta_system_user_token = "T"
+    env["settings"].meta_page_id = ""
+    _feeds(env)
+    out = sp.social_read(action="recent_posts", deps=env["deps"])
+    assert out["platforms"]["instagram"]["count"] == 3
+    assert "META_PAGE_ID" in out["platforms"]["facebook"]["error"]

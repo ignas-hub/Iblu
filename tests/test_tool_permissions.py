@@ -140,3 +140,26 @@ def test_gmail_dispatch_only_sends():
 
     with _pytest.raises(ValueError, match="gmail_manage"):
         fn(action="archive", message_id="m1")
+
+
+def test_social_read_never_asks_and_social_publish_always_does():
+    """recent_posts must run without approval (Ignas, 2026-11-07); publishing
+    must always ask. One tool cannot do both, hence two."""
+    tools = _tools()
+    assert tools["social_read"] == {"readOnlyHint": True, "destructiveHint": False,
+                                    "idempotentHint": True, "openWorldHint": False}
+    assert "social_publish" in MUST_ASK
+
+
+def test_the_instructions_map_names_every_tool():
+    """Claude chats told Ignas IBLU had no Instagram tool and he had to send
+    screenshots (2026-11-07): the connect-time summary still said 'Chat, Gmail,
+    Docs, Calendar'. The map must cover every tool and state the real count."""
+    from iblu_keeper import server
+
+    instr = server.mcp.instructions
+    names = set(_tools())
+    assert f"({len(names)} tools;" in instr, "the instructions quote a stale tool count"
+    prefixes = ("gmail_", "chat_", "calendar", "drive_", "gdoc_", "sheets_", "slides_", "forms_", "context_")
+    missing = sorted(n for n in names if not n.startswith(prefixes) and not re.search(rf"\b{n}\b", instr))
+    assert not missing, f"tools the connect-time map does not mention: {missing}"

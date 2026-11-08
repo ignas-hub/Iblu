@@ -45,7 +45,12 @@ from . import social_meta, social_render
 
 logger = logging.getLogger("iblu_keeper.tools.social_publish")
 
-ACTIONS = ("preview", "publish", "schedule", "list_scheduled", "cancel", "status", "limits")
+# Two MCP tools, because the Claude app's Ask/Allow setting is per tool:
+# `social_publish` can make a post public, so it asks; `social_read` only reads,
+# so it must never ask (HANDOFF §31: one read tool and one write tool per domain).
+WRITE_ACTIONS = ("preview", "publish", "schedule", "cancel")
+READ_ACTIONS = ("recent_posts", "status", "list_scheduled", "limits")
+ACTIONS = WRITE_ACTIONS + READ_ACTIONS
 PLATFORMS = ("instagram", "facebook")
 
 ZAGREB = ZoneInfo("Europe/Zagreb")
@@ -531,6 +536,30 @@ def limits(deps: Deps) -> dict:
     return {"status": "ok", **out, "note": "Instagram allows 100 API-published posts per rolling 24 hours."}
 
 
+def recent_posts(deps: Deps, platforms=None, limit: int = social_meta.RECENT_LIMIT) -> dict:
+    """The newest posts on each platform, read straight from Meta. GET only:
+    it cannot post, change or delete anything, so it lives in the tool that
+    never asks."""
+    plats = normalise_platforms(platforms)
+    limit = max(1, min(int(limit or social_meta.RECENT_LIMIT), 50))
+    client = deps.graph(True)  # dry_run=True: any POST would be refused to the network
+    out: dict = {}
+    for platform in plats:
+        try:
+            if platform == "instagram":
+                posts = social_meta.instagram_recent(client, settings.meta_ig_user_id, limit)
+                account = "Instagram @blanklabel.team"
+            else:
+                posts = social_meta.facebook_recent(client, settings.meta_page_id, limit)
+                account = "Facebook Page: Blank Label Team"
+            out[platform] = {"account": account, "count": len(posts), "posts": posts}
+        except social_meta.MetaError as exc:
+            out[platform] = {"error": str(exc), "meta_message": exc.meta_message}
+    if any(c["method"] != "GET" for c in client.calls):  # belt and braces
+        raise RuntimeError("recent_posts attempted a non-GET call — refusing.")
+    return {"platforms": out, "note": "Newest first. Read live from Meta; nothing was changed."}
+
+
 # --- production wiring ---------------------------------------------------------
 
 
@@ -641,14 +670,22 @@ class DriveSource:
     """``Source`` on the Shared Drive folder BLT-Instagram-Design-Export."""
 
     def __init__(self, folder_id: str, account: str | None):
-        from .drive import _drive
-
         self.root = folder_id
         self.account = account or None
-        self.svc = _drive(account=self.account)
+        self._svc = None
         self._children: dict[str, dict[str, dict]] = {}
         self._blob_map: dict | None = None
         self._asset_cache: dict[str, tuple[str, bytes]] = {}
+
+    @property
+    def svc(self):
+        # Built on first use: a status or list_scheduled call never needs Drive,
+        # and building it on every call cost ~2 MB and a round trip each time.
+        if self._svc is None:
+            from .drive import _drive
+
+            self._svc = _drive(account=self.account)
+        return self._svc
 
     def _list(self, folder: str) -> dict[str, dict]:
         if folder not in self._children:
@@ -784,11 +821,37 @@ def production_deps() -> Deps:
     )
 
 
+def _dispatch(action: str, deps: Deps | None, **kw) -> dict:
+    if settings.use_mock and deps is None:
+        return {"status": f"not_{action}_mock", "_mock": True, "action": action,
+                "note": "DRY_RUN (mock mode) is on server-wide: nothing was read, rendered, stored or sent."}
+    deps = deps or production_deps()
+    if action == "preview":
+        return preview(deps, kw["post_id"], kw["slides"], kw["caption"])
+    if action == "publish":
+        return publish(deps, kw["preview_id"], kw["platforms"], kw["confirm"], kw["force"])
+    if action == "schedule":
+        return schedule(deps, kw["preview_id"], kw["publish_at"], kw["platforms"], kw["confirm"])
+    if action == "cancel":
+        return cancel(deps, kw["schedule_id"])
+    if action == "recent_posts":
+        return recent_posts(deps, kw.get("platforms"), kw.get("limit") or social_meta.RECENT_LIMIT)
+    if action == "list_scheduled":
+        return list_scheduled(deps)
+    if action == "status":
+        return status(deps, kw["preview_id"])
+    return limits(deps)
+
+
 def social_publish(*, action: str, post_id=None, slides=None, caption=None, preview_id=None,
                    platforms=None, confirm=False, force=False, publish_at=None, schedule_id=None,
                    deps: Deps | None = None) -> dict:
-    if action not in ACTIONS:
-        raise SocialError(f"unknown action {action!r} — expected one of {list(ACTIONS)}")
+    """The asking tool: preview, publish, schedule, cancel."""
+    if action in READ_ACTIONS:
+        raise SocialError(f"{action!r} is a read — use social_read, which never asks.")
+    if action not in WRITE_ACTIONS:
+        raise SocialError(f"unknown action {action!r} — social_publish does {list(WRITE_ACTIONS)}; "
+                          f"social_read does {list(READ_ACTIONS)}")
     if action == "preview":
         validate_inputs(post_id, slides, caption)
     if action in ("publish", "schedule") and confirm is not True:
@@ -796,21 +859,18 @@ def social_publish(*, action: str, post_id=None, slides=None, caption=None, prev
             f"refused: {action} needs confirm=true, and confirm=true only after Ignas has seen the "
             "preview and said yes in chat."
         )
-    if settings.use_mock and deps is None:
-        return {"status": f"not_{action}_mock", "_mock": True, "action": action,
-                "note": "DRY_RUN (mock mode) is on server-wide: nothing was rendered, stored or sent."}
+    return _dispatch(action, deps, post_id=post_id, slides=slides, caption=caption,
+                     preview_id=preview_id, platforms=platforms, confirm=confirm, force=force,
+                     publish_at=publish_at, schedule_id=schedule_id)
 
-    deps = deps or production_deps()
-    if action == "preview":
-        return preview(deps, post_id, slides, caption)
-    if action == "publish":
-        return publish(deps, preview_id, platforms, confirm, force)
-    if action == "schedule":
-        return schedule(deps, preview_id, publish_at, platforms, confirm)
-    if action == "list_scheduled":
-        return list_scheduled(deps)
-    if action == "cancel":
-        return cancel(deps, schedule_id)
-    if action == "status":
-        return status(deps, preview_id)
-    return limits(deps)
+
+def social_read(*, action: str, preview_id=None, platforms=None, limit=None,
+                deps: Deps | None = None) -> dict:
+    """The read tool: recent_posts, status, list_scheduled, limits. Nothing here
+    posts, changes or deletes anything."""
+    if action in WRITE_ACTIONS:
+        raise SocialError(f"{action!r} changes something — use social_publish, which asks first.")
+    if action not in READ_ACTIONS:
+        raise SocialError(f"unknown action {action!r} — social_read does {list(READ_ACTIONS)}; "
+                          f"social_publish does {list(WRITE_ACTIONS)}")
+    return _dispatch(action, deps, preview_id=preview_id, platforms=platforms, limit=limit)

@@ -116,11 +116,22 @@ mcp = FastMCP(
         "4. It continuously removes work from him: it proposes what to "
         "delegate or automate, then does the automatable parts itself.\n"
         "Full mission: call `get_context`.\n\n"
-        "Personal assistant tools for Ignas: read/send Google Chat, "
-        "read/draft/send Gmail, read attachments + Google Docs, and create "
-        "Calendar events. Identify Chat conversations primarily by the "
-        "person's name. Use draft_* tools when a human should review before "
-        "anything is sent. "
+        "WHAT IBLU CAN DO (64 tools; tool names in brackets):\n"
+        "- Instagram @blanklabel.team + Blank Label Team Facebook Page: recent "
+        "posts, post status, schedule, quota [social_read — never asks]; make, "
+        "publish, schedule a post [social_publish].\n"
+        "- Gmail [gmail_*], Google Chat [chat_*], Calendar [calendar, "
+        "calendar_*], Drive [drive_*], Docs [gdoc_*], Sheets [sheets_*], "
+        "Slides [slides_*], Forms [forms_*], Google Analytics GA4 "
+        "[analytics_read], Workspace directory [directory_search], his code "
+        "[repo], memory and priorities [get_context, context_*], server "
+        "[server_health, get_infra_status].\n"
+        "Your client may load only some tool definitions up front. Before "
+        "telling Ignas IBLU cannot do something on this list, search your "
+        "available tools for the bracketed name (or words like 'instagram', "
+        "'facebook', 'sheets') — never ask him to prove a tool exists.\n"
+        "Identify Chat conversations primarily by the person's name. Use "
+        "draft_* tools when a human should review before anything is sent. "
         "\n\n"
         "AVAILABILITY PROTOCOL — CRITICAL, read this first. If you can read "
         "these instructions, the IBLU connector IS connected and its tools "
@@ -1544,39 +1555,64 @@ def gmail_dispatch(
     )
 
 
-@mcp.tool(name="social_publish", annotations={"title": "Preview and Publish Instagram / Facebook Posts", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+@mcp.tool(name="social_read", annotations={"title": "Instagram & Facebook: Recent Posts, Post Status, Schedules, Quota (read-only)", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+def social_read(
+    action: Annotated[str, Field(description="recent_posts | status | list_scheduled | limits")],
+    platforms: Annotated[list[str] | None, Field(default=None, description="recent_posts: instagram, facebook (default both)")] = None,
+    limit: Annotated[int, Field(default=20, ge=1, le=50, description="recent_posts: how many posts per platform")] = 20,
+    preview_id: Annotated[str | None, Field(default=None, description="status: the preview to report on")] = None,
+) -> dict:
+    """Instagram @blanklabel.team and the Blank Label Team Facebook Page —
+    read-only, never asks, never posts or changes anything.
+
+    ``recent_posts``: the newest posts on each (default 20), read live from
+    Meta — date, caption, permalink, image count. Use it for "what did we post",
+    "show our Instagram", "last Facebook post".
+    ``status``: where a preview stands per platform (rendered, scheduled,
+    publishing, published with permalink, failed with Meta's error verbatim).
+    ``list_scheduled``: posts waiting to go out. ``limits``: Instagram's
+    100-posts-per-24h API quota.
+
+    To make or post something use ``social_publish``.
+    """
+    from .tools import social_publish as social_tools
+    return social_tools.social_read(action=action, platforms=platforms, limit=limit, preview_id=preview_id)
+
+
+@mcp.tool(name="social_publish", annotations={"title": "Instagram & Facebook: Preview, Publish, Schedule a Post", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
 @stamped
 @with_google_errors("social_publish")
 def social_publish(
-    action: Annotated[str, Field(description="preview | publish | schedule | list_scheduled | cancel | status | limits")],
+    action: Annotated[str, Field(description="preview | publish | schedule | cancel")],
     post_id: Annotated[str | None, Field(default=None, description="preview: post id used in file names, e.g. 'C23'")] = None,
     slides: Annotated[list[str] | None, Field(default=None, description="preview: ordered .dc.html names in the project folder, 1-10 (1 = single image)")] = None,
     caption: Annotated[str | None, Field(default=None, max_length=2200, description="preview: the post caption")] = None,
-    preview_id: Annotated[str | None, Field(default=None, description="publish / schedule / status: from preview")] = None,
+    preview_id: Annotated[str | None, Field(default=None, description="publish / schedule: from preview")] = None,
     platforms: Annotated[list[str] | None, Field(default=None, description="publish / schedule: instagram, facebook (default both)")] = None,
     confirm: Annotated[bool, Field(default=False, description="publish / schedule: true ONLY after Ignas saw the preview and said yes in chat")] = False,
     force: Annotated[bool, Field(default=False, description="publish: allow a second post of the same preview to the same platform")] = False,
     publish_at: Annotated[str | None, Field(default=None, description="schedule: ISO 8601; Europe/Zagreb unless an offset is given; 10 min to 30 days out")] = None,
-    schedule_id: Annotated[int | None, Field(default=None, description="cancel: from list_scheduled")] = None,
+    schedule_id: Annotated[int | None, Field(default=None, description="cancel: from social_read list_scheduled")] = None,
 ) -> dict:
-    """Blank Label Team posts to Instagram @blanklabel.team and its Facebook Page.
+    """Instagram @blanklabel.team + Blank Label Team Facebook Page: make and
+    publish a post (carousel or single image).
 
-    ``preview`` renders the slides (1080x1350 JPGs), saves them to Drive
-    (BLT-Instagram-Design-Export/rendered/<post_id>/), hosts them publicly and
-    returns the links, caption, hashtag and character counts, and a
-    ``preview_id``. SHOW IGNAS EVERY IMAGE AND THE CAPTION.
+    ``preview`` renders the slides (1080x1350 JPGs) from the Shared Drive folder
+    BLT-Instagram-Design-Export/project, saves them to .../rendered/<post_id>/,
+    hosts them publicly and returns the links, caption, hashtag and character
+    counts, and a ``preview_id``. SHOW IGNAS EVERY IMAGE AND THE CAPTION.
 
     Publishing reaches the public — the same rule as sending email. Call
     ``publish`` (now) or ``schedule`` (later) with ``confirm=true`` only after
     he has said yes in chat to that preview. Both refuse: a preview older than
     24 hours, any slide changed since the preview, and a second post of the
-    same preview to the same platform without ``force``.
+    same preview to the same platform without ``force``. ``cancel`` stops a
+    scheduled post.
 
-    ``status`` (per platform: rendered, scheduled, publishing, published with
-    permalink, failed with Meta's error verbatim), ``list_scheduled``,
-    ``cancel``, and ``limits`` (Instagram's 24-hour API quota) are reads.
-    While the server runs with SOCIAL_DRY_RUN on, publish logs the Meta calls
-    it would make and posts nothing — say so when reporting the result.
+    Reading — recent posts, a preview's status, the schedule, the quota — is
+    ``social_read``, which never asks. While SOCIAL_DRY_RUN is on, publish logs
+    the Meta calls it would make and posts nothing — say so when reporting.
 
     Rights. Claude: this tool always asks Ignas before running; never pass
     confirm=true without his yes to the exact preview. Meta: the server's
@@ -1864,6 +1900,22 @@ def get_infra_status() -> dict:
 # --------------------------------------------------------------------------- #
 # Server health (callable by Claude when responses look stale/mocked)
 # --------------------------------------------------------------------------- #
+def _process_memory() -> dict:
+    """This process's memory, from /proc. On 2026-11-07 the server grew to
+    730 MB in 25 minutes, froze the 4 GB box for ten minutes and was killed by
+    the kernel; nothing reported the growth. Now health says it."""
+    out: dict = {}
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                if key in ("VmRSS", "VmHWM"):
+                    out["rss_mb" if key == "VmRSS" else "peak_rss_mb"] = int(rest.split()[0]) // 1024
+    except OSError:
+        pass
+    return out
+
+
 @mcp.tool(name="server_health", annotations={"title": "MCP Server Health Check", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 @stamped
 @with_google_errors("server_health")
@@ -1897,6 +1949,7 @@ def server_health() -> dict:
         "accounts": auth_status_by_account(),
         "readstate_worker": readstate_worker.snapshot(),
         "database": db.healthcheck(),
+        "memory": _process_memory(),
     }
 
 
@@ -1919,6 +1972,7 @@ async def health(request: Request) -> JSONResponse:
         "has_google_credentials": settings.has_google_credentials,
         "misconfigured_live": settings.misconfigured_live,
         "server_time": now_iso(),
+        "memory": _process_memory(),
     }
     if settings.misconfigured_live:
         body["warning"] = (

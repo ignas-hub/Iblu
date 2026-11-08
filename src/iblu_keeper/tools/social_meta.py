@@ -252,3 +252,85 @@ def publishing_limit(client: GraphClient, ig_user_id: str) -> dict:
         "quota_total": config.get("quota_total"),
         "quota_duration_seconds": config.get("quota_duration"),
     }
+
+
+# --- reads: recent posts ---------------------------------------------------------
+
+RECENT_LIMIT = 20
+
+
+def _ig_image_count(item: dict) -> int:
+    kind = item.get("media_type")
+    if kind == "CAROUSEL_ALBUM":
+        return sum(1 for c in (item.get("children") or {}).get("data", []) if c.get("media_type") == "IMAGE")
+    return 1 if kind == "IMAGE" else 0
+
+
+def instagram_recent(client: GraphClient, ig_user_id: str, limit: int = RECENT_LIMIT) -> list[dict]:
+    """The account's newest posts, newest first. GET only."""
+    if not ig_user_id:
+        raise MetaError("META_IG_USER_ID is not set in the server .env.")
+    body = client.get(
+        f"{ig_user_id}/media",
+        {"fields": "id,caption,media_type,media_product_type,timestamp,permalink,"
+                   "children{media_type}", "limit": str(limit)},
+        needs="instagram_basic",
+    )
+    out = []
+    for item in (body.get("data") or [])[:limit]:
+        children = (item.get("children") or {}).get("data", [])
+        out.append({
+            "date": item.get("timestamp"),
+            "caption": item.get("caption") or "",
+            "permalink": item.get("permalink"),
+            "image_count": _ig_image_count(item),
+            "item_count": len(children) if item.get("media_type") == "CAROUSEL_ALBUM" else 1,
+            "media_type": item.get("media_type"),
+            "id": item.get("id"),
+        })
+    return out
+
+
+def _fb_image_count(post: dict) -> tuple[int, int]:
+    """(images, attachments) for a Page post. An album lists its photos as
+    subattachments; a single photo is itself the attachment."""
+    images = items = 0
+    for att in (post.get("attachments") or {}).get("data", []):
+        subs = (att.get("subattachments") or {}).get("data", [])
+        if subs:
+            items += len(subs)
+            images += sum(1 for s in subs if s.get("media_type") == "photo")
+        elif att.get("media_type"):
+            items += 1
+            images += 1 if att.get("media_type") == "photo" else 0
+    return images, items
+
+
+def facebook_recent(client: GraphClient, page_id: str, limit: int = RECENT_LIMIT) -> list[dict]:
+    """The Page's newest posts, newest first. GET only — the Page token is
+    fetched with a GET too, and never returned."""
+    if not page_id:
+        raise MetaError("META_PAGE_ID is not set in the server .env.")
+    page_token = client.get(page_id, {"fields": "access_token"}, needs="pages_show_list").get("access_token")
+    if not page_token:
+        raise MetaError("Meta returned no Page access token — the system user is not assigned the "
+                        "Facebook Page, or the token lacks pages_show_list.")
+    body = client.get(
+        f"{page_id}/posts",
+        {"fields": "id,message,created_time,permalink_url,"
+                   "attachments{media_type,subattachments.limit(100){media_type}}",
+         "limit": str(limit)},
+        needs="pages_read_engagement", token=page_token,
+    )
+    out = []
+    for post in (body.get("data") or [])[:limit]:
+        images, items = _fb_image_count(post)
+        out.append({
+            "date": post.get("created_time"),
+            "caption": post.get("message") or "",
+            "permalink": post.get("permalink_url"),
+            "image_count": images,
+            "item_count": items,
+            "id": post.get("id"),
+        })
+    return out
