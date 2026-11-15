@@ -150,3 +150,15 @@ def test_get_infra_status_degrades_on_a_stopped_droplet(monkeypatch):
     assert "worker-1 is off" in res["summary"]
     assert res["digitalocean"]["account"]["email"] == "ops@example.com"
     infra._CACHE.clear()
+
+
+def test_digitalocean_balance_without_billing_scope_is_not_an_error(monkeypatch):
+    def fake_get(token, path):
+        if path == "/customers/my/balance":
+            raise RuntimeError("DigitalOcean token lacks read scope for /customers/my/balance")
+        return _DO_PAYLOADS[path]
+
+    monkeypatch.setattr(infra, "_do_get", fake_get)
+    snap = infra._digitalocean_snapshot("t")
+    assert snap["status"] == "ok", snap["errors"]
+    assert "billing:read" in snap["balance"]["unavailable"]

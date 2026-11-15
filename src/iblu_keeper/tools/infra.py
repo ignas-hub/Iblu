@@ -258,12 +258,24 @@ def _digitalocean_snapshot(token: str) -> dict:
         "droplet_limit": (d.get("account") or {}).get("droplet_limit"),
         "team": ((d.get("account") or {}).get("team") or {}).get("name", ""),
     })
-    fetch("balance", "/customers/my/balance", lambda d: {
-        "month_to_date_usage_usd": d.get("month_to_date_usage"),
-        "month_to_date_balance_usd": d.get("month_to_date_balance"),
-        "account_balance_usd": d.get("account_balance"),
-        "generated_at": d.get("generated_at"),
-    })
+    # Billing is outside DO's "Read Only" preset: it needs the custom scope
+    # billing:read. A 403 here is the expected shape of a least-privilege
+    # token, so it is reported as unavailable, not as an error.
+    try:
+        bal = _do_get(token, "/customers/my/balance")
+        out["balance"] = {
+            "month_to_date_usage_usd": bal.get("month_to_date_usage"),
+            "month_to_date_balance_usd": bal.get("month_to_date_balance"),
+            "account_balance_usd": bal.get("account_balance"),
+            "generated_at": bal.get("generated_at"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        if "lacks read scope" in str(exc):
+            out["balance"] = {"unavailable": "token has no billing:read scope; "
+                              "add it under Custom Scopes to see spend"}
+        else:
+            out["errors"].append(f"balance: {exc}")
+            out["balance"] = None
     fetch("droplets", "/droplets", lambda d: [{
         "name": x.get("name"),
         "status": x.get("status"),
@@ -416,7 +428,9 @@ if __name__ == "__main__":  # pragma: no cover — operator check after pasting 
     if acct:
         print(f"account: {acct.get('email')} ({acct.get('status')}) team={acct.get('team') or '-'}")
     bal = snap.get("balance") or {}
-    if bal:
+    if bal.get("unavailable"):
+        print(f"balance: {bal['unavailable']}")
+    elif bal:
         print(f"month to date: ${bal.get('month_to_date_usage_usd')} usage, "
               f"${bal.get('month_to_date_balance_usd')} balance")
     for d in snap.get("droplets") or []:
