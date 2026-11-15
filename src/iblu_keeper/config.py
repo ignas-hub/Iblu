@@ -133,6 +133,13 @@ class Settings:
     infra_hub_timezone: str = field(
         default_factory=lambda: os.getenv("INFRA_HUB_TIMEZONE", "UTC")
     )
+    # A DigitalOcean personal access token with READ-ONLY scope. When set,
+    # ``get_infra_status`` adds a ``digitalocean`` section (account, balance,
+    # droplets, apps, databases, domains, volumes, load balancers, clusters)
+    # read live from the DO API. Nothing in IBLU writes to DigitalOcean.
+    digitalocean_token: str = field(
+        default_factory=lambda: os.getenv("DIGITALOCEAN_TOKEN", "")
+    )
 
     # --- Multi-account (week 2) ---
     #

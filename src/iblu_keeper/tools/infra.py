@@ -16,7 +16,14 @@ Contract per the request spec::
         "latest_json": { ... },                # parsed dict
         "last_updated_local": "~/.infra/latest.{md,json}",
         "collected_at": "Europe/Zagreb",       # from INFRA_HUB_TIMEZONE
+        "digitalocean": { ... },               # see _digitalocean_snapshot
     }
+
+``digitalocean`` is read live from the DigitalOcean API with the read-only
+token in ``DIGITALOCEAN_TOKEN`` (account, balance, droplets, apps, managed
+databases, domains, volumes, load balancers, Kubernetes clusters). It has its
+own ``status`` (``ok`` / ``error`` / ``not_configured``) and never raises; a
+DO failure leaves the Drive-based hosts report intact and vice versa.
 
 On failure returns ``{"error": "..."}``. Results are cached in-process for
 five minutes so repeated calls in the same conversation don't hit Drive
@@ -194,19 +201,168 @@ def _fetch_file_bytes(drive, folder_id: str, name: str) -> bytes | None:
     ).execute()
 
 
+# --------------------------------------------------------------------------- #
+# DigitalOcean (read-only)
+# --------------------------------------------------------------------------- #
+_DO_API = "https://api.digitalocean.com/v2"
+_DO_TIMEOUT_SEC = 10
+_DO_PER_PAGE = 200
+
+
+def _do_get(token: str, path: str) -> dict:
+    """One GET against the DO API; raises on HTTP or transport errors."""
+    import requests
+
+    resp = requests.get(
+        f"{_DO_API}{path}",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        params={"per_page": _DO_PER_PAGE},
+        timeout=_DO_TIMEOUT_SEC,
+    )
+    if resp.status_code == 401:
+        raise RuntimeError("DigitalOcean rejected the token (401) — regenerate it")
+    if resp.status_code == 403:
+        raise RuntimeError("DigitalOcean token lacks read scope for " + path)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _ipv4(droplet: dict, kind: str) -> str:
+    for net in (droplet.get("networks") or {}).get("v4") or []:
+        if net.get("type") == kind:
+            return net.get("ip_address", "")
+    return ""
+
+
+def _digitalocean_snapshot(token: str) -> dict:
+    """Everything the read-only token can see, flattened to what a chat needs.
+
+    Each resource list is fetched independently so one failing endpoint (a
+    token without that scope, an API hiccup) is reported under ``errors`` and
+    the rest still comes back. ``status`` is ``ok`` only when every call
+    succeeded; ``notes`` lists droplets, apps and databases that are not in
+    their normal running state.
+    """
+    out: dict = {"status": "ok", "errors": [], "notes": []}
+
+    def fetch(key: str, path: str, shape):
+        try:
+            out[key] = shape(_do_get(token, path))
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append(f"{key}: {exc}")
+            out[key] = None
+
+    fetch("account", "/account", lambda d: {
+        "email": (d.get("account") or {}).get("email", ""),
+        "status": (d.get("account") or {}).get("status", ""),
+        "droplet_limit": (d.get("account") or {}).get("droplet_limit"),
+        "team": ((d.get("account") or {}).get("team") or {}).get("name", ""),
+    })
+    fetch("balance", "/customers/my/balance", lambda d: {
+        "month_to_date_usage_usd": d.get("month_to_date_usage"),
+        "month_to_date_balance_usd": d.get("month_to_date_balance"),
+        "account_balance_usd": d.get("account_balance"),
+        "generated_at": d.get("generated_at"),
+    })
+    fetch("droplets", "/droplets", lambda d: [{
+        "name": x.get("name"),
+        "status": x.get("status"),
+        "region": (x.get("region") or {}).get("slug"),
+        "size": x.get("size_slug"),
+        "public_ip": _ipv4(x, "public"),
+        "private_ip": _ipv4(x, "private"),
+        "image": " ".join(filter(None, [(x.get("image") or {}).get("distribution"),
+                                        (x.get("image") or {}).get("name")])),
+        "tags": x.get("tags") or [],
+        "created_at": x.get("created_at"),
+    } for x in d.get("droplets") or []])
+    fetch("apps", "/apps", lambda d: [{
+        "name": (x.get("spec") or {}).get("name"),
+        "live_url": x.get("live_url"),
+        "region": (x.get("region") or {}).get("slug"),
+        "deployment_phase": (x.get("active_deployment") or {}).get("phase"),
+        "updated_at": x.get("updated_at"),
+    } for x in d.get("apps") or []])
+    fetch("databases", "/databases", lambda d: [{
+        "name": x.get("name"),
+        "engine": x.get("engine"),
+        "version": x.get("version"),
+        "status": x.get("status"),
+        "size": x.get("size"),
+        "region": x.get("region"),
+        "nodes": x.get("num_nodes"),
+    } for x in d.get("databases") or []])
+    fetch("domains", "/domains", lambda d: [x.get("name") for x in d.get("domains") or []])
+    fetch("volumes", "/volumes", lambda d: [{
+        "name": x.get("name"),
+        "size_gb": x.get("size_gigabytes"),
+        "region": (x.get("region") or {}).get("slug"),
+        "attached_to": x.get("droplet_ids") or [],
+    } for x in d.get("volumes") or []])
+    fetch("load_balancers", "/load_balancers", lambda d: [{
+        "name": x.get("name"),
+        "status": x.get("status"),
+        "ip": x.get("ip"),
+    } for x in d.get("load_balancers") or []])
+    fetch("kubernetes_clusters", "/kubernetes/clusters", lambda d: [{
+        "name": x.get("name"),
+        "state": (x.get("status") or {}).get("state"),
+        "region": x.get("region"),
+        "version": x.get("version"),
+    } for x in d.get("kubernetes_clusters") or []])
+
+    for x in out.get("droplets") or []:
+        if x.get("status") != "active":
+            out["notes"].append(f"droplet {x.get('name')} is {x.get('status')}")
+    for x in out.get("apps") or []:
+        if x.get("deployment_phase") not in (None, "ACTIVE"):
+            out["notes"].append(f"app {x.get('name')} deployment {x.get('deployment_phase')}")
+    for x in out.get("databases") or []:
+        if x.get("status") != "online":
+            out["notes"].append(f"database {x.get('name')} is {x.get('status')}")
+
+    if out["errors"]:
+        out["status"] = "error"
+    counts = {k: len(out[k]) for k in ("droplets", "apps", "databases", "domains",
+                                        "volumes", "load_balancers", "kubernetes_clusters")
+              if isinstance(out.get(k), list)}
+    out["summary"] = ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in counts.items() if v) \
+        or "nothing provisioned"
+    if out["notes"]:
+        out["summary"] += "; " + "; ".join(out["notes"])
+    return out
+
+
+def _digitalocean() -> dict:
+    token = settings.digitalocean_token
+    if not token:
+        return {"status": "not_configured",
+                "summary": "DIGITALOCEAN_TOKEN is not set in .env"}
+    try:
+        return _digitalocean_snapshot(token)
+    except Exception as exc:  # noqa: BLE001  — belt and braces; never raise
+        logger.warning("get_infra_status DigitalOcean error: %s", exc)
+        return {"status": "error", "summary": f"DigitalOcean read failed: {exc}"}
+
+
 def get_infra_status() -> dict:
     """Fetch + summarise the infrastructure collector's latest output."""
     folder = settings.infra_folder_id
     tz = settings.infra_hub_timezone or "UTC"
 
-    if not folder:
-        return {"error": "INFRA_FOLDER_ID is not set in .env"}
-
     now = _time.time()
-    cached = _CACHE.get(folder)
+    cache_key = folder or "(no folder)"
+    cached = _CACHE.get(cache_key)
     if cached and (now - cached[0]) < _CACHE_TTL_SEC:
         # Return a shallow copy so callers can't mutate cache state.
         return dict(cached[1])
+
+    # DigitalOcean is independent of the Drive collector: a DO outage must not
+    # hide the hosts report, and a missing Drive folder must not hide DO.
+    do = _digitalocean()
+
+    if not folder:
+        return {"error": "INFRA_FOLDER_ID is not set in .env", "digitalocean": do}
 
     try:
         drive = _drive()
@@ -214,19 +370,26 @@ def get_infra_status() -> dict:
         json_bytes = _fetch_file_bytes(drive, folder, "latest.json")
     except Exception as exc:  # noqa: BLE001
         logger.warning("get_infra_status Drive error: %s", exc)
-        return {"error": f"Drive fetch failed: {exc}"}
+        return {"error": f"Drive fetch failed: {exc}", "digitalocean": do}
 
     missing = [n for n, b in (("latest.md", md_bytes), ("latest.json", json_bytes)) if not b]
     if missing:
-        return {"error": f"missing files in infra folder: {', '.join(missing)}"}
+        return {"error": f"missing files in infra folder: {', '.join(missing)}",
+                "digitalocean": do}
 
     latest_md = md_bytes.decode("utf-8", errors="replace")
     try:
         latest_json = _json.loads(json_bytes.decode("utf-8", errors="replace"))
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"latest.json parse failed: {exc}"}
+        return {"error": f"latest.json parse failed: {exc}", "digitalocean": do}
 
     status, summary = _derive_status(latest_json)
+    if do.get("status") == "error":
+        status = "degraded" if status == "healthy" else status
+        summary += "; DigitalOcean: " + do.get("summary", "read failed")
+    elif do.get("notes"):
+        status = "degraded" if status == "healthy" else status
+        summary += "; DigitalOcean: " + "; ".join(do["notes"])
     result = {
         "status": status,
         "summary": summary,
@@ -235,6 +398,31 @@ def get_infra_status() -> dict:
         "latest_json": latest_json,
         "last_updated_local": "~/.infra/latest.{md,json}",
         "collected_at": tz,
+        "digitalocean": do,
     }
-    _CACHE[folder] = (now, result)
+    _CACHE[cache_key] = (now, result)
     return result
+
+
+if __name__ == "__main__":  # pragma: no cover — operator check after pasting a token
+    import sys
+
+    snap = _digitalocean()
+    print(f"status: {snap.get('status')}")
+    print(f"summary: {snap.get('summary')}")
+    for err in snap.get("errors") or []:
+        print(f"error: {err}")
+    acct = snap.get("account") or {}
+    if acct:
+        print(f"account: {acct.get('email')} ({acct.get('status')}) team={acct.get('team') or '-'}")
+    bal = snap.get("balance") or {}
+    if bal:
+        print(f"month to date: ${bal.get('month_to_date_usage_usd')} usage, "
+              f"${bal.get('month_to_date_balance_usd')} balance")
+    for d in snap.get("droplets") or []:
+        print(f"droplet: {d['name']} {d['status']} {d['region']} {d['size']} {d['public_ip']}")
+    for a in snap.get("apps") or []:
+        print(f"app: {a['name']} {a['deployment_phase']} {a['live_url']}")
+    for db in snap.get("databases") or []:
+        print(f"database: {db['name']} {db['engine']} {db['status']}")
+    sys.exit(0 if snap.get("status") == "ok" else 1)

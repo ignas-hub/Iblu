@@ -91,7 +91,7 @@ Claude.ai picks safe permission defaults automatically:
 | `drive_upload_from_url` | Fetch a URL and save it to Drive | auto-allow |
 | `drive_save_gmail_attachment` | Save an email attachment straight to Drive | auto-allow |
 | `repo` | Read any of Ignas's source — this box or GitHub: repos / list / read / search / log | auto-allow |
-| `get_infra_status` | Latest infrastructure health from the Drive collector | auto-allow |
+| `get_infra_status` | Latest infrastructure health from the Drive collector, plus a live read-only DigitalOcean snapshot (droplets, apps, databases, balance) when `DIGITALOCEAN_TOKEN` is set | auto-allow |
 | `context_review` | Where attention went: venture split, repeat-touch threads, inbound share, ping habit | auto-allow |
 | `get_context` | Mission first, then the memory brief and the window summary — call before deciding anything | auto-allow |
 | `context_log` | Store a durable memory entry (fact / decision / preference / work_log) | auto-allow |
