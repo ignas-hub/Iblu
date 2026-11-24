@@ -127,9 +127,12 @@ mcp = FastMCP(
         "[repo], memory and priorities [get_context, context_*], server "
         "[server_health, get_infra_status], his standing rules for how Claude "
         "works with him [rules_read, rules_write].\n"
-        "RULES: when Ignas says 'update my rules at iblu', 'new rule', 'add to my "
-        "frustrations' or 'remember this as a rule', call rules_write(action='add') "
-        "with his words verbatim and confirm in one line. Do not ask first.\n"
+        "RULES: when Ignas says anything like 'update my rules at iblu', 'update "
+        "iblu rules', 'iblu rule:', 'rule for iblu', 'new rule', 'add to my "
+        "frustrations' or 'remember this as a rule' — any wording that puts "
+        "'iblu' or 'frustration' next to 'rule(s)' or 'update' — call "
+        "rules_write(action='add') with his words verbatim and confirm in one "
+        "line. Do not ask first, and do not ask him to rephrase.\n"
         "Your client may load only some tool definitions up front. Before "
         "telling Ignas IBLU cannot do something on this list, search your "
         "available tools for the bracketed name (or words like 'instagram', "
@@ -1941,11 +1944,13 @@ def rules_write(
 ) -> dict:
     """Record what Ignas just told you about how to work with him.
 
-    TRIGGER: when he says "update my rules at iblu", "new rule", "remember
-    this as a rule", "add to my frustrations", "make it a standing rule", or
-    corrects you and says to keep it — call this at once with his words
-    verbatim in ``text``, what happened in ``context``, and confirm in one
-    line. Do not ask whether to record it.
+    TRIGGER: any wording that puts "iblu" or "frustration" next to "rule(s)"
+    or "update" — "update my rules at iblu", "update iblu rules", "iblu rule:",
+    "rule for iblu", "add to my frustrations" — and also "new rule", "remember
+    this as a rule", "make it a standing rule", or a correction he says to
+    keep. Call this at once with his words verbatim in ``text``, what happened
+    in ``context``, and confirm in one line. Do not ask whether to record it
+    and do not ask him to rephrase.
 
     ``action``: ``add`` (``text``; ``kind`` rule|frustration|fact; ``scope``
     all|code|chat|project), ``edit`` (``rule_id`` + new ``text``: supersedes,

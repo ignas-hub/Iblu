@@ -93,7 +93,7 @@ Claude.ai picks safe permission defaults automatically:
 | `repo` | Read any of Ignas's source — this box or GitHub: repos / list / read / search / log | auto-allow |
 | `get_infra_status` | Latest infrastructure health from the Drive collector, plus a live read-only DigitalOcean snapshot (droplets, apps, databases, balance) when `DIGITALOCEAN_TOKEN` is set | auto-allow |
 | `rules_read` | Ignas's standing rules for Claude: `list` active, `render` a paste-ready block per destination (code / chat / project), `history` | auto-allow |
-| `rules_write` | "update my rules at iblu": `add` a rule, frustration or fact in his words; `edit` supersedes, `retire` keeps the row (D9). Mirrors to the Google Doc in `RULES_DOC_ID`; every Claude Code session on the box reads the active rules at start | auto-allow |
+| `rules_write` | "update my rules at iblu" / "update iblu rules" / "iblu rule: …": `add` a rule, frustration or fact in his words; `edit` supersedes, `retire` keeps the row (D9). Mirrors to the Google Doc in `RULES_DOC_ID`; every Claude Code session on the box reads the active rules at start | auto-allow |
 | `context_review` | Where attention went: venture split, repeat-touch threads, inbound share, ping habit | auto-allow |
 | `get_context` | Mission first, then the memory brief and the window summary — call before deciding anything | auto-allow |
 | `context_log` | Store a durable memory entry (fact / decision / preference / work_log) | auto-allow |
