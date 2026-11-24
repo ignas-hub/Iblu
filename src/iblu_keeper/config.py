@@ -141,6 +141,12 @@ class Settings:
         default_factory=lambda: os.getenv("DIGITALOCEAN_TOKEN", "")
     )
 
+    # --- Rules for Claude (store/rules.py, tools/rules.py) ---
+    # The Google Doc that mirrors the `rules` table: every rule added through
+    # `rules_write` is appended under a NEW RULES heading. Not a secret; the
+    # doc id of "Claude instructions - the three places to paste".
+    rules_doc_id: str = field(default_factory=lambda: os.getenv("RULES_DOC_ID", ""))
+
     # --- Multi-account (week 2) ---
     #
     # Each Google Workspace needs its OWN OAuth client: IBLU's consent screen is

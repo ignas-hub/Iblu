@@ -62,6 +62,7 @@ characters of a 56,000-character file. When the result says
 | 32 | 2026-11-07 | social_publish: what he saw is what goes live |
 | 33 | 2026-11-08 | The night the box ran out of memory, and social_read |
 | 34 | 2026-11-08 | Live publishing switched on, and recent_posts in social_publish |
+| 35 | 2026-11-24 | Rules: what Ignas tells Claude becomes a row, and every session reads it |
 
 There is no §11: the number was taken by a list item inside §10 and the
 sections carried on from 12. Code comments cite these numbers (`HANDOFF
@@ -1393,3 +1394,42 @@ list_scheduled, limits) by name and points to `social_read`. Test:
 `test_social_publish_also_answers_recent_posts_and_never_writes` asserts
 GET-only with live publishing on and identical output to `social_read`.
 
+
+## 35. Rules: what Ignas tells Claude becomes a row, and every session reads it (2026-11-24)
+
+**The problem.** A rule Ignas states in one chat ("never ask me which remote")
+lived in that chat. Reaching the next session meant a Google Doc, then
+`~/.claude/CLAUDE.md` on each machine, then the claude.ai preference field and
+each Project's instructions, all by hand. On 20 October a 115,000-character
+"requirements and frustrations" document and a 25,000-character rulebook were
+distilled from months of this; on 24 November he asked for a system instead:
+"when I'm in some chat and type 'update my rules at iblu', this would trigger
+IBLU tool that would register my frustration / instructions."
+
+**What exists now.**
+- `rules` table (migration 017): text, kind (rule / frustration / fact),
+  scope (all / code / chat / project), context in his words, status. D9
+  applies: `edit` inserts the new wording and retires the old row with
+  `superseded_by`; `retire` keeps the row. Nothing is deleted.
+- `rules_write` (add / edit / retire) and `rules_read` (list / render /
+  history) in `tools/rules.py`, store in `store/rules.py`. `rules_write` is
+  not in the asking class: it writes a row and reaches no person. The server
+  instructions carry the trigger phrases so a chat calls it without asking.
+- **Automatic reach.** The SessionStart hook in `.claude/settings.json` runs
+  `python -m iblu_keeper.store.rules --hook`, which prints the active rules
+  into every Claude Code session on this box. No file under `~/.claude` is
+  touched; sessions are forbidden to write there, and a hook needs no file.
+  Each `add` is also appended to the Google Doc in `RULES_DOC_ID` under a
+  "NEW RULES" heading (header written once, tracked by `doc_synced_at`).
+  The mirror never fails the write; a failed append is reported in the result
+  and the row stays the truth.
+- **By hand, and said so.** claude.ai account preferences and Project
+  instructions have no API. `rules_read(action="render", scope=...)` returns
+  the block to paste, and `rules_write`'s result names those two places.
+  Other machines' `~/.claude/CLAUDE.md`: same render, scope `code`.
+
+**Rules.** His words verbatim in `text`; the why in `context`; never
+paraphrase a rule into something softer. The hook prints nothing when there
+is nothing or when the database is unreachable: a hook that can stop a
+session is worse than none (same contract as `session_brief`). Tool count
+66; README and the server map updated.

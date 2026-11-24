@@ -12,7 +12,13 @@
             "type": "command",
             "command": "/home/ignas/iblu/.venv/bin/python -m iblu_keeper.jobs.session_brief 2>/dev/null || true",
             "timeout": 25,
-            "statusMessage": "Reading what IBLU caught…"
+            "statusMessage": "Reading what IBLU caught\u2026"
+          },
+          {
+            "type": "command",
+            "command": "/home/ignas/iblu/.venv/bin/python -m iblu_keeper.store.rules --hook 2>/dev/null || true",
+            "timeout": 15,
+            "statusMessage": "Reading Ignas's rules\u2026"
           }
         ]
       }

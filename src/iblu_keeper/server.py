@@ -116,7 +116,7 @@ mcp = FastMCP(
         "4. It continuously removes work from him: it proposes what to "
         "delegate or automate, then does the automatable parts itself.\n"
         "Full mission: call `get_context`.\n\n"
-        "WHAT IBLU CAN DO (64 tools; tool names in brackets):\n"
+        "WHAT IBLU CAN DO (66 tools; tool names in brackets):\n"
         "- Instagram @blanklabel.team + Blank Label Team Facebook Page: recent "
         "posts, post status, schedule, quota [social_read — never asks]; make, "
         "publish, schedule a post, and recent posts [social_publish].\n"
@@ -125,7 +125,11 @@ mcp = FastMCP(
         "Slides [slides_*], Forms [forms_*], Google Analytics GA4 "
         "[analytics_read], Workspace directory [directory_search], his code "
         "[repo], memory and priorities [get_context, context_*], server "
-        "[server_health, get_infra_status].\n"
+        "[server_health, get_infra_status], his standing rules for how Claude "
+        "works with him [rules_read, rules_write].\n"
+        "RULES: when Ignas says 'update my rules at iblu', 'new rule', 'add to my "
+        "frustrations' or 'remember this as a rule', call rules_write(action='add') "
+        "with his words verbatim and confirm in one line. Do not ask first.\n"
         "Your client may load only some tool definitions up front. Before "
         "telling Ignas IBLU cannot do something on this list, search your "
         "available tools for the bracketed name (or words like 'instagram', "
@@ -1901,6 +1905,62 @@ def get_infra_status() -> dict:
     from .tools import infra as infra_tools
 
     return infra_tools.get_infra_status()
+
+
+# --------------------------------------------------------------------------- #
+# Rules: what Ignas has told Claude, reachable from every chat (HANDOFF §35)
+# --------------------------------------------------------------------------- #
+@mcp.tool(name="rules_read", annotations={"title": "Read Ignas's Rules for Claude", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@stamped
+def rules_read(action: str = "list", scope: str = "all", limit: int = 100) -> dict:
+    """Ignas's standing rules for how Claude works with him, kept in IBLU.
+
+    ``action``: ``list`` (active rules; ``scope`` all|code|chat|project),
+    ``render`` (a paste-ready block for one destination: ``code`` is
+    ~/.claude/CLAUDE.md, ``chat`` is claude.ai account preferences,
+    ``project`` is a Project's instructions), ``history`` (every row, retired
+    ones included). Nothing here writes.
+
+    Returns live data fetched at call time. Always call again for current state; never reuse a previous result. Response includes fetched_at and request_id — report fetched_at to the user.
+    """
+    from .tools import rules as rules_tools
+
+    return rules_tools.rules_read(action=action, scope=scope, limit=limit)
+
+
+@mcp.tool(name="rules_write", annotations={"title": "Record a Rule or Frustration from Ignas", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+@stamped
+def rules_write(
+    action: str,
+    text: str | None = None,
+    kind: str = "rule",
+    scope: str = "all",
+    context: str | None = None,
+    rule_id: int | None = None,
+    note: str | None = None,
+) -> dict:
+    """Record what Ignas just told you about how to work with him.
+
+    TRIGGER: when he says "update my rules at iblu", "new rule", "remember
+    this as a rule", "add to my frustrations", "make it a standing rule", or
+    corrects you and says to keep it — call this at once with his words
+    verbatim in ``text``, what happened in ``context``, and confirm in one
+    line. Do not ask whether to record it.
+
+    ``action``: ``add`` (``text``; ``kind`` rule|frustration|fact; ``scope``
+    all|code|chat|project), ``edit`` (``rule_id`` + new ``text``: supersedes,
+    never deletes), ``retire`` (``rule_id``, optional ``note``).
+
+    What happens: a row in IBLU's ``rules`` table (the truth); every Claude
+    Code session on the IBLU box reads the active rules at start; the rule is
+    appended to his Google Doc of instructions. claude.ai preferences and
+    Project fields have no API, so the result names what to paste there.
+    Nothing is sent to any person.
+    """
+    from .tools import rules as rules_tools
+
+    return rules_tools.rules_write(action=action, text=text, kind=kind, scope=scope,
+                                   context=context, rule_id=rule_id, note=note)
 
 
 # --------------------------------------------------------------------------- #
